@@ -518,6 +518,52 @@ status_open_decisions() {  # <status-file>
   printf '%s' "$open"
 }
 
+# The log line that represents the crew's genuine CURRENT declared state - the
+# general form of the fix for a trailing resolved:/captain-held: (or any other
+# non-state verb, such as an informational note:) blanking out, or masquerading
+# as, real state. A still-open decision (status_open_decisions - the SAME fold,
+# never re-derived here) always wins, reported with its own note, because the
+# worker-facing contract keeps a decision open across any later done:/working:
+# line until its own resolved/captain-held closes it. Absent one, the most
+# recent line whose verb is a real state (working, done, failed, or the
+# configured pause verb) is current: every resolved:/captain-held: encountered
+# along the way (which only closes a decision), every note: (which only adds
+# information), and any other unrecognized verb is skipped, since none of them
+# declare a state of their own - so a worker can report a finding while
+# holding a declared paused: without cancelling it.
+# A still-open decision's key and note are reassembled as a synthetic
+# "<verb>: <note>" line so callers keep using
+# status_line_verb/status_line_note/map_log_state unchanged; a plain-state hit
+# is returned as the crew's own original line, untouched. Prints nothing (and
+# fails) when the log holds no state to report at all - e.g. every decision it
+# ever opened has since been resolved, and no plain state was ever declared -
+# so callers fall back to their own unknown/none default exactly as before.
+status_current_state_line() {  # <status-file>
+  local f=$1 open row rest verb note line plain=''
+  [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
+  open=$(status_open_decisions "$f")
+  if [ -n "$open" ]; then
+    row=$(printf '%s\n' "$open" | tail -1)
+    rest=${row#*$'\t'}
+    verb=${rest%%$'\t'*}
+    note=${rest#*$'\t'}
+    printf '%s: %s' "$verb" "$note"
+    return 0
+  fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in *[![:space:]]*) ;; *) continue ;; esac
+    if status_is_paused "$line"; then
+      plain=$line
+      continue
+    fi
+    case "$(status_line_verb "$line")" in
+      working|done|failed) plain=$line ;;
+    esac
+  done < "$f"
+  [ -n "$plain" ] || return 1
+  printf '%s' "$plain"
+}
+
 # 0 when <key> has a record in a folded "<key>\t<verb>\t<note>" open set.
 _fm_open_set_has() {  # <open-set> <key>
   case "$1" in

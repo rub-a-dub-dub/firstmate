@@ -1759,6 +1759,52 @@ test_no_run_idle_secondmate_resolved_event_not_state() {
   pass "a trailing resolved: event does not corrupt state render (idle stays idle)"
 }
 
+# General form of the resolved: fix (2026-09-11 jr-voice incident): ANY
+# trailing non-state verb - not only resolved:, and regardless of whether it
+# closes a keyed decision at all - must report the state-bearing line beneath
+# it, never `unknown`. A bare (unkeyed) resolved: here closes nothing (there is
+# no open needs-decision/blocked to close), so the declared paused: beneath it
+# is untouched and must still read as the crew's current state.
+test_no_run_idle_pane_paused_survives_trailing_resolved() {
+  reset_fakes
+  local d; d=$(new_case paused-then-resolved)
+  make_repo_on_branch "$d/wt" fm/feat-pause-resolved
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-pause-resolved.meta" "window=fm:fm-feat-pause-resolved" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'paused: holding for the upstream tool release\nresolved: unrelated earlier note closed\n' > "$d/state/feat-pause-resolved.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" feat-pause-resolved
+  local out; out=$(run_crew_state "$d" feat-pause-resolved)
+  assert_contains "$out" "state: paused" "a trailing resolved: does not blank a declared pause"
+  assert_contains "$out" "source: status-log" "the declared pause is still read from the status log"
+  assert_contains "$out" "holding for the upstream tool release" "the pause reason is still carried in the detail"
+  assert_not_contains "$out" "state: unknown" "a live pause must never render as the recovery-grade unknown state"
+  pass "a trailing resolved: never blanks a still-standing paused: into unknown"
+}
+
+# The general form's second half: a worker on a declared wait must be able to
+# report a finding without losing that wait. An informational note: (unlike
+# working:, which is a real state transition) is not itself a state, so it
+# must never cancel or supersede a declared paused: beneath it.
+test_no_run_idle_pane_paused_survives_trailing_note() {
+  reset_fakes
+  local d; d=$(new_case paused-then-note)
+  make_repo_on_branch "$d/wt" fm/feat-pause-note
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-pause-note.meta" "window=fm:fm-feat-pause-note" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'paused: holding for the vendor rate limit to reset\nnote: found a related edge case worth flagging\n' > "$d/state/feat-pause-note.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" feat-pause-note
+  local out; out=$(run_crew_state "$d" feat-pause-note)
+  assert_contains "$out" "state: paused" "an informational note: does not cancel a declared pause"
+  assert_contains "$out" "source: status-log" "the declared pause is still read from the status log"
+  assert_contains "$out" "holding for the vendor rate limit to reset" "the pause reason is still carried in the detail"
+  assert_not_contains "$out" "found a related edge case" "the note's own text is not the pause detail"
+  pass "a worker can report a finding via note: without losing its declared pause"
+}
+
 test_dead_window_ignores_stale_status_log() {
   reset_fakes
   local d; d=$(new_case dead-window)
@@ -2538,6 +2584,8 @@ test_no_run_idle_pane_uses_keyed_log
 test_no_run_idle_pane_paused
 test_no_run_idle_pane_custom_paused_verb
 test_no_run_idle_secondmate_resolved_event_not_state
+test_no_run_idle_pane_paused_survives_trailing_resolved
+test_no_run_idle_pane_paused_survives_trailing_note
 test_dead_window_ignores_stale_status_log
 test_no_run_tmux_unreadable_reads_unreachable_not_gone
 test_dead_window_still_reports_terminal_run_step
