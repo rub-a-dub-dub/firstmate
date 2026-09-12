@@ -77,9 +77,9 @@
 #      to reattach, not by escalating.
 #   4. No run for this crew (pre-validation, or kind=scout): fall back to the
 #      recorded backend's pane busy state, then the status log's own current
-#      declared state (fm-classify-lib.sh's status_current_state_line): a
-#      still-open decision wins, else the newest line whose verb is a real
-#      state (working/done/failed/paused). A trailing resolved:/captain-held:/
+#      declared state (fm-classify-lib.sh's status_current_state_line): the
+#      newest line whose verb is a real state (working/done/failed/paused, or a
+#      still-open needs-decision/blocked). A trailing resolved:/captain-held:/
 #      note:/other non-state line - or a needs-decision/blocked entry one of
 #      them already closed - is skipped rather than read as, or allowed to
 #      blank out, the crew's current state.
@@ -191,13 +191,15 @@ map_log_state() {  # <line>
 LOG_LINE=$(log_last_line || true)
 LOG_VERB=$(status_line_verb "$LOG_LINE")
 # The log's genuine current declared state (fm-classify-lib.sh's
-# status_current_state_line): a still-open decision wins, else the newest
-# line whose verb is a real state, skipping any trailing resolved:/
-# captain-held:/note:/other non-state line and any decision one of them
-# already closed. The fallback source below and the remote secondmate branch
-# both read THIS, never the bare last line, so a decision- or note-closing
-# append can never blank out or masquerade as current state.
-STATE_LINE=$(status_current_state_line "$LOG" || true)
+# status_current_state_line): the newest line whose verb is a real state,
+# skipping any resolved:/captain-held:/note:/other non-state line, and a
+# still-open needs-decision/blocked when nothing state-bearing follows it.
+# The fallback source below and the remote secondmate branch both read THIS,
+# never the bare last line, so a decision- or note-closing append can never
+# blank out or masquerade as current state. It scans the whole log, so each
+# branch reads it only once it is actually about to report from the log -
+# every earlier emit (run-step, busy pane, dead endpoint) exits without
+# paying for the scan.
 
 # --- remote secondmate: the true source is the remote endpoint ---------------
 # A remote mate's recorded worktree and backend target live on its own host, so
@@ -218,6 +220,7 @@ if [ -n "$REMOTE_HOST" ]; then
   REMOTE_STATE=$(printf '%s\n' "$REMOTE_STATE" | tail -1)
   case "$REMOTE_STATE" in
     alive)
+      STATE_LINE=$(status_current_state_line "$LOG" || true)
       if [ -n "$STATE_LINE" ]; then
         emit "$(map_log_state "$STATE_LINE")" status-log "$(status_line_note "$STATE_LINE")${SEP}remote endpoint alive on $REMOTE_HOST"
       fi
@@ -852,10 +855,10 @@ fi
 
 # Fall back to the status log's genuine CURRENT declared state, never its bare
 # last line. bin/fm-classify-lib.sh's status_current_state_line is the single
-# owner of that read: a still-open decision (the SAME fold status_open_decisions
-# uses) wins, else the newest line whose verb is a real state
-# (working/done/failed/paused). A trailing resolved:/captain-held: (or any
-# future decision-only sibling), an informational note:, or any other
+# owner of that read: the newest line whose verb is a real state
+# (working/done/failed/paused, or a needs-decision/blocked still open in the
+# SAME fold status_open_decisions uses). A trailing resolved:/captain-held: (or
+# any future decision-only sibling), an informational note:, or any other
 # unrecognized verb is skipped - never read as, and never allowed to blank out,
 # the current state - and so is a needs-decision/blocked entry one of those
 # verbs already closed. That lets a just-resolved idle crew (typically a
@@ -864,6 +867,7 @@ fi
 # lets a still-declared paused: survive a later informational note: instead of
 # reading as a fresh wedge. map_log_state is still the single owner of the
 # verb->state mapping (including the configurable paused verb).
+STATE_LINE=$(status_current_state_line "$LOG" || true)
 if [ -n "$STATE_LINE" ]; then
   emit "$(map_log_state "$STATE_LINE")" status-log "$(status_line_note "$STATE_LINE")"
 fi

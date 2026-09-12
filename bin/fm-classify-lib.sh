@@ -518,48 +518,72 @@ status_open_decisions() {  # <status-file>
   printf '%s' "$open"
 }
 
-# The log line that represents the crew's genuine CURRENT declared state - the
-# general form of the fix for a trailing resolved:/captain-held: (or any other
-# non-state verb, such as an informational note:) blanking out, or masquerading
-# as, real state. A still-open decision (status_open_decisions - the SAME fold,
-# never re-derived here) always wins, reported with its own note, because the
-# worker-facing contract keeps a decision open across any later done:/working:
-# line until its own resolved/captain-held closes it. Absent one, the most
-# recent line whose verb is a real state (working, done, failed, or the
-# configured pause verb) is current: every resolved:/captain-held: encountered
-# along the way (which only closes a decision), every note: (which only adds
-# information), and any other unrecognized verb is skipped, since none of them
-# declare a state of their own - so a worker can report a finding while
-# holding a declared paused: without cancelling it.
-# A still-open decision's key and note are reassembled as a synthetic
-# "<verb>: <note>" line so callers keep using
-# status_line_verb/status_line_note/map_log_state unchanged; a plain-state hit
-# is returned as the crew's own original line, untouched. Prints nothing (and
-# fails) when the log holds no state to report at all - e.g. every decision it
-# ever opened has since been resolved, and no plain state was ever declared -
-# so callers fall back to their own unknown/none default exactly as before.
+# The log line that represents the crew's genuine CURRENT declared state, for
+# callers that must not read the append-only stream last-line-wins.
+#
+# State-declaring and decision-closing are different planes. A resolved: or
+# captain-held: line only CLOSES a keyed decision, and a note: line only adds
+# information; none of them declares a state, so none may become the current
+# state or blank out the one standing beneath it. The current state is therefore
+# the most recent line in the log whose verb is a real state - working, done,
+# failed, the configured pause verb, or a still-open needs-decision/blocked -
+# with every other verb skipped. Position decides: a terminal line appended
+# after an unresolved decision supersedes it, and a decision is current only
+# when nothing state-bearing follows it.
+#
+# Whether a decision line is still open is asked of status_open_decisions - the
+# SAME fold, never re-derived here - and only when a decision line is actually
+# the trailing candidate, so a log that ends in plain state never pays for the
+# whole-file fold. A needs-decision/blocked line the fold cannot track by key
+# (a malformed slug, or a reserved key whose note does not speak that
+# namespace) still declares its state, so it is carried positionally instead of
+# vanishing.
+#
+# Prints the crew's own line, untouched, so callers keep using
+# status_line_verb/status_line_note/map_log_state unchanged. Prints nothing
+# (and fails) when the log declares no state at all - e.g. every decision it
+# opened has since been resolved and no plain state was ever declared - so
+# callers fall back to their own unknown/none default exactly as before.
 status_current_state_line() {  # <status-file>
-  local f=$1 open row rest verb note line plain=''
+  local f=$1 line verb key note paused open row decs='' plain=''
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
-  open=$(status_open_decisions "$f")
-  if [ -n "$open" ]; then
-    row=$(printf '%s\n' "$open" | tail -1)
-    rest=${row#*$'\t'}
-    verb=${rest%%$'\t'*}
-    note=${rest#*$'\t'}
-    printf '%s: %s' "$verb" "$note"
-    return 0
-  fi
+  paused=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in *[![:space:]]*) ;; *) continue ;; esac
-    if status_is_paused "$line"; then
+    verb=$(status_line_verb "$line")
+    if [ "$verb" = "$paused" ]; then
       plain=$line
+      decs=''
       continue
     fi
-    case "$(status_line_verb "$line")" in
-      working|done|failed) plain=$line ;;
+    case "$verb" in
+      working|done|failed)
+        plain=$line
+        decs=''
+        ;;
+      needs-decision|blocked)
+        note=$(status_line_note "$line")
+        if key=$(_fm_decision_key "$line") \
+          && _fm_decision_key_transition_allowed "$key" "$note"; then
+          decs="${decs}${key}"$'\t'"${line}"$'\n'
+        else
+          plain=$line
+          decs=''
+        fi
+        ;;
     esac
   done < "$f"
+  if [ -n "$decs" ]; then
+    open=$(status_open_decisions "$f")
+    while IFS= read -r row; do
+      [ -n "$row" ] || continue
+      if _fm_open_set_has "$open" "${row%%$'\t'*}"; then
+        plain=${row#*$'\t'}
+      fi
+    done <<EOF
+$decs
+EOF
+  fi
   [ -n "$plain" ] || return 1
   printf '%s' "$plain"
 }
