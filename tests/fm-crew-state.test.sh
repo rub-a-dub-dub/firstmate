@@ -1889,6 +1889,53 @@ test_no_run_idle_pane_trailing_open_decision_parks() {
   pass "a still-open decision with nothing state-bearing after it reads as parked"
 }
 
+# captain-held is a declared wait this repo already gives the same bounded
+# cadence as paused: (fm-classify-lib.sh's status_is_paused_or_captain_held), so
+# it declares a state as well as closing its key. Without that, the hold reads
+# as a pure decision-closer, its key drops out of the open set, and the
+# positional scan falls back to the working: the crew wrote BEFORE handing the
+# work over - reporting active execution, with stale prose as `doing`, for a
+# crew whose newest declaration is "the captain has this".
+test_no_run_idle_pane_captain_held_supersedes_earlier_working() {
+  reset_fakes
+  local d; d=$(new_case held-after-working)
+  make_repo_on_branch "$d/wt" fm/feat-held-working
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-held-working.meta" "window=fm:fm-feat-held-working" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: implementing the migration\nneeds-decision [key=d1]: ship now or wait\ncaptain-held [key=d1]: tracked by inventory-2026-09\n' > "$d/state/feat-held-working.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" feat-held-working
+  local out; out=$(run_crew_state "$d" feat-held-working)
+  assert_contains "$out" "state: paused" "a verified captain-held transfer is a declared wait, not active work"
+  assert_contains "$out" "source: status-log" "the hold is still read from the status log"
+  assert_contains "$out" "tracked by inventory-2026-09" "the hold's own line carries the detail"
+  assert_not_contains "$out" "state: working" "a superseded working: must not be resurrected by a hold that closed the decision"
+  assert_not_contains "$out" "implementing the migration" "the superseded working prose must not be the current detail"
+  assert_not_contains "$out" "state: unknown" "a declared hold must never fall through to the recovery-grade unknown"
+  pass "a captain-held transfer reads as a declared wait carrying its own reason"
+}
+
+# The hold's second confusable neighbour: appended beneath a live pause, it
+# blocks on the CAPTAIN, so the reason a reader sees must be the hold's, never
+# the pause's external dependency.
+test_no_run_idle_pane_captain_held_supersedes_earlier_pause() {
+  reset_fakes
+  local d; d=$(new_case held-after-pause)
+  make_repo_on_branch "$d/wt" fm/feat-held-pause
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-held-pause.meta" "window=fm:fm-feat-held-pause" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'paused: waiting on the vendor rate limit to reset\ncaptain-held [key=d1]: handing the cutover call to the captain\n' > "$d/state/feat-held-pause.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" feat-held-pause
+  local out; out=$(run_crew_state "$d" feat-held-pause)
+  assert_contains "$out" "state: paused" "a hold appended beneath a pause is still a declared wait"
+  assert_contains "$out" "handing the cutover call to the captain" "the hold's reason is what a reader sees"
+  assert_not_contains "$out" "vendor rate limit" "a superseded external-wait reason must not outlive the hold that replaced it"
+  pass "a captain-held transfer beneath a pause reports the hold's own reason"
+}
+
 test_dead_window_ignores_stale_status_log() {
   reset_fakes
   local d; d=$(new_case dead-window)
@@ -2674,6 +2721,8 @@ test_no_run_idle_pane_terminal_after_open_decision_reads_terminal
 test_no_run_idle_pane_pause_outranks_earlier_escalation
 test_no_run_idle_pane_untrackable_decision_key_still_parks
 test_no_run_idle_pane_trailing_open_decision_parks
+test_no_run_idle_pane_captain_held_supersedes_earlier_working
+test_no_run_idle_pane_captain_held_supersedes_earlier_pause
 test_dead_window_ignores_stale_status_log
 test_no_run_tmux_unreadable_reads_unreachable_not_gone
 test_dead_window_still_reports_terminal_run_step

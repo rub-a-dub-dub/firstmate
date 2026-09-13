@@ -78,11 +78,11 @@
 #   4. No run for this crew (pre-validation, or kind=scout): fall back to the
 #      recorded backend's pane busy state, then the status log's own current
 #      declared state (fm-classify-lib.sh's status_current_state_line): the
-#      newest line whose verb is a real state (working/done/failed/paused, or a
-#      still-open needs-decision/blocked). A trailing resolved:/captain-held:/
-#      note:/other non-state line - or a needs-decision/blocked entry one of
-#      them already closed - is skipped rather than read as, or allowed to
-#      blank out, the crew's current state.
+#      newest line whose verb is a real state (working/done/failed/paused/
+#      captain-held, or a still-open needs-decision/blocked). A trailing
+#      resolved:/note:/other non-state line - or a needs-decision/blocked entry
+#      one of them already closed - is skipped rather than read as, or allowed
+#      to blank out, the crew's current state.
 #   5. Missing meta or torn-down worktree: report unknown · none. If no run is
 #      attributed to this crew, a dead endpoint also reports unknown · none rather
 #      than trusting a stale status log. On tmux and herdr, which own a
@@ -172,9 +172,14 @@ log_last_line() {
 # the deliberate-external-wait verb (fm-classify-lib.sh's FM_CLASSIFY_PAUSED_VERB):
 # a crew with no active run and an idle pane that declared a known external wait
 # reports `paused` distinctly, so a supervisor reading this sees a declared pause
-# and its reason rather than a wedge-suspect idle.
+# and its reason rather than a wedge-suspect idle. A verified captain-held
+# transfer is the other declared wait - fm-classify-lib.sh's shared
+# status_is_paused_or_captain_held already gives the two one cadence - so it maps
+# to the same `paused` state rather than a seventh one no consumer parses; the
+# detail carried alongside is the hold's own line, so the reason a reader sees
+# names the hold instead of an external dependency.
 map_log_state() {  # <line>
-  if status_is_paused "$1"; then
+  if status_is_paused_or_captain_held "$1"; then
     echo paused
     return
   fi
@@ -192,8 +197,8 @@ LOG_LINE=$(log_last_line || true)
 LOG_VERB=$(status_line_verb "$LOG_LINE")
 # The log's genuine current declared state (fm-classify-lib.sh's
 # status_current_state_line): the newest line whose verb is a real state,
-# skipping any resolved:/captain-held:/note:/other non-state line, and a
-# still-open needs-decision/blocked when nothing state-bearing follows it.
+# skipping any resolved:/note:/other non-state line, and a still-open
+# needs-decision/blocked when nothing state-bearing follows it.
 # The fallback source below and the remote secondmate branch both read THIS,
 # never the bare last line, so a decision- or note-closing append can never
 # blank out or masquerade as current state. It scans the whole log, so each
@@ -856,8 +861,8 @@ fi
 # Fall back to the status log's genuine CURRENT declared state, never its bare
 # last line. bin/fm-classify-lib.sh's status_current_state_line is the single
 # owner of that read: the newest line whose verb is a real state
-# (working/done/failed/paused, or a needs-decision/blocked still open in the
-# SAME fold status_open_decisions uses). A trailing resolved:/captain-held: (or
+# (working/done/failed/paused/captain-held, or a needs-decision/blocked still
+# open in the SAME fold status_open_decisions uses). A trailing resolved: (or
 # any future decision-only sibling), an informational note:, or any other
 # unrecognized verb is skipped - never read as, and never allowed to blank out,
 # the current state - and so is a needs-decision/blocked entry one of those

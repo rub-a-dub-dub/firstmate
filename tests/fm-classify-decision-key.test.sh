@@ -336,5 +336,43 @@ EOF
   pass "status_key_closing_verb reports the last real transition, in either key position"
 }
 
+
+# captain-held sits on BOTH planes at once, and the two reads must not cancel
+# each other: the keyed fold must still see it CLOSE its decision (so the
+# captain's inbox does not keep the question open after the transfer), while the
+# positional current-state scan must see it DECLARE a state (so the working: it
+# was written to supersede is not resurrected as the crew's current activity).
+test_captain_held_closes_its_key_and_declares_the_current_state() {
+  local dir f open
+  dir=$(case_dir held-both-planes)
+  f="$dir/a.status"
+  cat > "$f" <<'EOF'
+working: implementing the migration
+needs-decision [key=d1]: ship now or wait
+captain-held [key=d1]: tracked by inventory-2026-09
+EOF
+  open=$(status_open_decisions "$f")
+  case "$open" in
+    *d1*) fail "captain-held stopped closing its keyed decision: '$open'" ;;
+  esac
+  [ "$(status_current_state_line "$f")" = 'captain-held [key=d1]: tracked by inventory-2026-09' ]     || fail "captain-held did not declare the current state: '$(status_current_state_line "$f")'"
+
+  # The same rule against the other declared wait: a hold appended beneath a
+  # pause blocks on the CAPTAIN, so reporting the pause's external-wait reason
+  # would point a reader away from the one person who can clear it.
+  cat > "$f" <<'EOF'
+paused: waiting on vendor until 2026-09-12T10:00Z
+captain-held [key=d1]: handing over
+EOF
+  [ "$(status_current_state_line "$f")" = 'captain-held [key=d1]: handing over' ]     || fail "a hold appended beneath a pause did not supersede it: '$(status_current_state_line "$f")'"
+
+  # And it stays a state, not a terminus: a later real state supersedes it
+  # positionally exactly as it supersedes anything else.
+  printf 'working: the captain released the hold, resuming\n' >> "$f"
+  [ "$(status_current_state_line "$f")" = 'working: the captain released the hold, resuming' ]     || fail "a state declared after a hold did not supersede it: '$(status_current_state_line "$f")'"
+  pass "captain-held closes its key in the fold and declares the current state positionally"
+}
+
 test_closing_verb_separates_resolution_from_durable_transfer
 test_closing_verb_tracks_the_last_transition_in_both_positions
+test_captain_held_closes_its_key_and_declares_the_current_state
