@@ -39,8 +39,12 @@ This touches only the firstmate repo and its own worktrees, never anything under
    ```sh
    bin/fm-update.sh
    ```
-   It fast-forwards this firstmate repo's default branch from origin, then updates every registered local or remote secondmate home through its placement-specific guarded path.
-   It prints one status line per target (`updated <old>..<new>` / `already current` / `skipped: <reason>`), followed by three action lines that tell you exactly what to do next:
+   It synchronizes a GitHub fork before comparing this firstmate repo with origin, then updates every registered local or remote secondmate home through its placement-specific guarded path.
+   `bin/fm-ff-lib.sh` owns fork discovery and synchronization; no separately named upstream remote is required, and an authoritative origin needs no fork synchronization.
+   GitHub origins require working `gh-axi` API access, and advancing a fork requires Git push permission to that fork's default branch.
+   Divergent forks, mismatched upstream and fork default-branch names, or failed discovery, fetch, or push produce a visible failure and a nonzero exit instead of an `already current` result.
+   Resolve that reported failure before claiming the affected home is current.
+   It prints a fork-sync line when a fork advances and one status line per target (`updated <old>..<new>` / `already current` / `skipped: <reason>`), followed by three action lines that tell you exactly what to do next:
    - `reread-firstmate: yes|no`
    - `restart-secondmates: fm-<id>...|none`
    - `nudge-secondmates: fm-<id>...|none`

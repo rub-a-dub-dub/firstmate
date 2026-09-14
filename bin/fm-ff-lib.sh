@@ -198,10 +198,117 @@ validate_secondmate_home() {
   VALIDATED_HOME="$abs_home"
 }
 
+# GitHub identity comes from the configured fetch URL, never the push URL
+# (which can be a gate or a different repository). Git still applies insteadOf
+# transport rewrites. Non-GitHub origins retain ordinary Git sync.
+ff_github_repo() { # <url>
+  local path
+  case "$1" in
+    https://github.com/*) path=${1#https://github.com/} ;;
+    git@github.com:*) path=${1#git@github.com:} ;;
+    ssh://git@github.com/*) path=${1#ssh://git@github.com/} ;;
+    *) return 1 ;;
+  esac
+  path=${path%/}
+  path=${path%.git}
+  [[ "$path" =~ ^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$ ]] || return 1
+  printf '%s\n' "$path"
+}
+
+# Before an origin update, discover GitHub's fork relationship, even without an
+# upstream remote. Use the parent's default branch only when its name matches
+# the fork default; a different default requires operator reconciliation.
+# Fetch both tips, prove ancestry, and push the parent's existing commit to the
+# exact fork fetch URL with an ordinary non-forced push. No local branch, merge
+# commit, configured push URL, or other ref is involved. A fork ahead of its
+# parent is already synchronized; divergent forks and all discovery/transport
+# failures fail closed. The final origin fetch happens only after this succeeds.
+# gh-axi and node are existing Firstmate prerequisites, needed here only for
+# GitHub origins. FF_FETCH_ERROR carries an actionable failure to ff_target.
+ff_sync_origin_fork() { # <dir>
+  local dir=$1 url repo metadata record fork name branch parent parent_branch
+  local source remote remote_url fork_tip parent_tip out
+  FF_ORIGIN_DEFAULT=""
+  url=$(git -C "$dir" config --get-all remote.origin.url) || return 1
+  case "$url" in
+    *$'\n'*)
+      FF_FETCH_ERROR="fork discovery failed: multiple origin fetch URLs are ambiguous"
+      return 1 ;;
+  esac
+  repo=$(ff_github_repo "$url") || return 0
+  FF_FETCH_ERROR="fork discovery failed for $repo (requires authenticated gh-axi and node)"
+  metadata=$(gh-axi api "/repos/$repo" --hostname github.com --full --jq \
+    '{fork: .fork, name: .full_name, branch: .default_branch, parent: (.parent.full_name // "-"), parentBranch: (.parent.default_branch // "-")}' 2>&1) || {
+    FF_FETCH_ERROR="$FF_FETCH_ERROR: $(first_line "$metadata")"
+    return 1
+  }
+  # Decode only this flat, caller-selected TOON record; refuse missing, duplicate,
+  # extra, or malformed fields instead of interpreting an error body as no fork.
+  record=$(printf '%s\n' "$metadata" | node -e '
+    let input = "";
+    process.stdin.on("data", chunk => input += chunk);
+    process.stdin.on("end", () => {
+      try {
+        const keys = ["fork", "name", "branch", "parent", "parentBranch"];
+        const fields = {};
+        for (const line of input.trim().split("\n")) {
+          const match = line.match(/^([A-Za-z]+): (.+)$/);
+          if (!match || !keys.includes(match[1]) || match[1] in fields) throw Error();
+          const raw = match[2];
+          fields[match[1]] = raw.startsWith("\"") ? JSON.parse(raw) : raw;
+        }
+        if (keys.some(key => typeof fields[key] !== "string" || !fields[key] || /\s/.test(fields[key]))) throw Error();
+        if (!["true", "false"].includes(fields.fork)) throw Error();
+        process.stdout.write(keys.map(key => fields[key]).join("\t"));
+      } catch { process.exitCode = 1; }
+    });' 2>/dev/null) || return 1
+  IFS=$'\t' read -r fork name branch parent parent_branch <<< "$record"
+  [ "$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')" ] || return 1
+  git check-ref-format "refs/heads/$branch" >/dev/null 2>&1 || return 1
+  FF_ORIGIN_DEFAULT=$branch
+  [ "$fork" = true ] || return 0
+  ff_github_repo "https://github.com/$parent" >/dev/null || return 1
+  [ "$parent" != "$name" ] || return 1
+  FF_FETCH_ERROR="fork sync refused: $repo default $branch differs from $parent default $parent_branch"
+  [ "$branch" = "$parent_branch" ] || return 1
+
+  # Prefer any configured remote for the parent (including SSH), regardless of
+  # its name; otherwise derive its URL using origin's transport.
+  case "$url" in
+    git@*) source="git@github.com:$parent.git" ;;
+    ssh://*) source="ssh://git@github.com/$parent.git" ;;
+    *) source="https://github.com/$parent.git" ;;
+  esac
+  while IFS= read -r remote; do
+    remote_url=$(git -C "$dir" config --get "remote.$remote.url" 2>/dev/null) || continue
+    if [ "$(ff_github_repo "$remote_url" || true)" = "$parent" ]; then
+      source=$remote_url
+      break
+    fi
+  done < <(git -C "$dir" remote)
+  FF_FETCH_ERROR="fork sync failed: cannot fetch $repo/$branch"
+  git -C "$dir" fetch --quiet --no-tags -- "$url" "refs/heads/$branch" 2>/dev/null || return 1
+  fork_tip=$(git -C "$dir" rev-parse --verify FETCH_HEAD) || return 1
+  FF_FETCH_ERROR="fork sync failed: cannot fetch $parent/$parent_branch"
+  git -C "$dir" fetch --quiet --no-tags -- "$source" "refs/heads/$parent_branch" 2>/dev/null || return 1
+  parent_tip=$(git -C "$dir" rev-parse --verify FETCH_HEAD) || return 1
+  git -C "$dir" merge-base --is-ancestor "$parent_tip" "$fork_tip" 2>/dev/null && return 0
+  FF_FETCH_ERROR="fork sync refused: $repo/$branch diverged from $parent/$parent_branch"
+  git -C "$dir" merge-base --is-ancestor "$fork_tip" "$parent_tip" 2>/dev/null || return 1
+  if ! out=$(git -C "$dir" -c push.followTags=false push --porcelain -- "$url" "$parent_tip:refs/heads/$branch" 2>&1); then
+    FF_FETCH_ERROR="fork sync failed: cannot fast-forward $repo/$branch: $(first_line "$out")"
+    return 1
+  fi
+  printf 'fork sync: fast-forwarded %s/%s from %s/%s\n' "$repo" "$branch" "$parent" "$parent_branch"
+}
+
 # A single fetch refreshes every worktree that shares an object store, so fetch
 # each distinct git-common-dir at most once. Used ONLY by the origin base mode;
 # the local-HEAD sync never fetches.
 FETCHED=""
+FF_FETCH_ERROR=""
+# Sticky origin failure flag consumed by fm-update.sh after its fleet sweep.
+FF_UPDATE_FAILED=0
 fetch_once() {
   local dir=$1 common
   common=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
@@ -210,7 +317,18 @@ fetch_once() {
       *" $common "*) return 0 ;;
     esac
   fi
+  FF_FETCH_ERROR="fetch failed"
+  if ! ff_sync_origin_fork "$dir"; then
+    return 1
+  fi
+  FF_FETCH_ERROR="fetch failed"
   if git -C "$dir" fetch origin --prune --quiet 2>/dev/null; then
+    if [ -n "$FF_ORIGIN_DEFAULT" ]; then
+      # Fetch the actual default explicitly even with a narrow clone refspec.
+      git -C "$dir" fetch --quiet --no-tags origin \
+        "+refs/heads/$FF_ORIGIN_DEFAULT:refs/remotes/origin/$FF_ORIGIN_DEFAULT" 2>/dev/null || return 1
+      git -C "$dir" symbolic-ref refs/remotes/origin/HEAD "refs/remotes/origin/$FF_ORIGIN_DEFAULT" || return 1
+    fi
     [ -n "$common" ] && FETCHED="$FETCHED $common"
     return 0
   fi
@@ -281,8 +399,9 @@ live_secondmate_meta_records() {
 #   FF_INSTR  = comma list of changed instruction paths (only when updated)
 #
 # base_mode selects where the fast-forward base comes from:
-#   origin       - fetch origin and advance to origin/<default> (the /updatefirstmate
-#                  path); requires an origin remote and network reachability.
+#   origin       - synchronize a GitHub fork via ff_sync_origin_fork above, then
+#                  fetch origin and advance to origin/<default>; requires an
+#                  origin remote and network reachability.
 #   <commit-ish> - advance to that LOCAL commit with NO fetch and no origin
 #                  dependency (the local-HEAD secondmate sync). The commit must
 #                  already exist in the target's object store, which it always does
@@ -307,11 +426,6 @@ ff_target() {
   fi
 
   local default base cur instr local_rev base_rev before after out
-  default=$(default_branch "$dir") || {
-    echo "$label: skipped: cannot determine default branch"
-    return 0
-  }
-
   # Resolve the fast-forward base from base_mode (see header).
   if [ "$base_mode" = origin ]; then
     if ! git -C "$dir" remote get-url origin >/dev/null 2>&1; then
@@ -319,9 +433,17 @@ ff_target() {
       return 0
     fi
     if ! fetch_once "$dir"; then
-      echo "$label: skipped: fetch failed"
+      # shellcheck disable=SC2034 # Consumed by fm-update.sh in the sourcing shell.
+      FF_UPDATE_FAILED=1
+      echo "$label: skipped: $FF_FETCH_ERROR"
       return 0
     fi
+  fi
+  default=$(default_branch "$dir") || {
+    echo "$label: skipped: cannot determine default branch"
+    return 0
+  }
+  if [ "$base_mode" = origin ]; then
     base="origin/$default"
   else
     base="$base_mode"

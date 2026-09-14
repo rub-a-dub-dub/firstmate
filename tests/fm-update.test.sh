@@ -135,7 +135,7 @@ run_update() {
   local w=$1
   PATH="$w/fakebin:$PATH" FM_FAKE_DIR="$w/fake" \
     FM_SSH_BIN="${FM_TEST_SSH_BIN:-ssh}" \
-    FM_ROOT_OVERRIDE="$w/main" FM_HOME="$w/home" "$UPDATE" 2>/dev/null
+    FM_ROOT_OVERRIDE="$w/main" FM_HOME="$w/home" "$UPDATE" 2>&1
 }
 
 # --- T1: main + secondmate behind, instruction change; FF, not a merge ------
@@ -263,7 +263,12 @@ decode() { printf '%s' "$1" | base64 --decode 2>/dev/null || printf '%s' "$1" | 
 rargs=()
 while IFS= read -r -d '' a; do rargs+=("$a"); done < <(decode "$argv_b64")
 case "${rargs[1]:-}" in
-  update) printf 'synced: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' ;;
+  update)
+    if [ -f "$FM_FAKE_DIR/remote-fail" ]; then
+      printf 'fork sync failed: protected fork branch\n' >&2
+      exit 1
+    fi
+    printf 'synced: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' ;;
   state) printf 'alive\n' ;;
   *) exit 91 ;;
 esac
@@ -292,6 +297,13 @@ EOF
   assert_contains "$out" "nudge-secondmates: none" \
     "a restarted remote mate must not also be steered"
   pass "T3e a legacy remote advance still restarts the live remote mate"
+  touch "$w/fake/remote-fail"
+  if out=$(FM_TEST_SSH_BIN="$fake_ssh" run_update "$w"); then
+    fail "a remote fork failure did not propagate a nonzero exit"
+  fi
+  assert_contains "$out" "fork sync failed: protected fork branch" "remote failure diagnostic survives"
+  assert_contains "$out" "restart-secondmates: none" "failed remote update cannot restart"
+  pass "T3f remote fork synchronization failure propagates without a restart"
 }
 
 # --- T4: dirty secondmate is skipped, its edit preserved -------------------
@@ -507,6 +519,153 @@ test_primary_update_rebinds_local_watch() {
   pass "T12 a self-update rebinds a locally armed watch on the primary"
 }
 
+# GitHub discovery is stubbed; fetches, ancestry, pushes, rejection hooks, and
+# checkout updates run real Git against local bare repositories via insteadOf.
+# The stub models gh-axi's caller-selected flat TOON output, not a raw gh JSON API.
+new_fork_world() {
+  local w=$1 branch=${2:-main}
+  if [ "$branch" != main ]; then
+    git -C "$w/seed" branch -m main "$branch"
+    git -C "$w/seed" push -q origin "$branch"
+    git -C "$w/origin.git" symbolic-ref HEAD "refs/heads/$branch"
+    git -C "$w/main" fetch -q origin
+    git -C "$w/main" checkout -qb "$branch" "origin/$branch"
+  fi
+  git clone -q --bare "$w/origin.git" "$w/fork.git"
+  git -C "$w/main" remote set-url origin https://github.com/operator/firstmate.git
+  git -C "$w/main" config url."$w/fork.git".insteadOf https://github.com/operator/firstmate.git
+  git -C "$w/main" config url."$w/origin.git".insteadOf https://github.com/author/firstmate.git
+  # Also allow a differently named parent remote using SSH in the success case.
+  git -C "$w/main" config --add url."$w/origin.git".insteadOf git@github.com:author/firstmate.git
+  cat > "$w/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_FAKE_DIR/api-calls"
+[ ! -f "$FM_FAKE_DIR/api-fail" ] || { echo 'authentication failed' >&2; exit 1; }
+[ "$1" = api ] && [ "$2" = /repos/operator/firstmate ] || exit 1
+cat "$FM_FAKE_DIR/metadata"
+SH
+  chmod +x "$w/fakebin/gh-axi"
+  printf 'fork: true\nname: operator/firstmate\nbranch: %s\nparent: author/firstmate\nparentBranch: %s\n' \
+    "$branch" "$branch" > "$w/fake/metadata"
+}
+
+advance_parent() {
+  local w=$1 branch=${2:-main}
+  printf 'authoritative advance\n' >> "$w/seed/README.md"
+  git -C "$w/seed" commit -qam upstream-advance
+  git -C "$w/seed" push -q origin "$branch"
+}
+
+test_fork_update() {
+  local layout w branch before expected out
+  for layout in absent renamed; do
+    w=$(new_world "fork-$layout")
+    branch=release/stable
+    new_fork_world "$w" "$branch"
+    if [ "$layout" = renamed ]; then
+      git -C "$w/main" remote add source git@github.com:author/firstmate.git
+      git -C "$w/main" remote set-url origin ssh://git@github.com/operator/firstmate.git
+      git -C "$w/main" config --add url."$w/fork.git".insteadOf ssh://git@github.com/operator/firstmate.git
+    fi
+    add_sm "$w" sm1
+    # add_sm starts at main; the detached home still safely follows origin's
+    # actual default, which is intentionally stale in origin/HEAD at this point.
+    before=$(git -C "$w/main" rev-parse HEAD)
+    advance_parent "$w" "$branch"
+    expected=$(git -C "$w/origin.git" rev-parse "$branch")
+    # A configured push URL must not redirect the fork synchronization.
+    git -C "$w/main" remote set-url --push origin "$w/never-push-here.git"
+    git -C "$w/main" config push.followTags true
+    git -C "$w/main" tag -a private-tag -m private "$before"
+    out=$(run_update "$w") || fail "fork update failed: $out"
+    assert_contains "$out" "fork sync: fast-forwarded operator/firstmate/$branch" "fork sync is visible"
+    assert_contains "$out" 'firstmate: updated ' "primary advances after fork"
+    assert_contains "$out" 'secondmate sm1: updated ' "linked home follows same result"
+    [ "$(git -C "$w/fork.git" rev-parse "$branch")" = "$expected" ] || fail 'fork remained stale'
+    [ "$(git -C "$w/main" rev-parse HEAD)" = "$expected" ] || fail 'primary remained stale'
+    [ "$(git -C "$w/sm1" rev-parse HEAD)" = "$expected" ] || fail 'secondmate remained stale'
+    [ "$(git -C "$w/main" rev-list --count "$before..HEAD")" = 1 ] || fail 'sync created a commit'
+    git -C "$w/fork.git" show-ref --verify --quiet refs/tags/private-tag && fail 'sync pushed unrelated tag'
+    [ "$(wc -l < "$w/fake/api-calls" | tr -d ' ')" = 1 ] || fail 'shared object store synchronized twice'
+    out=$(run_update "$w") || fail 'repeat fork update failed'
+    assert_contains "$out" 'firstmate: already current' "repeat converges"
+    assert_not_contains "$out" 'fork sync: fast-forwarded' "repeat does not push"
+    pass "fork $layout parent remote: custom default, safe push, worktree convergence, idempotence"
+  done
+}
+
+test_authoritative_origin_noop() {
+  local w before out
+  w=$(new_world authoritative)
+  new_fork_world "$w"
+  # The origin name stays operator/firstmate, but GitHub says it is authoritative.
+  printf 'fork: false\nname: operator/firstmate\nbranch: main\nparent: "-"\nparentBranch: "-"\n' > "$w/fake/metadata"
+  git -C "$w/main" remote add upstream https://github.com/unrelated/other.git
+  before=$(git -C "$w/fork.git" rev-parse main)
+  advance_parent "$w"
+  out=$(run_update "$w") || fail 'authoritative origin no-op failed'
+  assert_contains "$out" 'firstmate: already current' "non-fork origin is authoritative"
+  assert_not_contains "$out" 'fork sync:' "no fork synchronization"
+  [ "$(git -C "$w/fork.git" rev-parse main)" = "$before" ] || fail 'non-fork changed'
+  pass 'authoritative origin is a no-op even with an unrelated upstream remote'
+}
+
+test_fork_ahead_preserves_commits() {
+  local w expected out
+  w=$(new_world fork-ahead)
+  new_fork_world "$w"
+  git clone -q "$w/fork.git" "$w/fork-writer"
+  printf 'fork-only\n' > "$w/fork-writer/unique"
+  git -C "$w/fork-writer" add unique
+  git -C "$w/fork-writer" commit -qm fork-only
+  git -C "$w/fork-writer" push -q origin main
+  expected=$(git -C "$w/fork.git" rev-parse main)
+  out=$(run_update "$w") || fail "ahead fork update failed: $out"
+  assert_contains "$out" 'firstmate: updated ' "ahead fork remains the update target"
+  assert_not_contains "$out" 'fork sync: fast-forwarded' "ahead fork is never reset"
+  [ "$(git -C "$w/main" rev-parse HEAD)" = "$expected" ] || fail 'ahead fork commit lost'
+  [ "$(git -C "$w/fork.git" rev-parse main)" = "$expected" ] || fail 'ahead fork moved'
+  pass 'fork ahead of upstream keeps its existing commits'
+}
+
+test_fork_failures() {
+  local mode w before fork_before out rc
+  for mode in auth malformed multiple mismatch diverged reject offline; do
+    w=$(new_world "fork-fail-$mode")
+    new_fork_world "$w"
+    before=$(git -C "$w/main" rev-parse HEAD)
+    advance_parent "$w"
+    case "$mode" in
+      auth) touch "$w/fake/api-fail" ;;
+      multiple) git -C "$w/main" config --add remote.origin.url https://github.com/author/firstmate.git ;;
+      malformed) printf 'api_response:\n  body: null\n' > "$w/fake/metadata" ;;
+      mismatch) sed 's/parentBranch: main/parentBranch: different/' "$w/fake/metadata" > "$w/fake/new"; mv "$w/fake/new" "$w/fake/metadata" ;;
+      diverged)
+        git clone -q "$w/fork.git" "$w/fork-writer"
+        printf 'fork-only\n' > "$w/fork-writer/unique"
+        git -C "$w/fork-writer" add unique
+        git -C "$w/fork-writer" commit -qm fork-only
+        git -C "$w/fork-writer" push -q origin main
+        ;;
+      reject)
+        printf '#!/bin/sh\necho "protected fork branch" >&2\nexit 1\n' > "$w/fork.git/hooks/pre-receive"
+        chmod +x "$w/fork.git/hooks/pre-receive"
+        ;;
+      offline) mv "$w/origin.git" "$w/offline.git" ;;
+    esac
+    fork_before=$(git -C "$w/fork.git" rev-parse main)
+    rc=0
+    out=$(run_update "$w") || rc=$?
+    [ "$rc" -ne 0 ] || fail "$mode synchronization falsely succeeded"
+    assert_contains "$out" 'firstmate: skipped: fork' "$mode is actionable"
+    assert_not_contains "$out" 'already current' "$mode must not report current"
+    assert_contains "$out" 'restart-secondmates: none' "$mode must not restart"
+    [ "$(git -C "$w/main" rev-parse HEAD)" = "$before" ] || fail "$mode moved local HEAD"
+    [ "$(git -C "$w/fork.git" rev-parse main)" = "$fork_before" ] || fail "$mode lost fork work"
+    pass "fork $mode failure is visible and preserves both tips"
+  done
+}
+
 test_updates_main_and_secondmate
 test_reread_gate_is_instruction_only
 test_bin_only_advance_restarts
@@ -522,5 +681,10 @@ test_firstmate_wrong_branch_skipped
 test_firstmate_detached_head_skipped
 test_unsafe_secondmate_home_skipped_before_git_update
 test_primary_update_rebinds_local_watch
+
+test_fork_update
+test_authoritative_origin_noop
+test_fork_failures
+test_fork_ahead_preserves_commits
 
 echo "# all fm-update tests passed"

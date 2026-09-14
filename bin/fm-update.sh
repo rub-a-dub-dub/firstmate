@@ -2,7 +2,8 @@
 # Self-update a running firstmate and its secondmates to the latest origin.
 #
 # Mechanical half of the /updatefirstmate skill. Fast-forwards the running
-# firstmate repo's default branch from origin, then fast-forwards every
+# firstmate repo's default branch from origin after synchronizing a GitHub fork
+# through fm-ff-lib.sh, then fast-forwards every
 # registered secondmate home. Local homes are treehouse worktrees or standalone
 # clones; remote routes update their configured code root on that host and then
 # fast-forward the persistent home to that root. FAST-FORWARD ONLY, exactly like
@@ -23,7 +24,9 @@
 # It does NOT re-read AGENTS.md or nudge secondmates itself - those are LLM /
 # tmux actions the skill performs. The script's job is the safe git mechanics
 # plus a parseable summary telling the caller what to do next:
-#   - one status line per target (updated/already current/skipped)
+#   - fork sync status when a fork advances, then one line per target
+#     (updated/already current/skipped); origin discovery/fetch/sync failure
+#     returns nonzero after the summary, including remote update failures
 #   - reread-firstmate: yes|no    (did the running firstmate's instructions change)
 #   - restart-secondmates: fm-<id>...|none (every live secondmate this pass left
 #     on origin's tip - advanced OR already there - whose recorded runtime can
@@ -224,6 +227,7 @@ if [ -f "$SECONDMATES_MD" ]; then
           *) echo "remote secondmate $id: skipped on $SECONDMATE_REGISTRY_HOST: malformed update result" >&2 ;;
         esac
       else
+        FF_UPDATE_FAILED=1
         echo "remote secondmate $id: skipped on $SECONDMATE_REGISTRY_HOST: ${remote_out%%$'\n'*}" >&2
       fi
     else
@@ -241,3 +245,6 @@ fi
 echo "reread-firstmate: $reread_firstmate"
 echo "restart-secondmates:${FF_RESTART_WINDOWS:- none}"
 echo "nudge-secondmates:${FF_STEER_WINDOWS:- none}"
+
+# Discovery or required fork synchronization failure must reach remote callers.
+exit "$FF_UPDATE_FAILED"
