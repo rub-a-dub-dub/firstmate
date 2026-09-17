@@ -541,13 +541,17 @@ status_open_decisions() {  # <status-file>
 # active execution - or an external wait on the wrong human - for a crew that
 # has handed the work to the captain.
 #
-# Whether a decision line is still open is asked of status_open_decisions - the
-# SAME fold, never re-derived here - and only when a decision line is actually
-# the trailing candidate, so a log that ends in plain state never pays for the
-# whole-file fold. A needs-decision/blocked line the fold cannot track by key
-# (a malformed slug, or a reserved key whose note does not speak that
-# namespace) still declares its state, so it is carried positionally instead of
-# vanishing.
+# The walk runs from the END of the log backward and stops at the first
+# state-bearing line, so the cost is the distance back to the current state
+# rather than the length of the whole history. Backward order is also what
+# settles open-versus-closed without a second pass over the file: a decision is
+# closed only by a resolved:/captain-held: line positioned AFTER it, which the
+# backward walk has therefore already seen, so the same key parse and
+# reserved-key transition gate the fold applies (_fm_decision_key,
+# _fm_decision_key_transition_allowed) decide it inline as the walk passes. A
+# needs-decision/blocked line those cannot track by key (a malformed slug, or a
+# reserved key whose note does not speak that namespace) still declares its
+# state, so it is carried positionally instead of vanishing.
 #
 # Prints the crew's own line, untouched, so callers keep using
 # status_line_verb/status_line_note/map_log_state unchanged. Prints nothing
@@ -555,46 +559,41 @@ status_open_decisions() {  # <status-file>
 # opened has since been resolved and no plain state was ever declared - so
 # callers fall back to their own unknown/none default exactly as before.
 status_current_state_line() {  # <status-file>
-  local f=$1 line verb key note paused held open row decs='' plain=''
+  local f=$1 line verb key note paused held resolve closed='' plain=''
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
   paused=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
   held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
-  while IFS= read -r line || [ -n "$line" ]; do
+  resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
+  while IFS= read -r line; do
     case "$line" in *[![:space:]]*) ;; *) continue ;; esac
     verb=$(status_line_verb "$line")
     if [ "$verb" = "$paused" ] || [ "$verb" = "$held" ]; then
       plain=$line
-      decs=''
-      continue
+      break
     fi
     case "$verb" in
       working|done|failed)
         plain=$line
-        decs=''
+        break
         ;;
       needs-decision|blocked)
         note=$(status_line_note "$line")
         if key=$(_fm_decision_key "$line") \
           && _fm_decision_key_transition_allowed "$key" "$note"; then
-          decs="${decs}${key}"$'\t'"${line}"$'\n'
-        else
-          plain=$line
-          decs=''
+          case "$closed" in *"|$key|"*) continue ;; esac
+        fi
+        plain=$line
+        break
+        ;;
+      "$resolve")
+        note=$(status_line_note "$line")
+        if key=$(_fm_decision_key "$line") \
+          && _fm_decision_key_transition_allowed "$key" "$note"; then
+          closed="$closed|$key|"
         fi
         ;;
     esac
-  done < "$f"
-  if [ -n "$decs" ]; then
-    open=$(status_open_decisions "$f")
-    while IFS= read -r row; do
-      [ -n "$row" ] || continue
-      if _fm_open_set_has "$open" "${row%%$'\t'*}"; then
-        plain=${row#*$'\t'}
-      fi
-    done <<EOF
-$decs
-EOF
-  fi
+  done < <(awk '{ a[NR] = $0 } END { for (i = NR; i > 0; i--) print a[i] }' "$f" 2>/dev/null)
   [ -n "$plain" ] || return 1
   printf '%s' "$plain"
 }

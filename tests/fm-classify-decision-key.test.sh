@@ -373,6 +373,58 @@ EOF
   pass "captain-held closes its key in the fold and declares the current state positionally"
 }
 
+# Closing is positional: only a resolved: appended AFTER a decision closes it.
+# The current-state read settles that as it walks, so both orderings of the same
+# key must stay distinguishable, and closing the newest open decision must fall
+# back to the next one still standing rather than past it.
+test_resolution_closes_only_the_decision_it_follows() {
+  local dir f
+  dir=$(case_dir resolve-ordering)
+  f="$dir/a.status"
+  cat > "$f" <<'EOF'
+working: drafting the migration
+needs-decision [key=d1]: ship now or wait
+resolved [key=d1]: answered: ship now
+EOF
+  [ "$(status_current_state_line "$f")" = 'working: drafting the migration' ] \
+    || fail "a resolved decision stayed current: '$(status_current_state_line "$f")'"
+
+  printf 'needs-decision [key=d1]: the answer raised a new question\n' >> "$f"
+  [ "$(status_current_state_line "$f")" = 'needs-decision [key=d1]: the answer raised a new question' ] \
+    || fail "an earlier resolved: closed a later re-opening of its key: '$(status_current_state_line "$f")'"
+
+  printf 'needs-decision [key=d2]: and a second question\n' >> "$f"
+  [ "$(status_current_state_line "$f")" = 'needs-decision [key=d2]: and a second question' ] \
+    || fail "the newest open decision was not current: '$(status_current_state_line "$f")'"
+
+  printf 'resolved [key=d2]: answered: yes\n' >> "$f"
+  [ "$(status_current_state_line "$f")" = 'needs-decision [key=d1]: the answer raised a new question' ] \
+    || fail "closing the newest decision skipped a still-open older one: '$(status_current_state_line "$f")'"
+  pass "a resolution closes only the decision it follows, and the newest open decision is current"
+}
+
+# This read sits inside bin/fm-fleet-snapshot.sh's bounded per-task crew-state
+# call, and that bound expiring reports the recovery-grade `unknown` the read
+# exists to remove - so its cost must not scale with the history standing behind
+# the current state. A crew parked on an open decision is what that resting state
+# looks like, and is the shape that used to re-fold the entire log to confirm it.
+test_parked_current_state_does_not_rescan_the_whole_history() {
+  local dir f start elapsed
+  dir=$(case_dir parked-cost)
+  f="$dir/a.status"
+  awk 'BEGIN { for (i = 1; i <= 2000; i++) print "working: step " i }' > "$f"
+  printf 'needs-decision [key=d1]: ship now or wait\n' >> "$f"
+  start=$(date +%s)
+  [ "$(status_current_state_line "$f")" = 'needs-decision [key=d1]: ship now or wait' ] \
+    || fail "the parked log did not report its open decision as current state"
+  elapsed=$(( $(date +%s) - start ))
+  [ "$elapsed" -lt 5 ] \
+    || fail "reading current state from a 2001-line parked log took ${elapsed}s"
+  pass "a parked crew's current state is read without a whole-history rescan"
+}
+
 test_closing_verb_separates_resolution_from_durable_transfer
 test_closing_verb_tracks_the_last_transition_in_both_positions
 test_captain_held_closes_its_key_and_declares_the_current_state
+test_resolution_closes_only_the_decision_it_follows
+test_parked_current_state_does_not_rescan_the_whole_history
