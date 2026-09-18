@@ -262,7 +262,7 @@ ff_discovery_warn() { # <repo> <reason>
 # The final origin fetch happens only after this succeeds. FF_FETCH_ERROR
 # carries an actionable failure to ff_target.
 ff_sync_origin_fork() { # <dir>
-  local dir=$1 url rewritten status repo metadata record fork name branch parent
+  local dir=$1 url status repo metadata record fork name branch parent
   local parent_branch source fork_tip parent_tip out
   FF_ORIGIN_DEFAULT=""
   FF_FORK_UNVERIFIED=""
@@ -271,14 +271,6 @@ ff_sync_origin_fork() { # <dir>
   url=$(git -C "$dir" config --get-all remote.origin.url | head -1)
   [ -n "$url" ] || return 1
   repo=$(ff_github_repo "$url") || status=$?
-  if [ -z "$repo" ]; then
-    # An insteadOf shorthand hides the identity behind a private alias, so fall
-    # back to classifying the URL Git actually dials.
-    rewritten=$(git -C "$dir" ls-remote --get-url origin 2>/dev/null) || rewritten=$url
-    if [ "$rewritten" != "$url" ]; then
-      repo=$(ff_github_repo "$rewritten") || status=$?
-    fi
-  fi
   if [ -z "$repo" ]; then
     [ "$status" = "$FF_NOT_GITHUB" ] && return 0
     FF_FETCH_ERROR="fork discovery failed: unrecognizable origin URL $url"

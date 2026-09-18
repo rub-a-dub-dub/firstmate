@@ -51,6 +51,11 @@ This touches only the firstmate repo and its own worktrees, never anything under
    - `restart-secondmates: fm-<id>...|none`
    - `nudge-secondmates: fm-<id>...|none`
 
+   A nonzero exit does NOT mean the run did nothing and does NOT excuse you from the rest of this skill.
+   The four summary lines above are always printed and always complete, including on a nonzero exit, because the targets that did update really did update.
+   Read them and act on them either way: live secondmates may still need restarting or steering, and skipping that is exactly how a mate keeps running the stale instructions it was launched with.
+   Do not stop at step 1 because the exit code was nonzero; carry on through the steps below, and report the failure alongside what you did.
+
    The two second-mate sets are disjoint and the script owns the split; do not re-derive it.
    `restart-secondmates:` carries every live mate the pass left on the latest commit, whether it advanced or was already there.
    A mate reaches neither set only because its home was skipped, because it has no live endpoint recorded here, or because its endpoint was positively classified as dead or missing - none of those need any action from you.
