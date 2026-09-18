@@ -25,8 +25,8 @@
 # tmux actions the skill performs. The script's job is the safe git mechanics
 # plus a parseable summary telling the caller what to do next:
 #   - fork sync status when a fork advances, then one line per target
-#     (updated/already current/skipped); origin discovery/fetch/sync failure
-#     returns nonzero after the summary, including remote update failures
+#     (updated/already current/skipped); an origin classification or fork
+#     synchronization failure returns nonzero after the summary
 #   - reread-firstmate: yes|no    (did the running firstmate's instructions change)
 #   - restart-secondmates: fm-<id>...|none (every live secondmate this pass left
 #     on origin's tip - advanced OR already there - whose recorded runtime can
@@ -227,7 +227,6 @@ if [ -f "$SECONDMATES_MD" ]; then
           *) echo "remote secondmate $id: skipped on $SECONDMATE_REGISTRY_HOST: malformed update result" >&2 ;;
         esac
       else
-        FF_UPDATE_FAILED=1
         echo "remote secondmate $id: skipped on $SECONDMATE_REGISTRY_HOST: ${remote_out%%$'\n'*}" >&2
       fi
     else
@@ -246,5 +245,5 @@ echo "reread-firstmate: $reread_firstmate"
 echo "restart-secondmates:${FF_RESTART_WINDOWS:- none}"
 echo "nudge-secondmates:${FF_STEER_WINDOWS:- none}"
 
-# Discovery or required fork synchronization failure must reach remote callers.
+# An origin classification or fork synchronization failure must reach remote callers.
 exit "$FF_UPDATE_FAILED"

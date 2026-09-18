@@ -200,19 +200,50 @@ validate_secondmate_home() {
 
 # GitHub identity comes from the configured fetch URL, never the push URL
 # (which can be a gate or a different repository). Git still applies insteadOf
-# transport rewrites. Non-GitHub origins retain ordinary Git sync.
+# transport rewrites when it dials that URL. Non-GitHub origins retain ordinary
+# Git sync.
+#
+# Recognize github.com across every spelling Git accepts instead of a fixed set
+# of literals: any scheme URL, with optional userinfo and port, and the scp-like
+# [user@]host:path shorthand. Prints <owner>/<repo> for a GitHub remote; a
+# remote that definitively lives somewhere else (another host, a local path)
+# returns FF_NOT_GITHUB, and a spelling that cannot be placed at all returns
+# FF_UNCLASSIFIED so callers refuse loudly instead of skipping silently.
+FF_NOT_GITHUB=1
+FF_UNCLASSIFIED=2
 ff_github_repo() { # <url>
-  local path
-  case "$1" in
-    https://github.com/*) path=${1#https://github.com/} ;;
-    git@github.com:*) path=${1#git@github.com:} ;;
-    ssh://git@github.com/*) path=${1#ssh://git@github.com/} ;;
-    *) return 1 ;;
+  local url=$1 rest host path
+  case "$url" in
+    file://*|/*|./*|../*|~*) return "$FF_NOT_GITHUB" ;;
+    *://*) rest=${url#*://} ;;
+    *:*)
+      case "${url%%:*}" in ""|*/*) return "$FF_UNCLASSIFIED" ;; esac
+      rest="${url%%:*}/${url#*:}" ;;
+    *) return "$FF_NOT_GITHUB" ;;
   esac
+  host=${rest%%/*}
+  [ "$host" != "$rest" ] || return "$FF_UNCLASSIFIED"
+  path=${rest#*/}
+  host=${host##*@}
+  host=${host%%:*}
+  case "$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')" in
+    github.com|www.github.com) ;;
+    "") return "$FF_UNCLASSIFIED" ;;
+    *) return "$FF_NOT_GITHUB" ;;
+  esac
+  path=${path#/}
   path=${path%/}
   path=${path%.git}
-  [[ "$path" =~ ^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$ ]] || return 1
+  [[ "$path" =~ ^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$ ]] || return "$FF_UNCLASSIFIED"
   printf '%s\n' "$path"
+}
+
+# Fork discovery needs authenticated gh-axi and node. When they cannot answer,
+# no fork relationship has been established to act on, so say so on stderr and
+# leave the ordinary Git origin path intact rather than blocking every update.
+ff_discovery_warn() { # <repo> <reason>
+  printf 'fork sync: discovery skipped for %s: %s; updating from origin as configured\n' \
+    "$1" "$2" >&2
 }
 
 # Before an origin update, discover GitHub's fork relationship, even without an
@@ -221,13 +252,13 @@ ff_github_repo() { # <url>
 # Fetch both tips, prove ancestry, and push the parent's existing commit to the
 # exact fork fetch URL with an ordinary non-forced push. No local branch, merge
 # commit, configured push URL, or other ref is involved. A fork ahead of its
-# parent is already synchronized; divergent forks and all discovery/transport
-# failures fail closed. The final origin fetch happens only after this succeeds.
-# gh-axi and node are existing Firstmate prerequisites, needed here only for
-# GitHub origins. FF_FETCH_ERROR carries an actionable failure to ff_target.
+# parent is already synchronized; once a fork IS established, divergence and
+# every transport failure fail closed. An origin spelling that cannot be
+# classified at all also fails closed. The final origin fetch happens only after
+# this succeeds. FF_FETCH_ERROR carries an actionable failure to ff_target.
 ff_sync_origin_fork() { # <dir>
-  local dir=$1 url repo metadata record fork name branch parent parent_branch
-  local source remote remote_url fork_tip parent_tip out
+  local dir=$1 url rewritten status repo metadata record fork name branch parent
+  local parent_branch source fork_tip parent_tip out
   FF_ORIGIN_DEFAULT=""
   url=$(git -C "$dir" config --get-all remote.origin.url) || return 1
   case "$url" in
@@ -235,12 +266,24 @@ ff_sync_origin_fork() { # <dir>
       FF_FETCH_ERROR="fork discovery failed: multiple origin fetch URLs are ambiguous"
       return 1 ;;
   esac
-  repo=$(ff_github_repo "$url") || return 0
-  FF_FETCH_ERROR="fork discovery failed for $repo (requires authenticated gh-axi and node)"
+  repo=$(ff_github_repo "$url") || status=$?
+  if [ -z "$repo" ]; then
+    # An insteadOf shorthand hides the identity behind a private alias, so fall
+    # back to classifying the URL Git actually dials.
+    rewritten=$(git -C "$dir" ls-remote --get-url origin 2>/dev/null) || rewritten=$url
+    if [ "$rewritten" != "$url" ]; then
+      repo=$(ff_github_repo "$rewritten") || status=$?
+    fi
+  fi
+  if [ -z "$repo" ]; then
+    [ "$status" = "$FF_NOT_GITHUB" ] && return 0
+    FF_FETCH_ERROR="fork discovery failed: unrecognizable origin URL $url"
+    return 1
+  fi
   metadata=$(gh-axi api "/repos/$repo" --hostname github.com --full --jq \
     '{fork: .fork, name: .full_name, branch: .default_branch, parent: (.parent.full_name // "-"), parentBranch: (.parent.default_branch // "-")}' 2>&1) || {
-    FF_FETCH_ERROR="$FF_FETCH_ERROR: $(first_line "$metadata")"
-    return 1
+    ff_discovery_warn "$repo" "$(first_line "$metadata")"
+    return 0
   }
   # Decode only this flat, caller-selected TOON record; refuse missing, duplicate,
   # extra, or malformed fields instead of interpreting an error body as no fork.
@@ -261,31 +304,37 @@ ff_sync_origin_fork() { # <dir>
         if (!["true", "false"].includes(fields.fork)) throw Error();
         process.stdout.write(keys.map(key => fields[key]).join("\t"));
       } catch { process.exitCode = 1; }
-    });' 2>/dev/null) || return 1
+    });' 2>/dev/null) || {
+    ff_discovery_warn "$repo" "unreadable repository metadata"
+    return 0
+  }
   IFS=$'\t' read -r fork name branch parent parent_branch <<< "$record"
-  [ "$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')" ] || return 1
-  git check-ref-format "refs/heads/$branch" >/dev/null 2>&1 || return 1
+  if [ "$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')" ]; then
+    ff_discovery_warn "$repo" "metadata describes $name"
+    return 0
+  fi
+  if ! git check-ref-format "refs/heads/$branch" >/dev/null 2>&1; then
+    ff_discovery_warn "$repo" "unusable default branch $branch"
+    return 0
+  fi
   FF_ORIGIN_DEFAULT=$branch
   [ "$fork" = true ] || return 0
+
+  # A fork IS established from here on, so every remaining failure is a real
+  # synchronization failure and must stop the update.
+  FF_FETCH_ERROR="fork sync failed: $repo reports an unusable parent $parent"
   ff_github_repo "https://github.com/$parent" >/dev/null || return 1
   [ "$parent" != "$name" ] || return 1
   FF_FETCH_ERROR="fork sync refused: $repo default $branch differs from $parent default $parent_branch"
   [ "$branch" = "$parent_branch" ] || return 1
 
-  # Prefer any configured remote for the parent (including SSH), regardless of
-  # its name; otherwise derive its URL using origin's transport.
+  # Derive the parent URL from origin's own transport; no separately named
+  # upstream remote is required.
   case "$url" in
     git@*) source="git@github.com:$parent.git" ;;
     ssh://*) source="ssh://git@github.com/$parent.git" ;;
     *) source="https://github.com/$parent.git" ;;
   esac
-  while IFS= read -r remote; do
-    remote_url=$(git -C "$dir" config --get "remote.$remote.url" 2>/dev/null) || continue
-    if [ "$(ff_github_repo "$remote_url" || true)" = "$parent" ]; then
-      source=$remote_url
-      break
-    fi
-  done < <(git -C "$dir" remote)
   FF_FETCH_ERROR="fork sync failed: cannot fetch $repo/$branch"
   git -C "$dir" fetch --quiet --no-tags -- "$url" "refs/heads/$branch" 2>/dev/null || return 1
   fork_tip=$(git -C "$dir" rev-parse --verify FETCH_HEAD) || return 1

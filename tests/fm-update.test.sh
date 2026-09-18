@@ -298,12 +298,11 @@ EOF
     "a restarted remote mate must not also be steered"
   pass "T3e a legacy remote advance still restarts the live remote mate"
   touch "$w/fake/remote-fail"
-  if out=$(FM_TEST_SSH_BIN="$fake_ssh" run_update "$w"); then
-    fail "a remote fork failure did not propagate a nonzero exit"
-  fi
+  out=$(FM_TEST_SSH_BIN="$fake_ssh" run_update "$w") \
+    || fail "one failing remote host must not fail the whole fleet"
   assert_contains "$out" "fork sync failed: protected fork branch" "remote failure diagnostic survives"
   assert_contains "$out" "restart-secondmates: none" "failed remote update cannot restart"
-  pass "T3f remote fork synchronization failure propagates without a restart"
+  pass "T3f a failed remote secondmate is reported and skipped, not escalated to the fleet"
 }
 
 # --- T4: dirty secondmate is skipped, its edit preserved -------------------
@@ -534,9 +533,10 @@ new_fork_world() {
   git clone -q --bare "$w/origin.git" "$w/fork.git"
   git -C "$w/main" remote set-url origin https://github.com/operator/firstmate.git
   git -C "$w/main" config url."$w/fork.git".insteadOf https://github.com/operator/firstmate.git
+  # Every parent URL ff_sync_origin_fork can derive from origin's own transport.
   git -C "$w/main" config url."$w/origin.git".insteadOf https://github.com/author/firstmate.git
-  # Also allow a differently named parent remote using SSH in the success case.
   git -C "$w/main" config --add url."$w/origin.git".insteadOf git@github.com:author/firstmate.git
+  git -C "$w/main" config --add url."$w/origin.git".insteadOf ssh://git@github.com/author/firstmate.git
   cat > "$w/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_FAKE_DIR/api-calls"
@@ -557,15 +557,22 @@ advance_parent() {
 }
 
 test_fork_update() {
-  local layout w branch before expected out
-  for layout in absent renamed; do
-    w=$(new_world "fork-$layout")
+  local spelling w branch origin_url before expected out
+  # One fork, written four ways Git accepts. A spelling the matcher fails to
+  # place would skip synchronization and report the stale fork as current.
+  for spelling in plain credential scp ssh; do
+    w=$(new_world "fork-$spelling")
     branch=release/stable
     new_fork_world "$w" "$branch"
-    if [ "$layout" = renamed ]; then
-      git -C "$w/main" remote add source git@github.com:author/firstmate.git
-      git -C "$w/main" remote set-url origin ssh://git@github.com/operator/firstmate.git
-      git -C "$w/main" config --add url."$w/fork.git".insteadOf ssh://git@github.com/operator/firstmate.git
+    case "$spelling" in
+      plain) origin_url=https://github.com/operator/firstmate.git ;;
+      credential) origin_url=https://captain@github.com/operator/firstmate.git ;;
+      scp) origin_url=git@github.com:operator/firstmate.git ;;
+      ssh) origin_url=ssh://git@github.com/operator/firstmate.git ;;
+    esac
+    if [ "$spelling" != plain ]; then
+      git -C "$w/main" remote set-url origin "$origin_url"
+      git -C "$w/main" config --add url."$w/fork.git".insteadOf "$origin_url"
     fi
     add_sm "$w" sm1
     # add_sm starts at main; the detached home still safely follows origin's
@@ -590,7 +597,7 @@ test_fork_update() {
     out=$(run_update "$w") || fail 'repeat fork update failed'
     assert_contains "$out" 'firstmate: already current' "repeat converges"
     assert_not_contains "$out" 'fork sync: fast-forwarded' "repeat does not push"
-    pass "fork $layout parent remote: custom default, safe push, worktree convergence, idempotence"
+    pass "fork origin spelled $spelling: custom default, safe push, worktree convergence, idempotence"
   done
 }
 
@@ -630,15 +637,14 @@ test_fork_ahead_preserves_commits() {
 
 test_fork_failures() {
   local mode w before fork_before out rc
-  for mode in auth malformed multiple mismatch diverged reject offline; do
+  for mode in unclassifiable multiple mismatch diverged reject offline; do
     w=$(new_world "fork-fail-$mode")
     new_fork_world "$w"
     before=$(git -C "$w/main" rev-parse HEAD)
     advance_parent "$w"
     case "$mode" in
-      auth) touch "$w/fake/api-fail" ;;
+      unclassifiable) git -C "$w/main" remote set-url origin 'https://github.com/operator' ;;
       multiple) git -C "$w/main" config --add remote.origin.url https://github.com/author/firstmate.git ;;
-      malformed) printf 'api_response:\n  body: null\n' > "$w/fake/metadata" ;;
       mismatch) sed 's/parentBranch: main/parentBranch: different/' "$w/fake/metadata" > "$w/fake/new"; mv "$w/fake/new" "$w/fake/metadata" ;;
       diverged)
         git clone -q "$w/fork.git" "$w/fork-writer"
@@ -666,6 +672,29 @@ test_fork_failures() {
   done
 }
 
+# Discovery that cannot answer establishes no fork relationship to act on, so the
+# ordinary Git origin update must still run rather than taking the home down.
+test_fork_discovery_fallback() {
+  local mode w before out
+  for mode in auth malformed; do
+    w=$(new_world "fork-fallback-$mode")
+    new_fork_world "$w"
+    case "$mode" in
+      auth) touch "$w/fake/api-fail" ;;
+      malformed) printf 'api_response:\n  body: null\n' > "$w/fake/metadata" ;;
+    esac
+    before=$(git -C "$w/fork.git" rev-parse main)
+    advance_parent "$w"
+    out=$(run_update "$w") || fail "$mode discovery blocked the ordinary origin update"
+    assert_contains "$out" 'fork sync: discovery skipped for operator/firstmate' \
+      "$mode discovery failure is announced"
+    assert_contains "$out" 'firstmate: already current' \
+      "$mode still updates from origin as configured"
+    [ "$(git -C "$w/fork.git" rev-parse main)" = "$before" ] || fail "$mode touched the fork"
+    pass "fork discovery $mode warns and falls back to the ordinary origin update"
+  done
+}
+
 test_updates_main_and_secondmate
 test_reread_gate_is_instruction_only
 test_bin_only_advance_restarts
@@ -685,6 +714,7 @@ test_primary_update_rebinds_local_watch
 test_fork_update
 test_authoritative_origin_noop
 test_fork_failures
+test_fork_discovery_fallback
 test_fork_ahead_preserves_commits
 
 echo "# all fm-update tests passed"
