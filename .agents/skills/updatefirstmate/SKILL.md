@@ -42,7 +42,8 @@ This touches only the firstmate repo and its own worktrees, never anything under
    It synchronizes a GitHub fork before comparing this firstmate repo with origin, then updates every registered local or remote secondmate home through its placement-specific guarded path.
    `bin/fm-ff-lib.sh` owns fork discovery and synchronization; no separately named upstream remote is required, and an authoritative origin needs no fork synchronization.
    Fork discovery on a GitHub origin uses `gh-axi` API access, and advancing a fork requires Git push permission to that fork's default branch.
-   Divergent forks, mismatched upstream and fork default-branch names, an unrecognizable origin URL, or a failed fork fetch or push produce a visible failure and a nonzero exit instead of an `already current` result. An ordinary transport failure (offline, VPN, an unreachable remote host) is a reported skip and does not change the exit status.
+   Divergent forks, mismatched upstream and fork default-branch names, an unrecognizable origin URL, or a failed fork fetch or push produce a visible failure and a nonzero exit instead of an `already current` result.
+   An ordinary transport failure (offline, VPN, an unreachable remote host) is a reported skip and does not change the exit status.
    When `gh-axi` or `node` cannot answer at all, fork-ness is unknown rather than absent: the ordinary Git origin update still runs, but the status line reads `cannot confirm current: fork sync unavailable (<reason>)` instead of `already current`, so an unverified run never claims freshness.
    Resolve that reported failure before claiming the affected home is current.
    It prints a fork-sync line when a fork advances and one status line per target (`updated <old>..<new>` / `already current` / `cannot confirm current: <reason>` / `skipped: <reason>`), followed by four summary lines that tell you exactly what to do next:
