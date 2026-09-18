@@ -25,8 +25,11 @@
 # tmux actions the skill performs. The script's job is the safe git mechanics
 # plus a parseable summary telling the caller what to do next:
 #   - fork sync status when a fork advances, then one line per target
-#     (updated/already current/skipped); an origin classification or fork
-#     synchronization failure returns nonzero after the summary
+#     (updated/already current/cannot confirm current/skipped); an origin
+#     classification or fork synchronization failure returns nonzero after the
+#     summary, while an ordinary transport failure stays a reported skip
+#   - origin-verified: yes|no    (did this run actually verify currency anywhere
+#     it fast-forwarded from origin, locally and on every remote host)
 #   - reread-firstmate: yes|no    (did the running firstmate's instructions change)
 #   - restart-secondmates: fm-<id>...|none (every live secondmate this pass left
 #     on origin's tip - advanced OR already there - whose recorded runtime can
@@ -192,6 +195,17 @@ if [ -f "$SECONDMATES_MD" ]; then
     if [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ]; then
       if remote_out=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh update "$id" < /dev/null 2>&1); then
         remote_result=$(printf '%s\n' "$remote_out" | tail -1)
+        # A host that verified its fork state proves it on the result line the
+        # parent already parses; silence - including from a host too old to speak
+        # this - is read as unverified. Carried as a result the caller cannot
+        # drop, unlike the stderr diagnostic it replaces, so local and remote
+        # can never disagree about whether the run was authoritative.
+        case "$remote_result" in
+          *' verified=1')
+            remote_result=${remote_result% verified=1}
+            remote_unverified="" ;;
+          *) remote_unverified=1; FF_RUN_VERIFIED=no ;;
+        esac
         case "$remote_result" in
           synced:*)
             remote_detail=${remote_result#synced: }
@@ -217,7 +231,11 @@ if [ -f "$SECONDMATES_MD" ]; then
             fi
             ;;
           current:*)
-            echo "remote secondmate $id: already current on $SECONDMATE_REGISTRY_HOST (${remote_result#current: })"
+            if [ -n "$remote_unverified" ]; then
+              echo "remote secondmate $id: cannot confirm current on $SECONDMATE_REGISTRY_HOST (${remote_result#current: }): fork sync unavailable there"
+            else
+              echo "remote secondmate $id: already current on $SECONDMATE_REGISTRY_HOST (${remote_result#current: })"
+            fi
             # Already on the target commit is a SUCCESSFUL update of that home,
             # so it earns the same restart as one that had to advance.
             if [ -f "$STATE/$id.meta" ] && grep -qx 'kind=secondmate' "$STATE/$id.meta"; then
@@ -227,6 +245,7 @@ if [ -f "$SECONDMATES_MD" ]; then
           *) echo "remote secondmate $id: skipped on $SECONDMATE_REGISTRY_HOST: malformed update result" >&2 ;;
         esac
       else
+        FF_RUN_VERIFIED=no
         echo "remote secondmate $id: skipped on $SECONDMATE_REGISTRY_HOST: ${remote_out%%$'\n'*}" >&2
       fi
     else
@@ -241,6 +260,7 @@ fi
 # two lines below are disjoint by construction: no mate is ever restarted and
 # then also steered about the instructions it just relaunched on.
 
+echo "origin-verified: $FF_RUN_VERIFIED"
 echo "reread-firstmate: $reread_firstmate"
 echo "restart-secondmates:${FF_RESTART_WINDOWS:- none}"
 echo "nudge-secondmates:${FF_STEER_WINDOWS:- none}"

@@ -268,7 +268,16 @@ case "${rargs[1]:-}" in
       printf 'fork sync failed: protected fork branch\n' >&2
       exit 1
     fi
-    printf 'synced: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' ;;
+    if [ -f "$FM_FAKE_DIR/remote-current" ]; then
+      # cmd_sync appends " verified=1" only when its own root run verified.
+      if [ "$(cat "$FM_FAKE_DIR/remote-current")" = verified ]; then
+        printf 'current: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb verified=1\n'
+      else
+        printf 'current: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n'
+      fi
+      exit 0
+    fi
+    printf 'synced: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa verified=1\n' ;;
   state) printf 'alive\n' ;;
   *) exit 91 ;;
 esac
@@ -303,6 +312,29 @@ EOF
   assert_contains "$out" "fork sync failed: protected fork branch" "remote failure diagnostic survives"
   assert_contains "$out" "restart-secondmates: none" "failed remote update cannot restart"
   pass "T3f a failed remote secondmate is reported and skipped, not escalated to the fleet"
+
+  # PROPERTY 2: the host proves it verified currency on the result line the
+  # parent parses. A host whose fork discovery failed, or which is too old to
+  # prove anything, sends no proof - and the captain-facing summary must not
+  # then claim the mate is already current.
+  rm -f "$w/fake/remote-fail"
+  printf 'unverified\n' > "$w/fake/remote-current"
+  out=$(FM_TEST_SSH_BIN="$fake_ssh" run_update "$w") \
+    || fail "an unverified remote host must not fail the fleet"
+  assert_contains "$out" "remote secondmate sm1: cannot confirm current on remote-mac" \
+    "an unproven remote result must not be labelled already current"
+  assert_not_contains "$out" "already current on remote-mac" \
+    "the captain-facing summary must never claim unverified currency"
+  assert_contains "$out" "origin-verified: no" "an unverified remote makes the run non-authoritative"
+  pass "T3g an unverified remote host never reports already current to the captain"
+
+  printf 'verified\n' > "$w/fake/remote-current"
+  out=$(FM_TEST_SSH_BIN="$fake_ssh" run_update "$w") \
+    || fail "a verified remote host must succeed"
+  assert_contains "$out" "remote secondmate sm1: already current on remote-mac" \
+    "a proven remote result still reports already current"
+  assert_contains "$out" "origin-verified: yes" "a wholly verified run is authoritative"
+  pass "T3h a remote host that proves verification still reports already current"
 }
 
 # --- T4: dirty secondmate is skipped, its edit preserved -------------------
@@ -694,6 +726,36 @@ test_fork_unverified_is_per_object_store() {
   pass 'the fork verdict is per object store, not per run'
 }
 
+# PROPERTY 1: only a fork that IS established and genuinely could not be
+# synchronized fails the whole update. An ordinary unreachable origin - offline,
+# VPN down - is a reported skip, exit unchanged, exactly as before this change.
+test_offline_clone_does_not_fail_the_fleet() {
+  local w out
+  w=$(new_world offline-clone)
+  git clone -q "$w/origin.git" "$w/aclone"
+  git -C "$w/aclone" checkout -q --detach HEAD
+  printf 'aclone\n' > "$w/aclone/.fm-secondmate-home"
+  {
+    printf 'window=main:fm-aclone\n'
+    printf 'endpoint_task_id=aclone\n'
+    printf 'kind=secondmate\n'
+    printf 'harness=claude\n'
+    printf 'home=%s/aclone\n' "$w"
+  } > "$w/home/state/aclone.meta"
+  printf 'fm-aclone\n' >> "$w/fake/windows"
+  # Its origin is a local path: no fork to synchronize, just an unreachable one.
+  git -C "$w/aclone" remote set-url origin "$w/vanished.git"
+  printf 'more\n' >> "$w/seed/README.md"
+  git -C "$w/seed" commit -qam advance
+  git -C "$w/seed" push -q origin main
+  out=$(run_update "$w") \
+    || fail "an unreachable clone origin must not fail the whole update: $out"
+  assert_contains "$out" 'firstmate: updated ' 'the reachable primary still advances'
+  assert_contains "$out" 'secondmate aclone: skipped: fetch failed' 'the offline clone is reported'
+  assert_contains "$out" 'origin-verified: no' 'a skipped origin fast-forward is not authoritative'
+  pass 'an ordinary unreachable origin is a skip, not a whole-fleet failure'
+}
+
 test_fork_ahead_preserves_commits() {
   local w expected out
   w=$(new_world fork-ahead)
@@ -843,6 +905,7 @@ test_gh_axi_record_contract
 test_fork_sync_with_mirror_origin
 test_authoritative_origin_keeps_local_default
 test_fork_unverified_is_per_object_store
+test_offline_clone_does_not_fail_the_fleet
 test_fork_ahead_preserves_commits
 
 echo "# all fm-update tests passed"

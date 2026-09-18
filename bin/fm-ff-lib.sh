@@ -362,7 +362,16 @@ ff_sync_origin_fork() { # <dir>
 FETCHED=""
 FF_FETCH_ERROR=""
 # Sticky origin failure flag consumed by fm-update.sh after its fleet sweep.
+# Raised at exactly ONE place - the fork-synchronization branch below - so an
+# ordinary transport failure (offline, VPN, an unreachable host) stays a
+# reported skip while an established fork that could not be synchronized fails
+# the run. No other site decides this.
 FF_UPDATE_FAILED=0
+# Sticky run-level answer to "did this run actually verify currency". Rolled up
+# from the same per-store FF_FORK_UNVERIFIED the status labels read, at the one
+# point where it is known, so a label and this verdict cannot disagree.
+# fm-update.sh publishes it and the remote route carries it over the wire.
+FF_RUN_VERIFIED=yes
 fetch_once() {
   local dir=$1 common record
   common=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
@@ -375,6 +384,7 @@ fetch_once() {
   fi
   FF_FETCH_ERROR="fetch failed"
   if ! ff_sync_origin_fork "$dir"; then
+    FF_UPDATE_FAILED=1
     return 1
   fi
   FF_FETCH_ERROR="fetch failed"
@@ -489,11 +499,11 @@ ff_target() {
       return 0
     fi
     if ! fetch_once "$dir"; then
-      # shellcheck disable=SC2034 # Consumed by fm-update.sh in the sourcing shell.
-      FF_UPDATE_FAILED=1
+      FF_RUN_VERIFIED=no
       echo "$label: skipped: $FF_FETCH_ERROR"
       return 0
     fi
+    [ -z "$FF_FORK_UNVERIFIED" ] || FF_RUN_VERIFIED=no
   fi
   default=$(default_branch "$dir") || {
     echo "$label: skipped: cannot determine default branch"
