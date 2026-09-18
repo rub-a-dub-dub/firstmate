@@ -617,6 +617,47 @@ test_authoritative_origin_noop() {
   pass 'authoritative origin is a no-op even with an unrelated upstream remote'
 }
 
+# A push-to-mirrors origin (git remote set-url --add) is an ordinary supported
+# config: Git fetches from the first URL, so discovery must classify that one
+# rather than refusing the whole update.
+test_fork_sync_with_mirror_origin() {
+  local w expected out
+  w=$(new_world fork-mirror)
+  new_fork_world "$w"
+  git -C "$w/main" config --add remote.origin.url https://github.com/operator/mirror.git
+  advance_parent "$w"
+  expected=$(git -C "$w/origin.git" rev-parse main)
+  out=$(run_update "$w") || fail "a mirrored origin blocked the update: $out"
+  assert_contains "$out" 'fork sync: fast-forwarded operator/firstmate/main' \
+    'a second origin URL must not suppress fork synchronization'
+  [ "$(git -C "$w/fork.git" rev-parse main)" = "$expected" ] || fail 'mirrored origin left the fork stale'
+  pass 'a push-to-mirrors origin still synchronizes the fork'
+}
+
+# "Preserve the no-fork case as a no-op": an authoritative origin must take none
+# of the new machinery. A long-standing checkout on master whose GitHub default
+# has since been renamed to main must still fast-forward master, not be skipped
+# because origin/HEAD was repointed at a branch no fork sync needed.
+test_authoritative_origin_keeps_local_default() {
+  local w expected out
+  w=$(new_world authoritative-renamed)
+  new_fork_world "$w" master
+  printf 'fork: false\nname: operator/firstmate\nbranch: main\nparent: "-"\nparentBranch: "-"\n' \
+    > "$w/fake/metadata"
+  # Cloned back when the GitHub default was still master.
+  git -C "$w/main" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/master
+  git clone -q "$w/fork.git" "$w/authoritative-writer"
+  printf 'authoritative advance\n' >> "$w/authoritative-writer/README.md"
+  git -C "$w/authoritative-writer" commit -qam authoritative-advance
+  git -C "$w/authoritative-writer" push -q origin master
+  expected=$(git -C "$w/fork.git" rev-parse master)
+  out=$(run_update "$w") || fail "authoritative origin failed to update: $out"
+  assert_contains "$out" 'firstmate: updated ' 'a non-fork origin must still fast-forward its own default'
+  assert_not_contains "$out" 'expected main' 'a non-fork origin must not have origin/HEAD repointed'
+  [ "$(git -C "$w/main" rev-parse HEAD)" = "$expected" ] || fail 'authoritative origin remained stale'
+  pass 'an authoritative origin keeps its own default branch untouched'
+}
+
 test_fork_ahead_preserves_commits() {
   local w expected out
   w=$(new_world fork-ahead)
@@ -637,14 +678,13 @@ test_fork_ahead_preserves_commits() {
 
 test_fork_failures() {
   local mode w before fork_before out rc
-  for mode in unclassifiable multiple mismatch diverged reject offline; do
+  for mode in unclassifiable mismatch diverged reject offline; do
     w=$(new_world "fork-fail-$mode")
     new_fork_world "$w"
     before=$(git -C "$w/main" rev-parse HEAD)
     advance_parent "$w"
     case "$mode" in
       unclassifiable) git -C "$w/main" remote set-url origin 'https://github.com/operator' ;;
-      multiple) git -C "$w/main" config --add remote.origin.url https://github.com/author/firstmate.git ;;
       mismatch) sed 's/parentBranch: main/parentBranch: different/' "$w/fake/metadata" > "$w/fake/new"; mv "$w/fake/new" "$w/fake/metadata" ;;
       diverged)
         git clone -q "$w/fork.git" "$w/fork-writer"
@@ -672,8 +712,10 @@ test_fork_failures() {
   done
 }
 
-# Discovery that cannot answer establishes no fork relationship to act on, so the
-# ordinary Git origin update must still run rather than taking the home down.
+# Discovery that cannot answer leaves fork-ness UNKNOWN, not absent. The ordinary
+# Git origin update must still run rather than taking the home down, but the run
+# must never claim currency it did not verify: with upstream ahead of the fork,
+# "already current" would be a false statement on the channel callers read.
 test_fork_discovery_fallback() {
   local mode w before out
   for mode in auth malformed; do
@@ -686,12 +728,58 @@ test_fork_discovery_fallback() {
     before=$(git -C "$w/fork.git" rev-parse main)
     advance_parent "$w"
     out=$(run_update "$w") || fail "$mode discovery blocked the ordinary origin update"
-    assert_contains "$out" 'fork sync: discovery skipped for operator/firstmate' \
+    assert_contains "$out" 'fork sync: discovery unavailable for operator/firstmate' \
       "$mode discovery failure is announced"
-    assert_contains "$out" 'firstmate: already current' \
-      "$mode still updates from origin as configured"
+    assert_contains "$out" 'firstmate: cannot confirm current: fork sync unavailable' \
+      "$mode must report the result as unverified"
+    assert_not_contains "$out" 'already current' \
+      "$mode must never claim currency it could not check"
     [ "$(git -C "$w/fork.git" rev-parse main)" = "$before" ] || fail "$mode touched the fork"
-    pass "fork discovery $mode warns and falls back to the ordinary origin update"
+    pass "fork discovery $mode falls back to plain Git without claiming currency"
+  done
+}
+
+# The gh-axi metadata record is an owned wire contract between the discovery call
+# and its decoder: flat "<key>: <value>" lines for exactly fork, name, branch,
+# parent and parentBranch, as the real CLI emits for this --jq selection. Pin it
+# by behavior - the documented shape must drive a real fork sync, and a drifted
+# shape must degrade to the visible unverified path, never to a silent success.
+test_gh_axi_record_contract() {
+  local shape w expected out
+  for shape in real absent-parent json reordered-extra; do
+    w=$(new_world "gh-axi-$shape")
+    new_fork_world "$w"
+    case "$shape" in
+      real) printf 'fork: true\nname: operator/firstmate\nbranch: main\nparent: author/firstmate\nparentBranch: main\n' \
+        > "$w/fake/metadata" ;;
+      absent-parent) printf 'fork: false\nname: operator/firstmate\nbranch: main\nparent: "-"\nparentBranch: "-"\n' \
+        > "$w/fake/metadata" ;;
+      json) printf '{"fork":true,"name":"operator/firstmate","branch":"main","parent":"author/firstmate","parentBranch":"main"}\n' \
+        > "$w/fake/metadata" ;;
+      reordered-extra) printf 'branch: main\nfork: true\nname: operator/firstmate\nparent: author/firstmate\nparentBranch: main\nprivate: false\n' \
+        > "$w/fake/metadata" ;;
+    esac
+    advance_parent "$w"
+    expected=$(git -C "$w/origin.git" rev-parse main)
+    out=$(run_update "$w") || fail "$shape record failed the update: $out"
+    case "$shape" in
+      real)
+        assert_contains "$out" 'fork sync: fast-forwarded operator/firstmate/main' \
+          "the real gh-axi record shape must drive a fork sync"
+        [ "$(git -C "$w/fork.git" rev-parse main)" = "$expected" ] || fail 'fork remained stale'
+        ;;
+      absent-parent)
+        assert_contains "$out" 'firstmate: already current' \
+          'a decoded non-fork record is an ordinary no-op'
+        assert_not_contains "$out" 'fork sync:' 'a non-fork record syncs nothing'
+        ;;
+      *)
+        assert_contains "$out" 'firstmate: cannot confirm current: fork sync unavailable' \
+          "a $shape record must surface as unverified, not as silent success"
+        assert_not_contains "$out" 'fork sync: fast-forwarded' "a $shape record must not sync"
+        ;;
+    esac
+    pass "gh-axi $shape metadata record is honoured by contract"
   done
 }
 
@@ -715,6 +803,9 @@ test_fork_update
 test_authoritative_origin_noop
 test_fork_failures
 test_fork_discovery_fallback
+test_gh_axi_record_contract
+test_fork_sync_with_mirror_origin
+test_authoritative_origin_keeps_local_default
 test_fork_ahead_preserves_commits
 
 echo "# all fm-update tests passed"

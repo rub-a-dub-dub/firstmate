@@ -239,10 +239,13 @@ ff_github_repo() { # <url>
 }
 
 # Fork discovery needs authenticated gh-axi and node. When they cannot answer,
-# no fork relationship has been established to act on, so say so on stderr and
-# leave the ordinary Git origin path intact rather than blocking every update.
+# fork-ness is UNKNOWN rather than absent, so the ordinary Git origin path stays
+# intact instead of blocking every update - but FF_FORK_UNVERIFIED records the
+# reason so no caller can read the result as proof the checkout is current.
+FF_FORK_UNVERIFIED=""
 ff_discovery_warn() { # <repo> <reason>
-  printf 'fork sync: discovery skipped for %s: %s; updating from origin as configured\n' \
+  FF_FORK_UNVERIFIED="$2"
+  printf 'fork sync: discovery unavailable for %s: %s; updating from origin unverified\n' \
     "$1" "$2" >&2
 }
 
@@ -254,18 +257,19 @@ ff_discovery_warn() { # <repo> <reason>
 # commit, configured push URL, or other ref is involved. A fork ahead of its
 # parent is already synchronized; once a fork IS established, divergence and
 # every transport failure fail closed. An origin spelling that cannot be
-# classified at all also fails closed. The final origin fetch happens only after
-# this succeeds. FF_FETCH_ERROR carries an actionable failure to ff_target.
+# classified at all also fails closed. An origin GitHub reports as authoritative
+# returns before FF_ORIGIN_DEFAULT is set, so the no-fork case stays a no-op.
+# The final origin fetch happens only after this succeeds. FF_FETCH_ERROR
+# carries an actionable failure to ff_target.
 ff_sync_origin_fork() { # <dir>
   local dir=$1 url rewritten status repo metadata record fork name branch parent
   local parent_branch source fork_tip parent_tip out
   FF_ORIGIN_DEFAULT=""
-  url=$(git -C "$dir" config --get-all remote.origin.url) || return 1
-  case "$url" in
-    *$'\n'*)
-      FF_FETCH_ERROR="fork discovery failed: multiple origin fetch URLs are ambiguous"
-      return 1 ;;
-  esac
+  FF_FORK_UNVERIFIED=""
+  # Several values is the ordinary push-to-mirrors config; Git fetches from the
+  # first, and the configured spelling is the identity insteadOf must not rewrite.
+  url=$(git -C "$dir" config --get-all remote.origin.url | head -1)
+  [ -n "$url" ] || return 1
   repo=$(ff_github_repo "$url") || status=$?
   if [ -z "$repo" ]; then
     # An insteadOf shorthand hides the identity behind a private alias, so fall
@@ -313,15 +317,13 @@ ff_sync_origin_fork() { # <dir>
     ff_discovery_warn "$repo" "metadata describes $name"
     return 0
   fi
-  if ! git check-ref-format "refs/heads/$branch" >/dev/null 2>&1; then
-    ff_discovery_warn "$repo" "unusable default branch $branch"
-    return 0
-  fi
-  FF_ORIGIN_DEFAULT=$branch
   [ "$fork" = true ] || return 0
 
   # A fork IS established from here on, so every remaining failure is a real
   # synchronization failure and must stop the update.
+  FF_FETCH_ERROR="fork sync failed: $repo reports an unusable default branch $branch"
+  git check-ref-format "refs/heads/$branch" >/dev/null 2>&1 || return 1
+  FF_ORIGIN_DEFAULT=$branch
   FF_FETCH_ERROR="fork sync failed: $repo reports an unusable parent $parent"
   ff_github_repo "https://github.com/$parent" >/dev/null || return 1
   [ "$parent" != "$name" ] || return 1
@@ -528,7 +530,11 @@ ff_target() {
   }
   if [ "$local_rev" = "$base_rev" ]; then
     FF_STATUS="current"
-    echo "$label: already current"
+    if [ -n "$FF_FORK_UNVERIFIED" ] && [ "$base_mode" = origin ]; then
+      echo "$label: cannot confirm current: fork sync unavailable ($FF_FORK_UNVERIFIED)"
+    else
+      echo "$label: already current"
+    fi
     return 0
   fi
   if ! git -C "$dir" merge-base --is-ancestor HEAD "$base" 2>/dev/null; then

@@ -387,6 +387,8 @@ cmd_update() {
   root_status=$(printf '%s\n' "$update_out" | grep '^firstmate:' | tail -1)
   case "$root_status" in
     'firstmate: updated '*|'firstmate: already current'*) ;;
+    'firstmate: cannot confirm current: '*)
+      printf '%s\n' "$root_status" >&2 ;;
     *)
       [ -z "$update_out" ] || printf '%s\n' "$update_out" >&2
       die "remote code root did not complete a safe origin update"
