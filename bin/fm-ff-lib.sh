@@ -227,7 +227,7 @@ ff_github_repo() { # <url>
   host=${host##*@}
   host=${host%%:*}
   case "$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')" in
-    github.com|www.github.com) ;;
+    github.com) ;;
     "") return "$FF_UNCLASSIFIED" ;;
     *) return "$FF_NOT_GITHUB" ;;
   esac
