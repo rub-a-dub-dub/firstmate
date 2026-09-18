@@ -355,18 +355,23 @@ ff_sync_origin_fork() { # <dir>
 
 # A single fetch refreshes every worktree that shares an object store, so fetch
 # each distinct git-common-dir at most once. Used ONLY by the origin base mode;
-# the local-HEAD sync never fetches.
+# the local-HEAD sync never fetches. Each memo record is "<common-dir>\t<fork
+# verdict>": the verdict belongs to that store, so a later worktree of it is
+# labelled from its own discovery rather than from whichever store was most
+# recently fetched.
 FETCHED=""
 FF_FETCH_ERROR=""
 # Sticky origin failure flag consumed by fm-update.sh after its fleet sweep.
 FF_UPDATE_FAILED=0
 fetch_once() {
-  local dir=$1 common
+  local dir=$1 common record
   common=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
   if [ -n "$common" ]; then
-    case " $FETCHED " in
-      *" $common "*) return 0 ;;
-    esac
+    while IFS= read -r record; do
+      [ "${record%%$'\t'*}" = "$common" ] || continue
+      FF_FORK_UNVERIFIED=${record#*$'\t'}
+      return 0
+    done <<< "$FETCHED"
   fi
   FF_FETCH_ERROR="fetch failed"
   if ! ff_sync_origin_fork "$dir"; then
@@ -380,7 +385,7 @@ fetch_once() {
         "+refs/heads/$FF_ORIGIN_DEFAULT:refs/remotes/origin/$FF_ORIGIN_DEFAULT" 2>/dev/null || return 1
       git -C "$dir" symbolic-ref refs/remotes/origin/HEAD "refs/remotes/origin/$FF_ORIGIN_DEFAULT" || return 1
     fi
-    [ -n "$common" ] && FETCHED="$FETCHED $common"
+    [ -n "$common" ] && FETCHED="$FETCHED$common"$'\t'"$FF_FORK_UNVERIFIED"$'\n'
     return 0
   fi
   return 1

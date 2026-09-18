@@ -658,6 +658,42 @@ test_authoritative_origin_keeps_local_default() {
   pass 'an authoritative origin keeps its own default branch untouched'
 }
 
+# The fork verdict describes ONE object store, but a fleet can hold several: a
+# standalone-clone home carries its own origin, and fetch_once memoizes per
+# git-common-dir. The verdict must ride that memo - otherwise a worktree of an
+# unverified store inherits whichever store happened to be fetched most recently
+# and claims currency the run never checked.
+test_fork_unverified_is_per_object_store() {
+  local w out
+  w=$(new_world fork-multi-store)
+  new_fork_world "$w"
+  touch "$w/fake/api-fail"
+  advance_parent "$w"
+  # Its own origin is a local path, so its discovery succeeds and clears the
+  # verdict. Sorting before zmate puts that reset between the primary's
+  # unverified store and zmate's cache hit on that same store.
+  git clone -q "$w/origin.git" "$w/aclone"
+  git -C "$w/aclone" checkout -q --detach HEAD
+  printf 'aclone\n' > "$w/aclone/.fm-secondmate-home"
+  {
+    printf 'window=main:fm-aclone\n'
+    printf 'endpoint_task_id=aclone\n'
+    printf 'kind=secondmate\n'
+    printf 'harness=claude\n'
+    printf 'home=%s/aclone\n' "$w"
+  } > "$w/home/state/aclone.meta"
+  printf 'fm-aclone\n' >> "$w/fake/windows"
+  add_sm "$w" zmate
+  out=$(run_update "$w") || fail "multi-store update failed: $out"
+  assert_contains "$out" 'firstmate: cannot confirm current' \
+    'the primary store is the unverified one'
+  assert_contains "$out" 'secondmate aclone: already current' \
+    'a clone with its own non-GitHub origin is verified on its own terms'
+  assert_contains "$out" 'secondmate zmate: cannot confirm current' \
+    'a worktree of the unverified store must not inherit another store verdict'
+  pass 'the fork verdict is per object store, not per run'
+}
+
 test_fork_ahead_preserves_commits() {
   local w expected out
   w=$(new_world fork-ahead)
@@ -806,6 +842,7 @@ test_fork_discovery_fallback
 test_gh_axi_record_contract
 test_fork_sync_with_mirror_origin
 test_authoritative_origin_keeps_local_default
+test_fork_unverified_is_per_object_store
 test_fork_ahead_preserves_commits
 
 echo "# all fm-update tests passed"
