@@ -360,6 +360,64 @@ EOF
   pass "T3h a remote host that proves verification still reports already current"
 }
 
+# --- T3i: the host-local leg RAISES the status the parent sweep reads -------
+# T3f/T3f2 above drive the parent against a fake host that already exits 3, so
+# they prove only the consumer half. This case drives the real host-local leg
+# (bin/fm-remote-secondmate-control.sh update) against a stubbed code root, so
+# the producer of that status is under test too: ONLY this host's own
+# fm-update.sh exiting nonzero - its fork-sync classifier firing - raises
+# REMOTE_UPDATE_FAILED_STATUS, while every other failure on the verb stays the
+# generic exit 1 the parent reads as an ordinary skip.
+test_remote_leg_raises_the_fork_sync_status() {
+  local w root home control expected_status rc out
+  w="$TMP_ROOT/t3i"
+  root="$w/coderoot"
+  home="$w/sm1"
+  mkdir -p "$root" "$home/bin" "$home/state" "$home/data"
+  cp -R "$ROOT/bin" "$root/bin"
+  control="$root/bin/fm-remote-secondmate-control.sh"
+  printf 'v1\n' > "$home/AGENTS.md"
+  printf 'sm1\n' > "$home/.fm-secondmate-home"
+  # The constant is the protocol between the two halves, so read the same
+  # definition the parent sweep reads rather than restating the number.
+  expected_status=$(. "$ROOT/bin/fm-ff-lib.sh"; printf '%s\n' "$REMOTE_UPDATE_FAILED_STATUS")
+
+  # This host's own update exits nonzero: its FF_UPDATE_FAILED classifier fired.
+  cat > "$root/bin/fm-update.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'fork sync: FAILED protected fork branch\n'
+exit 1
+SH
+  chmod +x "$root/bin/fm-update.sh"
+  rc=0
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" "$control" update sm1 2>&1) || rc=$?
+  expect_code "$expected_status" "$rc" \
+    "a fork-synchronization failure on this host must raise the distinct status, not the generic die"
+  assert_contains "$out" "fork sync: FAILED protected fork branch" \
+    "the host's own classifier diagnostic must reach the parent's captured output"
+
+  # The root update completes but proves no safe origin result: an ordinary
+  # failure, not the classifier, so it stays exit 1 and the parent reads a skip.
+  cat > "$root/bin/fm-update.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'firstmate: skipped: dirty working tree\n'
+exit 0
+SH
+  chmod +x "$root/bin/fm-update.sh"
+  rc=0
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" "$control" update sm1 2>&1) || rc=$?
+  expect_code 1 "$rc" "an unsafe root origin update is an ordinary skip, not the fork-sync status"
+
+  # A home guard rejection never reaches this host's update at all, so it cannot
+  # be escalated into a fleet-wide fork-sync failure either.
+  rc=0
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" "$control" update sm2 2>&1) || rc=$?
+  expect_code 1 "$rc" "an unusable remote home is an ordinary skip, not the fork-sync status"
+  assert_contains "$out" "remote home belongs to sm1, not sm2" \
+    "the home guard must still report its own reason"
+  pass "T3i the host-local update leg raises the fork-sync status only for its own classifier's verdict"
+}
+
 # --- T4: dirty secondmate is skipped, its edit preserved -------------------
 test_dirty_secondmate_skipped() {
   local w out
@@ -910,6 +968,7 @@ test_bin_only_advance_restarts
 test_unprovable_runtime_gets_fallback_nudge
 test_dead_secondmate_gets_no_action
 test_legacy_remote_advance_restarts
+test_remote_leg_raises_the_fork_sync_status
 test_dirty_secondmate_skipped
 test_diverged_secondmate_skipped
 test_already_current_secondmate_still_restarts
