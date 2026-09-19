@@ -210,7 +210,15 @@ case "${1:-} ${2:-}" in
     exit 0
     ;;
   api\ repos/*/actions/runs\?*)
-    cat "$FM_TEST_GH_PR_RUN_COUNT"
+    # The PR 34 SHA state: a manual workflow_dispatch diagnostic run sits at
+    # the head, so an unfiltered query reports one run while the
+    # pull_request-filtered one reports the case's configured count. A reader
+    # that drops &event=pull_request therefore reads the diagnostic run as
+    # proof the checks arrived.
+    case "$*" in
+      *event=pull_request*) cat "$FM_TEST_GH_PR_RUN_COUNT" ;;
+      *) printf '1\n' ;;
+    esac
     exit 0
     ;;
   api\ repos/*/commits/*)
@@ -2721,6 +2729,70 @@ test_push_only_workflow_does_not_arm_the_dropped_event_gate() {
   pass "fm-pr-merge ignores a workflow with no pull_request trigger"
 }
 
+# Comment text is not a trigger declaration. This repository's only workflow
+# runs on push, has its pull_request trigger commented out inside the on:
+# block, mentions the word in a top-level comment after that block, and names
+# a pull_request.yml file in a path filter. It has no PR CI, so its stale,
+# zero-run head must keep merging exactly as it does today.
+test_commented_out_trigger_does_not_arm_the_dropped_event_gate() {
+  local case_dir rc head
+  head=7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a
+  case_dir=$(make_case github-commented-out-trigger)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir" 'on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/pull_request.yml"]
+  # pull_request: # disabled, too noisy
+
+# We deliberately do not run on pull_request here.
+jobs:
+  build:
+    steps:
+      - run: echo pull_request
+'
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+
+  FM_PR_MERGE_NOW_OVERRIDE=1767225600 run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/107 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "commented-out-trigger: a commented-out trigger must not arm the dropped-event gate"$'\n'"$(cat "$case_dir/stderr")"
+  assert_logged_gh_merge "$case_dir" 107 example/repo --squash
+  pass "fm-pr-merge never reads comment text as a pull_request trigger declaration"
+}
+
+# 'on': is the other YAML 1.1 quoting workaround for the on-parses-as-true
+# problem, so a workflow spelling its key that way does have PR CI and its
+# stale, zero-run head is a suspected dropped event like any other.
+test_single_quoted_on_key_arms_the_dropped_event_gate() {
+  local case_dir rc head
+  head=8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a
+  case_dir=$(make_case github-single-quoted-on-key)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir" "'on':
+  pull_request:
+    branches: [main]
+"
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+
+  set +e
+  FM_PR_MERGE_NOW_OVERRIDE=1767225600 run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/108 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "single-quoted-on-key: a stale zero-run head must refuse"
+  assert_grep 'suspected dropped CI event' "$case_dir/stderr" \
+    "single-quoted-on-key: the suspected-drop reason was not reported"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "single-quoted-on-key: gh pr merge ran on a suspected dropped CI event"
+  pass "fm-pr-merge recognises the 'on': trigger-key spelling"
+}
+
 # The ordinary case: PR CI is configured and a pull_request-event run already
 # exists at the current head. The dropped-event gate must stay out of the way
 # and let the existing green rollup govern the merge.
@@ -3348,6 +3420,8 @@ test_supersession_never_crosses_check_names
 test_undated_runs_never_supersede
 test_no_workflows_directory_merges_unaffected
 test_push_only_workflow_does_not_arm_the_dropped_event_gate
+test_commented_out_trigger_does_not_arm_the_dropped_event_gate
+test_single_quoted_on_key_arms_the_dropped_event_gate
 test_pr_ci_configured_with_a_run_present_merges_normally
 test_dropped_ci_event_within_grace_window_is_not_actionable
 test_dropped_ci_event_past_grace_window_refuses_as_suspected_drop

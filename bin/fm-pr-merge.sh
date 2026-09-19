@@ -586,17 +586,30 @@ github_checks_not_green() {
 }
 
 # Whether a workflow file's raw text declares a pull_request or
-# pull_request_target trigger. Only the "on:" trigger block is scanned (from a
-# line starting "on:" or "\"on\":" to the next unindented, non-comment line),
-# so a job step or a comment elsewhere in the file that merely mentions the
-# word is never mistaken for a trigger declaration. This is a text heuristic,
-# not a YAML parser.
+# pull_request_target trigger. Comments are stripped first, and only the
+# trigger block is scanned: from a line whose key is on:, or one of the "on": /
+# 'on': spellings that work around YAML 1.1 parsing bare on as true, to the
+# next unindented line. Within that block the word only counts where it is
+# shaped like a trigger - the inline "on: [push, pull_request]" list, a nested
+# "pull_request:" key, or a "- pull_request" sequence entry - so a
+# commented-out trigger, a comment elsewhere in the file, a path filter naming
+# a pull_request.yml file, and a job step that merely mentions the word are
+# never mistaken for a trigger declaration. This is a text heuristic, not a
+# YAML parser.
 github_workflow_declares_pull_request() {
   printf '%s\n' "$1" | awk '
-    /^on:/ || /^"on":/ { in_on = 1; print; next }
-    in_on && /^[^[:space:]#]/ { in_on = 0 }
-    in_on { print }
-  ' | grep -Eq '(^|[^A-Za-z0-9_])pull_request(_target)?([^A-Za-z0-9_]|$)'
+    { sub(/[[:space:]]*#.*$/, "") }
+    $0 ~ "^(on|\"on\"|\047on\047)[[:space:]]*:" {
+      in_on = 1
+      rest = $0
+      sub(/^[^:]*:/, "", rest)
+      if (rest ~ /(^|[^A-Za-z0-9_])pull_request(_target)?([^A-Za-z0-9_]|$)/) found = 1
+      next
+    }
+    in_on && /^[^[:space:]]/ { in_on = 0 }
+    in_on && /^[[:space:]]*(-[[:space:]]*)?pull_request(_target)?[[:space:]]*(:|$)/ { found = 1 }
+    END { exit(found ? 0 : 1) }
+  '
 }
 
 # Whether this repository has any pull_request(_target)-triggered workflow at
@@ -619,7 +632,7 @@ github_workflow_declares_pull_request() {
 #                read failure is visible rather than silently read as "no CI".
 FM_PR_GITHUB_PR_CI=unreadable
 github_repo_has_pr_ci_workflow() {
-  local listing name err_file err_text content
+  local listing name err_file err_text encoded content
   FM_PR_GITHUB_PR_CI=unreadable
   err_file=$(mktemp "${TMPDIR:-/tmp}/fm-pr-merge-workflows.XXXXXX") || return 0
   if ! listing=$(gh api "repos/$PR_OWNER/$PR_REPO/contents/.github/workflows" \
@@ -642,10 +655,13 @@ github_repo_has_pr_ci_workflow() {
       *.yml|*.yaml) ;;
       *) continue ;;
     esac
-    if ! content=$(gh api "repos/$PR_OWNER/$PR_REPO/contents/.github/workflows/$(github_urlencode_path_segment "$name")" \
-      --jq '.content // ""' 2>/dev/null | { base64 --decode 2>/dev/null || base64 -D 2>/dev/null; }); then
+    if ! encoded=$(gh api "repos/$PR_OWNER/$PR_REPO/contents/.github/workflows/$(github_urlencode_path_segment "$name")" \
+      --jq '.content // ""' 2>/dev/null); then
       return 0
     fi
+    content=$(printf '%s' "$encoded" | base64 --decode 2>/dev/null) \
+      || content=$(printf '%s' "$encoded" | base64 -D 2>/dev/null) \
+      || return 0
     if github_workflow_declares_pull_request "$content"; then
       FM_PR_GITHUB_PR_CI=yes
       return 0
