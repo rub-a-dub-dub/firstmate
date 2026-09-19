@@ -47,7 +47,13 @@
 # replay would reject. The validator pins the data path to this home's configured
 # root before any recovery mutation, then re-runs exactly that close.
 # `tasks-axi done` on an already-closed task backfills links
-# without moving the close date, so replay is idempotent. Spawn needs no marker:
+# without moving the close date, so replay is idempotent. A row retention has
+# already archived out of the backlog by replay time reads back identically to
+# one that never existed, and that absence is the outcome the close was trying
+# to reach, so replay retires the record as it would a superseded incarnation
+# instead of retrying forever against a row that can never come back; only a
+# genuine lookup failure (an unreadable backlog, a misconfigured backend, the
+# wrong home) is preserved for a later retry. Spawn needs no marker:
 # it publishes the meta first, so a crash
 # leaves the meta itself as the evidence that the row is owed a start.
 # A captain-held row uses the same record with a `mode=retain` line: replay then
