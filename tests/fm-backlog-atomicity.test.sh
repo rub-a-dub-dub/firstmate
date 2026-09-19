@@ -1812,6 +1812,10 @@ test_completion_accepts_a_row_already_archived_by_retention() {
     "teardown recorded a close that can never land against an archived row"
   assert_absent "$home/state/$id.meta" \
     "teardown kept the task record for a row already gone from the backlog"
+  assert_contains "$out" "had already left" \
+    "teardown accepted the absence without telling the operator the row was gone"
+  assert_not_contains "$out" "is closed in" \
+    "teardown reported a close it never ran as landed in a backlog holding no row"
   pass "completion accepts a row retention already archived as the close it was reaching for"
 }
 
@@ -2102,7 +2106,7 @@ test_recovery_retires_a_close_for_a_row_archived_by_retention() {
     "a close for a row retention already archived was left to retry forever"
   assert_not_contains "$out" "could not be replayed" \
     "an archived row's absence was reported as a lookup failure instead of a completed close"
-  assert_contains "$out" "nothing is left for it to close" \
+  assert_contains "$out" "had already left this backlog" \
     "a retired pending close was resolved silently, leaving the operator to infer it"
   pass "recovery retires a pending close whose row already left the backlog through retention"
 }
@@ -2484,6 +2488,10 @@ test_recovery_drops_a_close_for_a_newer_meta_incarnation() {
     "session start removed the newer task incarnation's meta"
   assert_absent "$(home_of "$case_dir")/state/$id.backlog-close" \
     "a stale recorded close was left to fire on a later restart"
+  assert_contains "$out" "still owes its own close" \
+    "discarding a superseded incarnation's close was not reported to the operator"
+  assert_not_contains "$out" "had already left this backlog" \
+    "a live In-flight row was reported as gone from the backlog"
   pass "session start drops a close recorded for an older meta incarnation"
 }
 
