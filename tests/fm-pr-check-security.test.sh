@@ -806,6 +806,36 @@ test_captain_hold_complete_append_leaves_poll_authorized() {
   pass "a captain-hold complete append after pr= leaves the merge poll authorized"
 }
 
+# The two identity invariants the parser still enforces wherever the key
+# appears, now that non-identity keys are ignored by position: exactly one
+# parseable pr= line, and every pr_head= a well-formed commit hash.
+test_tampered_identity_keys_leave_poll_unauthorized() {
+  local dir tamper rc
+  for tamper in 'pr=https://github.com/o/r/pull/99' 'pr_head=not-a-hash'; do
+    dir=$(make_case "tampered-${tamper%%=*}")
+    write_task_meta "$dir"
+    run_check_entry "$dir" task-a https://github.com/o/r/pull/1 \
+      > "$dir/stdout" 2> "$dir/stderr" || fail "could not arm the poll before appending $tamper"
+    fm_pr_poll_artifacts_valid "$dir/home/state" task-a "$POLL" \
+      || fail "the armed poll was not authorized before appending $tamper"
+    printf '%s\n' "$tamper" >> "$dir/home/state/task-a.meta"
+    ! fm_pr_poll_artifacts_valid "$dir/home/state" task-a "$POLL" \
+      || fail "a record carrying $tamper remained authorized"
+
+    rm -f "$dir/home/state/.last-check"
+    set +e
+    FM_TEST_GH_STATE=MERGED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch.out" 2> "$dir/watch.err"
+    rc=$?
+    set -e
+    [ "$rc" -eq 0 ] || fail "watcher did not complete after appending $tamper"
+    [ "$(grep -c '^check: .*: merged$' "$dir/watch.out")" -eq 0 ] \
+      || fail "a record carrying $tamper still surfaced a merged poll"
+    assert_grep 'rejected unauthenticated state checks' "$dir/watch.out" \
+      "a record carrying $tamper was not reported as an unauthenticated state check"
+  done
+  pass "a second pr= or a malformed pr_head= leaves the merge poll unauthorized"
+}
+
 test_atomic_interruption_leaves_no_partial_artifact() {
   local dir rc
   dir=$(make_case interrupted-write)
@@ -2495,6 +2525,7 @@ test_rejected_metacharacter_bytes_are_inert
 test_static_poll_contract
 test_relaunch_metadata_append_leaves_poll_authorized
 test_captain_hold_complete_append_leaves_poll_authorized
+test_tampered_identity_keys_leave_poll_unauthorized
 test_atomic_interruption_leaves_no_partial_artifact
 test_concurrent_watcher_sees_only_complete_publication
 test_poll_publication_refuses_unsafe_destinations
