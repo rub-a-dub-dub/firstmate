@@ -1269,6 +1269,9 @@ backlog_record_reconcile() {
         absent)
           echo "BOOTSTRAP_INFO: retired the pending close for $label; its backlog row had already left this backlog, so no close was left to land"
           ;;
+        absent_incomplete)
+          echo "BOOTSTRAP_INFO: retired the pending close for $label after interrupted cleanup; its backlog row had already left this backlog, so no close was left to land, and its endpoint or local copy may remain and should be reconciled"
+          ;;
         stale)
           echo "BOOTSTRAP_INFO: discarded a pending close for $label recorded by a superseded incarnation; the incarnation now on record still owes its own close"
           ;;

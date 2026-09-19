@@ -1866,6 +1866,42 @@ test_interrupted_destructive_cleanup_leaves_a_recoverable_close() {
   pass "restart recovers closes recorded before destructive cleanup"
 }
 
+# The retention incident's crash window: the row had already aged out of the
+# backlog before teardown ran, so its recorded close can never land - but the
+# destructive cleanup that was interrupted may still have left the endpoint and
+# worktree behind. Retiring the record must not downgrade that warning, which is
+# the line AGENTS.md ties the bootstrap-diagnostics load to.
+test_interrupted_cleanup_of_an_archived_row_still_warns_about_its_endpoint() {
+  local case_dir home id marker out rc=0
+  id=atomic-close-archived-interrupt-b13
+  case_dir=$(make_home close-archived-interrupt "$id")
+  home=$(home_of "$case_dir")
+  add_item "$case_dir" "$id"
+  out=$(run_ship_spawn "$case_dir" "$id") || fail "spawn failed: $out"
+  tasks-axi "done" "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  (cd "$home" \
+    && tasks-axi prune --keep 0 --state "done" --file "$(backlog_of "$case_dir")" >/dev/null)
+  [ -z "$(row_state "$case_dir" "$id")" ] \
+    || fail "the fixture's pruned row is still visible to tasks-axi show"
+  marker="$home/state/$id.backlog-close"
+  interrupt_teardown_during_treehouse_return "$case_dir"
+
+  out=$(run_teardown "$case_dir" "$id") || rc=$?
+  [ "$rc" -ne 0 ] || fail "interrupted destructive cleanup reported success"
+  assert_present "$marker" \
+    "destructive cleanup began before recording its authoritative close"
+  assert_present "$home/state/$id.meta" \
+    "interrupted destructive cleanup lost the task incarnation"
+
+  out=$(run_bootstrap "$case_dir")
+  assert_absent "$marker" \
+    "a close for a row already gone from the backlog was left to retry forever"
+  assert_absent "$home/state/$id.meta" "restart retained the interrupted task record"
+  assert_contains "$out" "endpoint or local copy may remain" \
+    "retiring an unlandable close silently dropped the orphaned-cleanup warning"
+  pass "restart retiring an archived row's close still warns that cleanup never finished"
+}
+
 test_completion_refuses_a_close_target_symlinked_to_a_directory() {
   local case_dir home id marker external out rc=0
   id=atomic-close-target-directory-symlink-b8
@@ -3111,6 +3147,7 @@ test_completion_preserves_records_when_meta_removal_fails
 test_completion_accepts_a_row_already_archived_by_retention
 test_completion_fails_loudly_and_records_the_close_it_still_owes
 test_interrupted_destructive_cleanup_leaves_a_recoverable_close
+test_interrupted_cleanup_of_an_archived_row_still_warns_about_its_endpoint
 test_completion_refuses_a_close_target_symlinked_to_a_directory
 test_completion_fails_when_its_close_marker_cannot_be_removed
 test_recovery_retries_when_a_close_marker_cannot_be_removed
