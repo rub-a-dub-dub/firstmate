@@ -48,12 +48,13 @@
 # root before any recovery mutation, then re-runs exactly that close.
 # `tasks-axi done` on an already-closed task backfills links
 # without moving the close date, so replay is idempotent. A row retention has
-# already archived out of the backlog by replay time reads back identically to
-# one that never existed, and that absence is the outcome the close was trying
-# to reach, so replay retires the record as it would a superseded incarnation
-# instead of retrying forever against a row that can never come back; only a
-# genuine lookup failure (an unreadable backlog, a misconfigured backend, the
-# wrong home) is preserved for a later retry. Spawn needs no marker:
+# already archived out of the backlog reads back identically to one that never
+# existed, and that absence is the outcome the close was trying to reach, so
+# the close itself and replay both retire the record as replay would a
+# superseded incarnation, rather than failing a cleanup that reached its goal
+# or retrying forever against a row that can never come back; only a genuine
+# lookup failure (an unreadable backlog, a misconfigured backend, the wrong
+# home) is preserved for a later retry. Spawn needs no marker:
 # it publishes the meta first, so a crash
 # leaves the meta itself as the evidence that the row is owed a start.
 # A captain-held row uses the same record with a `mode=retain` line: replay then
@@ -864,10 +865,17 @@ fm_backlog_dispatch_rollback() {
 }
 
 fm_backlog_close_transition() {
-  local meta=$1 marker=$2 data=$3 id=$4 state=$5
+  local meta=$1 marker=$2 data=$3 id=$4 state=$5 close_error
   shift 5
   [ -z "$meta" ] || fm_backlog_record_remove "$meta" "task record" "$state" || return 1
-  fm_backlog_done "$data" "$id" "$@" || return 1
+  if ! fm_backlog_done "$data" "$id" "$@"; then
+    close_error=$FM_BACKLOG_TRANSITION_ERROR
+    if fm_backlog_row_probe "$data" "$id" \
+       || [ "$FM_BACKLOG_ROW_RESULT" != not_found ]; then
+      FM_BACKLOG_TRANSITION_ERROR=$close_error
+      return 1
+    fi
+  fi
   fm_backlog_record_remove "$marker" "pending-close record" "$state"
 }
 

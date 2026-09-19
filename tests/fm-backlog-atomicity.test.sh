@@ -1788,6 +1788,33 @@ test_completion_preserves_records_when_meta_removal_fails() {
   pass "completion preserves recovery state when task-record removal fails"
 }
 
+# The incident this pairing was filed for: teardown's own close runs against a
+# row that closed and then aged out of done_keep retention. tasks-axi reports
+# the same NOT_FOUND replay treats as the close already reached, so cleanup must
+# report success instead of promising a retry that can never land.
+test_completion_accepts_a_row_already_archived_by_retention() {
+  local case_dir home id out
+  id=atomic-close-archived-b13
+  case_dir=$(make_home close-archived)
+  home=$(home_of "$case_dir")
+  add_item "$case_dir" "$id"
+  start_item "$case_dir" "$id"
+  tasks-axi "done" "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  (cd "$home" \
+    && tasks-axi prune --keep 0 --state "done" --file "$(backlog_of "$case_dir")" >/dev/null)
+  [ -z "$(row_state "$case_dir" "$id")" ] \
+    || fail "the fixture's pruned row is still visible to tasks-axi show"
+  write_task_meta "$case_dir" "$id" ship local-only "spawn_gen=spawn-close-archived"
+
+  out=$(run_teardown "$case_dir" "$id") \
+    || fail "teardown failed against a row already archived by retention: $out"
+  assert_absent "$home/state/$id.backlog-close" \
+    "teardown recorded a close that can never land against an archived row"
+  assert_absent "$home/state/$id.meta" \
+    "teardown kept the task record for a row already gone from the backlog"
+  pass "completion accepts a row retention already archived as the close it was reaching for"
+}
+
 test_completion_fails_loudly_and_records_the_close_it_still_owes() {
   local case_dir id out rc=0
   id=atomic-close-b7
@@ -2075,10 +2102,8 @@ test_recovery_retires_a_close_for_a_row_archived_by_retention() {
     "a close for a row retention already archived was left to retry forever"
   assert_not_contains "$out" "could not be replayed" \
     "an archived row's absence was reported as a lookup failure instead of a completed close"
-
-  out=$(run_bootstrap "$case_dir")
-  assert_not_contains "$out" "could not be replayed" \
-    "a retired marker somehow left work behind for a later restart to retry"
+  assert_contains "$out" "nothing is left for it to close" \
+    "a retired pending close was resolved silently, leaving the operator to infer it"
   pass "recovery retires a pending close whose row already left the backlog through retention"
 }
 
@@ -3075,6 +3100,7 @@ test_space_containing_scout_report_marker_replays
 test_trailing_newline_data_path_fails_closed
 test_control_character_data_path_is_refused_before_cleanup
 test_completion_preserves_records_when_meta_removal_fails
+test_completion_accepts_a_row_already_archived_by_retention
 test_completion_fails_loudly_and_records_the_close_it_still_owes
 test_interrupted_destructive_cleanup_leaves_a_recoverable_close
 test_completion_refuses_a_close_target_symlinked_to_a_directory
