@@ -1,0 +1,68 @@
+Remote secondmate fork-synchronization failure: end-to-end transcript
+=====================================================================
+Fleet: the firstmate host plus ONE registered REMOTE secondmate ("sm1" on host
+"remote-mac"). Only the ssh transport and the GitHub API (gh-axi) are simulated.
+Everything that decides the outcome is real: the remote host runs the actual
+bin/fm-update.sh against an actual git fork whose bare repo rejects the
+synchronizing push from a pre-receive hook, and the parent runs the actual
+bin/fm-update.sh -> bin/fm-on.sh -> bin/fm-remote-secondmate-control.sh chain.
+
+Harness: remote-fork-sync-e2e.sh (beside this file).
+
+
+### 1. BEFORE the fix (base commit 6f4c112) - the defect
+A remote home silently did not sync, yet the updater reports success.
+
+$ bin/fm-update.sh          # firstmate @ 6f4c112 (fix(update): synchronize GitHub forks before checking origin (#3))
+  (fleet: one REMOTE secondmate 'sm1' on host remote-mac)
+  (that host's code root cannot synchronize its GitHub fork: the fork
+   rejects the push with 'protected fork branch')
+
+firstmate: already current
+remote secondmate sm1: skipped on remote-mac: firstmate: skipped: fork sync failed: cannot fast-forward operator/firstmate/main: remote: protected fork branch 
+origin-verified: no
+reread-firstmate: no
+restart-secondmates: none
+nudge-secondmates: none
+
+$ echo $?
+0
+
+
+### 2. AFTER the fix (b5a3f21) - same fleet, same rejected fork push
+The host's verdict now survives as a real result and fails the run.
+
+$ bin/fm-update.sh          # firstmate @ b5a3f21 (no-mistakes(review): correct FF_UPDATE_FAILED single-raise-site comment)
+  (fleet: one REMOTE secondmate 'sm1' on host remote-mac)
+  (that host's code root cannot synchronize its GitHub fork: the fork
+   rejects the push with 'protected fork branch')
+
+firstmate: already current
+remote secondmate sm1: fork synchronization failed on remote-mac: firstmate: skipped: fork sync failed: cannot fast-forward operator/firstmate/main: remote: protected fork branch 
+origin-verified: no
+reread-firstmate: no
+restart-secondmates: none
+nudge-secondmates: none
+
+$ echo $?
+1
+
+
+### 3. AFTER the fix - an ORDINARY remote failure is still only a skip
+A failure on the same remote route that is not the fork-sync classifier
+(here the host's home guard) must not be escalated into a fleet failure.
+
+$ bin/fm-update.sh          # firstmate @ b5a3f21 (no-mistakes(review): correct FF_UPDATE_FAILED single-raise-site comment)
+  (fleet: one REMOTE secondmate 'sm1' on host remote-mac)
+  (that host fails for an ORDINARY reason unrelated to fork sync:
+   its home guard rejects the id)
+
+firstmate: already current
+remote secondmate sm1: skipped on remote-mac: error: remote home belongs to someone-else, not sm1
+origin-verified: no
+reread-firstmate: no
+restart-secondmates: none
+nudge-secondmates: none
+
+$ echo $?
+0
