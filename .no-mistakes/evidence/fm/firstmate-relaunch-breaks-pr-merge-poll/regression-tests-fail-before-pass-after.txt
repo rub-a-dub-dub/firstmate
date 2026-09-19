@@ -1,0 +1,25 @@
+Regression check: the three tests added by this change, run against the base
+commit's bin/fm-pr-lib.sh (BEFORE) and against the change under test (AFTER).
+Each run executes the real test bodies from tests/fm-pr-check-security.test.sh.
+
+BEFORE - bin/fm-pr-lib.sh at 6f4c112 (parser required pr= to be last):
+
+  $ test_relaunch_metadata_append_leaves_poll_authorized
+  not ok - a relaunch append after pr= left the poll unauthorized          [exit 1]
+
+  $ test_captain_hold_complete_append_leaves_poll_authorized
+  not ok - a captain-hold complete append after pr= left the poll unauthorized  [exit 1]
+
+  $ test_tampered_identity_keys_leave_poll_unauthorized
+  ok - a second pr= or a malformed pr_head= leaves the merge poll unauthorized  [exit 0]
+  (retained-invariant guard: passes both before and after, by design)
+
+AFTER - bin/fm-pr-lib.sh at ac8a55a:
+
+  ok - a relaunch append after pr= leaves the merge poll authorized
+  ok - a captain-hold complete append after pr= leaves the merge poll authorized
+  ok - a second pr= or a malformed pr_head= leaves the merge poll unauthorized
+  [exit 0]
+
+Full suite, AFTER, clean run of tests/fm-pr-check-security.test.sh:
+  36 tests, 0 failures, exit 0
