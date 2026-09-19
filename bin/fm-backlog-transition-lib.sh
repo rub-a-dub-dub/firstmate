@@ -104,8 +104,10 @@ FM_BACKLOG_ARCHIVE_ROW_RESULT=
 FM_BACKLOG_ARCHIVE_ROW_ERROR=
 # Set by fm_backlog_close_marker_replay: closed | closed_incomplete | retained |
 # retained_incomplete | answered | answered_incomplete | retain_unresolved |
-# absent | stale | noop. `absent` is a row that has left this backlog; `stale`
-# is a record a newer incarnation superseded, which still owes its own close.
+# absent | absent_incomplete | stale | noop. `absent` is a row that has left
+# this backlog; `stale` is a record a newer incarnation superseded, which still
+# owes its own close. The `_incomplete` twins carry the same outcome for a
+# cleanup that never finished removing the endpoint or local copy.
 # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
 FM_BACKLOG_CLOSE_REPLAY_RESULT=
 # Set by fm_backlog_close_transition: 1 when the row had already left the
@@ -1538,7 +1540,11 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
         return 0
       fi
       fm_backlog_close_marker_remove "$marker" "$state" || return 1
-      FM_BACKLOG_CLOSE_REPLAY_RESULT=absent
+      if [ "$cleanup_incomplete" = 1 ]; then
+        FM_BACKLOG_CLOSE_REPLAY_RESULT=absent_incomplete
+      else
+        FM_BACKLOG_CLOSE_REPLAY_RESULT=absent
+      fi
       return 0
       ;;
   esac
