@@ -2614,6 +2614,39 @@ test_recovery_reconcile_record_preserves_incomplete_cleanup_warning() {
   pass "durable reconcile records preserve incomplete-cleanup warnings across reports"
 }
 
+# A row that closed and then aged out of done_keep retention before its own
+# teardown's close attempt ran is indistinguishable, from tasks-axi show, from a
+# row that never existed: both return code: NOT_FOUND. That absence is the
+# outcome the close was trying to reach, so replay must retire the marker
+# instead of leaving a close that can never land against a row gone from the
+# backlog.
+test_recovery_retires_a_close_for_a_row_archived_by_retention() {
+  local case_dir id marker out
+  id=atomic-heal-archived-b13
+  case_dir=$(make_home heal-archived)
+  add_item "$case_dir" "$id"
+  start_item "$case_dir" "$id"
+  tasks-axi "done" "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  (cd "$(home_of "$case_dir")" \
+    && tasks-axi prune --keep 0 --state "done" --file "$(backlog_of "$case_dir")" >/dev/null)
+  [ -z "$(row_state "$case_dir" "$id")" ] \
+    || fail "the fixture's pruned row is still visible to tasks-axi show"
+  marker="$(home_of "$case_dir")/state/$id.backlog-close"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-archived\narg=--note\narg=local%%20main\n' \
+    "$id" "$(home_of "$case_dir")/data" > "$marker"
+
+  out=$(run_bootstrap "$case_dir")
+  assert_absent "$marker" \
+    "a close for a row retention already archived was left to retry forever"
+  assert_not_contains "$out" "could not be replayed" \
+    "an archived row's absence was reported as a lookup failure instead of a completed close"
+
+  out=$(run_bootstrap "$case_dir")
+  assert_not_contains "$out" "could not be replayed" \
+    "a retired marker somehow left work behind for a later restart to retry"
+  pass "recovery retires a pending close whose row already left the backlog through retention"
+}
+
 test_recovery_preserves_a_close_when_the_backlog_cannot_be_read() {
   local case_dir id out
   id=atomic-heal-read-error-b10
@@ -3633,6 +3666,7 @@ test_recovery_reconcile_record_reports_when_the_backend_cannot_be_resolved
 test_recovery_reconcile_record_reports_when_a_promoted_gate_kind_cannot_resolve
 test_recovery_reconcile_record_reports_when_no_deliverable_was_recorded
 test_recovery_reconcile_record_preserves_incomplete_cleanup_warning
+test_recovery_retires_a_close_for_a_row_archived_by_retention
 test_recovery_preserves_a_close_when_the_backlog_cannot_be_read
 test_recovery_retry_preserves_incomplete_cleanup_warning
 test_recovery_finishes_a_close_for_the_same_meta_incarnation
