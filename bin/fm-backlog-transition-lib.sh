@@ -50,11 +50,13 @@
 # without moving the close date, so replay is idempotent. A row retention has
 # already archived out of the backlog reads back identically to one that never
 # existed, and that absence is the outcome the close was trying to reach, so
-# the close itself and replay both retire the record as replay would a
-# superseded incarnation, rather than failing a cleanup that reached its goal
-# or retrying forever against a row that can never come back; only a genuine
-# lookup failure (an unreadable backlog, a misconfigured backend, the wrong
-# home) is preserved for a later retry. Spawn needs no marker:
+# the close itself and replay both retire the record rather than failing a
+# cleanup that reached its goal or retrying forever against a row that can
+# never come back. Neither pretends a close landed: the transition reports the
+# absence through FM_BACKLOG_CLOSE_ROW_ABSENT and replay through its own
+# `absent` result, so each caller can say what actually happened. Only a
+# genuine lookup failure (an unreadable backlog, a misconfigured backend, the
+# wrong home) is preserved for a later retry. Spawn needs no marker:
 # it publishes the meta first, so a crash
 # leaves the meta itself as the evidence that the row is owed a start.
 # A captain-held row uses the same record with a `mode=retain` line: replay then
@@ -76,9 +78,15 @@ FM_BACKLOG_ROW_ERROR=
 # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
 FM_BACKLOG_ROW_HOLD_KIND=
 # Set by fm_backlog_close_marker_replay: closed | closed_incomplete | retained |
-# retained_incomplete | answered | stale | noop.
+# retained_incomplete | answered | absent | stale | noop. `absent` is a row that
+# has left this backlog; `stale` is a record a newer incarnation superseded,
+# which still owes its own close.
 # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
 FM_BACKLOG_CLOSE_REPLAY_RESULT=
+# Set by fm_backlog_close_transition: 1 when the row had already left the
+# backlog, so the close it was asked for was accepted without one landing.
+# shellcheck disable=SC2034 # Output global, read by the sourcing caller.
+FM_BACKLOG_CLOSE_ROW_ABSENT=0
 
 # Bounded execution is fm-timeout-lib.sh's alone; source it rather than
 # re-deriving a deadline here. It is stateless, so the memoisation reason this
@@ -867,6 +875,7 @@ fm_backlog_dispatch_rollback() {
 fm_backlog_close_transition() {
   local meta=$1 marker=$2 data=$3 id=$4 state=$5 close_error
   shift 5
+  FM_BACKLOG_CLOSE_ROW_ABSENT=0
   [ -z "$meta" ] || fm_backlog_record_remove "$meta" "task record" "$state" || return 1
   if ! fm_backlog_done "$data" "$id" "$@"; then
     close_error=$FM_BACKLOG_TRANSITION_ERROR
@@ -875,6 +884,7 @@ fm_backlog_close_transition() {
       FM_BACKLOG_TRANSITION_ERROR=$close_error
       return 1
     fi
+    FM_BACKLOG_CLOSE_ROW_ABSENT=1
   fi
   fm_backlog_record_remove "$marker" "pending-close record" "$state"
 }
@@ -1237,7 +1247,7 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
       ;;
     '')
       fm_backlog_close_marker_remove "$marker" "$state" || return 1
-      FM_BACKLOG_CLOSE_REPLAY_RESULT=stale
+      FM_BACKLOG_CLOSE_REPLAY_RESULT=absent
       return 0
       ;;
   esac
