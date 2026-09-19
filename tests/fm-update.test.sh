@@ -247,7 +247,7 @@ test_dead_secondmate_gets_no_action() {
 # The host's instr= suffix is reporting detail; the parent no longer routes on it,
 # so an older host that cannot report a diff can no longer suppress the restart.
 test_legacy_remote_advance_restarts() {
-  local w out fake_ssh
+  local w out fake_ssh rc
   w=$(new_world t3e)
   fake_ssh="$w/fakebin/fake-ssh"
   cat > "$fake_ssh" <<'SH'
@@ -265,7 +265,17 @@ while IFS= read -r -d '' a; do rargs+=("$a"); done < <(decode "$argv_b64")
 case "${rargs[1]:-}" in
   update)
     if [ -f "$FM_FAKE_DIR/remote-fail" ]; then
+      # Models that host's own FF_UPDATE_FAILED classifier firing: a real
+      # fork-synchronization failure, reported with cmd_update's dedicated
+      # REMOTE_UPDATE_FAILED_STATUS (3), not the generic die exit 1.
       printf 'fork sync failed: protected fork branch\n' >&2
+      exit 3
+    fi
+    if [ -f "$FM_FAKE_DIR/remote-unreachable" ]; then
+      # Models an ordinary remote failure unrelated to the fork-sync
+      # classifier (e.g. an unsafe or unavailable home), which stays a
+      # reported skip rather than failing the whole run.
+      printf 'remote home is unavailable or unsafe\n' >&2
       exit 1
     fi
     if [ -f "$FM_FAKE_DIR/remote-current" ]; then
@@ -306,18 +316,31 @@ EOF
   assert_contains "$out" "nudge-secondmates: none" \
     "a restarted remote mate must not also be steered"
   pass "T3e a legacy remote advance still restarts the live remote mate"
+
   touch "$w/fake/remote-fail"
+  rc=0
+  out=$(FM_TEST_SSH_BIN="$fake_ssh" run_update "$w") || rc=$?
+  [ "$rc" -ne 0 ] || fail "a remote fork-synchronization failure must fail the whole run, the same class of defect this fix removes"
+  assert_contains "$out" "remote secondmate sm1: fork synchronization failed on remote-mac: fork sync failed: protected fork branch" \
+    "the remote host's classifier verdict must survive as a real result, not a dropped stderr line"
+  assert_contains "$out" "restart-secondmates: none" "a failed remote update cannot restart"
+  assert_contains "$out" "origin-verified: no" "a remote fork-sync failure is never authoritative"
+  pass "T3f a remote fork-synchronization failure fails the whole run, not merely that host"
+  rm -f "$w/fake/remote-fail"
+
+  touch "$w/fake/remote-unreachable"
   out=$(FM_TEST_SSH_BIN="$fake_ssh" run_update "$w") \
-    || fail "one failing remote host must not fail the whole fleet"
-  assert_contains "$out" "fork sync failed: protected fork branch" "remote failure diagnostic survives"
-  assert_contains "$out" "restart-secondmates: none" "failed remote update cannot restart"
-  pass "T3f a failed remote secondmate is reported and skipped, not escalated to the fleet"
+    || fail "an ordinary remote failure distinct from the fork-sync classifier must not fail the whole fleet"
+  assert_contains "$out" "remote secondmate sm1: skipped on remote-mac: remote home is unavailable or unsafe" \
+    "an ordinary remote failure stays a reported skip"
+  assert_contains "$out" "restart-secondmates: none" "a skipped remote update cannot restart"
+  pass "T3f2 an ordinary remote failure distinct from the fork-sync classifier stays a skip, not a fleet failure"
+  rm -f "$w/fake/remote-unreachable"
 
   # PROPERTY 2: the host proves it verified currency on the result line the
   # parent parses. A host whose fork discovery failed, or which is too old to
   # prove anything, sends no proof - and the captain-facing summary must not
   # then claim the mate is already current.
-  rm -f "$w/fake/remote-fail"
   printf 'unverified\n' > "$w/fake/remote-current"
   out=$(FM_TEST_SSH_BIN="$fake_ssh" run_update "$w") \
     || fail "an unverified remote host must not fail the fleet"

@@ -422,6 +422,16 @@ remote_sync_failure_reason() { # <exit-status> <output>
   first_line "$2"
 }
 
+# cmd_update raises this distinct status when a remote host's OWN fm-update.sh
+# exits nonzero, which only happens when ITS FF_UPDATE_FAILED classifier fired
+# (a real fork-synchronization failure, never an ordinary transport hiccup).
+# fm-update.sh's remote sweep checks fm-on.sh's exit status against it so that
+# classifier's verdict crosses the remote boundary as the same sticky
+# FF_UPDATE_FAILED result the local route already sets, instead of collapsing
+# into an ordinary skip the caller cannot distinguish from ubiquitous
+# transport failure.
+REMOTE_UPDATE_FAILED_STATUS=3
+
 dirty_status() {
   local dir=$1 ignore_seed_marker=${2:-no}
   if [ "$ignore_seed_marker" = yes ]; then
