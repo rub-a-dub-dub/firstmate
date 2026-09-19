@@ -354,10 +354,13 @@ ff_sync_origin_fork() { # <dir>
 FETCHED=""
 FF_FETCH_ERROR=""
 # Sticky origin failure flag consumed by fm-update.sh after its fleet sweep.
-# Raised at exactly ONE place - the fork-synchronization branch below - so an
+# Raised at exactly TWO places, both carrying the SAME verdict - an established
+# fork that could not be synchronized: the fork-synchronization branch below,
+# for a local or local-secondmate origin update, and fm-update.sh's remote
+# sweep when a host answers REMOTE_UPDATE_FAILED_STATUS, which is that host's
+# own copy of this branch reporting across the wire. On either route an
 # ordinary transport failure (offline, VPN, an unreachable host) stays a
-# reported skip while an established fork that could not be synchronized fails
-# the run. No other site decides this.
+# reported skip. No other site decides this.
 FF_UPDATE_FAILED=0
 # Sticky run-level answer to "did this run actually verify currency". Rolled up
 # from the same per-store FF_FORK_UNVERIFIED the status labels read, at the one
