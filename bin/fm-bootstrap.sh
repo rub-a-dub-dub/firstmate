@@ -1325,6 +1325,9 @@ backlog_record_reconcile() {
           # landed) and every session start after it reaches too, not just this
           # one.
           ;;
+        stale)
+          echo "BOOTSTRAP_INFO: retired the pending close for $label; nothing is left for it to close"
+          ;;
       esac
     else
       echo "BACKLOG_RECONCILE: $label: recorded backlog close could not be replayed: $FM_BACKLOG_TRANSITION_ERROR"
