@@ -238,8 +238,11 @@ JSON
   pass "fm-claude-trust.sh: preserves unrelated keys on the project-root entry"
 }
 
-# hasClaudeMdExternalIncludesApproved===false on the project-root entry is a
-# human's explicit "No, disable" answer, recorded in the SAME store their own
+# hasClaudeMdExternalIncludesApproved===false paired with
+# hasClaudeMdExternalIncludesWarningShown===true on the project-root entry is a
+# human's explicit "No, disable" answer - that pairing, and only that pairing,
+# proves the dialog actually rendered and was answered (see the consent-gating
+# block in fm-claude-trust.sh) - recorded in the SAME store their own
 # interactive sessions read. A spawn must never flip that to true on their
 # behalf: doing so would grant every later interactive session in that
 # checkout silent external-file inclusion the human declined. The whole
