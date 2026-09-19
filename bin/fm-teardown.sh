@@ -1434,6 +1434,8 @@ backlog_refresh_reminder() {
   fi
   if [ "$BACKLOG_CLOSED" = 1 ] && [ "$BACKLOG_TRANSITION" = retain ]; then
     printf '%s\n' "Backlog: $ID stays open in $backlog_display, still held for the captain with its deliverable recorded. Relay the question and close it only with bin/fm-captain-hold.sh answer."
+  elif [ "$BACKLOG_CLOSED" = 1 ] && [ "$BACKLOG_ROW_ABSENT" = 1 ]; then
+    printf '%s\n' "Backlog: $ID had already left $backlog_display, so cleanup recorded no close there. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due."
   elif [ "$BACKLOG_CLOSED" = 1 ]; then
     printf '%s\n' "Backlog: $ID is closed in $backlog_display. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due."
   else
@@ -3201,6 +3203,7 @@ if [ "$BACKEND" = herdr ]; then
 fi
 
 BACKLOG_CLOSED=0
+BACKLOG_ROW_ABSENT=0
 BACKLOG_TRANSITION=$TEARDOWN_BACKLOG_TRANSITION
 BACKLOG_TRANSITION_FLAGS=()
 [ "$BACKLOG_TRANSITION" = close ] || BACKLOG_TRANSITION_FLAGS=(--retain)
@@ -3482,6 +3485,7 @@ if [ "$BACKLOG_CLOSED" = 1 ]; then
     fi
     exit 1
   fi
+  BACKLOG_ROW_ABSENT=$FM_BACKLOG_CLOSE_ROW_ABSENT
 elif [ "$KIND" = secondmate ] && [ ! -e "$STATE" ] && [ ! -L "$STATE" ]; then
   # A nested remote retirement can keep its route record inside the home being
   # removed. remove_firstmate_home above already performed that physical
