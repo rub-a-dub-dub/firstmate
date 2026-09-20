@@ -13,7 +13,11 @@
 # is open, not a draft, mergeable, free of conflicts, and every unwaived check
 # is green at the exact current head commit, where github_checks_not_green below
 # owns what makes a check green and judges each one by its current run.
-# An empty check rollup is never read as green on its own. The rule has two
+# An absent pull_request check is never read as a passing one. The rule does
+# NOT look at the rollup at all - not at whether it is empty, and not at what
+# it reports - because the rollup is the very surface that collapsed "no CI
+# configured" and "the checks never arrived" into one green-looking string.
+# The rule has two
 # steps. First, repo-level: does any workflow declare a pull_request or
 # pull_request_target trigger (github_repo_has_pr_ci_workflow)? A declared
 # trigger ARMS the rule; a repository that declares none genuinely has no PR
@@ -24,17 +28,24 @@
 # rather than by whether any run object exists at the SHA - a workflow_dispatch
 # diagnostic run leaves a run on the same SHA without ever carrying the
 # pull_request event and without ever attaching to the PR, and counting it
-# would read a manual diagnostic as proof the checks arrived. Zero such runs
-# refuse the merge either way: as "not arrived yet, re-check" while the head
-# COMMIT is younger than the grace window, and as a suspected dropped CI event
-# once it is older, because GitHub's own pull_request delivery to Actions can
+# would read a manual diagnostic as proof the checks arrived. A run count of
+# zero refuses the merge unconditionally, whatever the rollup says beside it;
+# the head commit's age only chooses the wording, "not arrived yet, re-check"
+# while it is younger than the grace window and a suspected dropped event once
+# it is older, because GitHub's own pull_request delivery to Actions can
 # silently drop for a given push. The window is measured from the head commit's
 # own date, never from the pull request's updatedAt, which any comment, label
 # or approval bumps and which would therefore reset the clock on the ordinary
-# approve-then-merge path. A read that cannot confirm one way or the other
-# leaves today's merge behavior untouched and says so on stderr, because an
-# inconclusive read must never become a refusal a healthy pull request cannot
-# clear. Every failing condition is reported, not
+# approve-then-merge path. Because both ages refuse, a commit date that cannot
+# be read cannot flip the verdict either: it only falls back to the wording
+# that names both causes. The one read that still leaves today's merge behavior
+# untouched is the one taken BEFORE any absence is confirmed - an unreadable
+# workflow listing or an unreadable run count - and it says so on stderr,
+# because an inconclusive read must never become a refusal a healthy pull
+# request cannot clear. The cost of refusing unconditionally is accepted and
+# deliberate: a pull request whose only matching workflow is filtered out by
+# branches or paths produces no run and cannot be merged through this script.
+# Every failing condition is reported, not
 # just the first. The verified head is then passed to gh as
 # --match-head-commit, so a push that lands between that read and the merge
 # fails the merge instead of landing commits nothing verified. Reading that
@@ -151,9 +162,10 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 # event rather than ordinary in-flight delivery latency: normal delivery
 # lands in 2-3 seconds observed, so 5 minutes is roughly 100x that, generous
 # enough to absorb jitter without false-alarming a check that simply has not
-# reported yet. Fixed rather than tunable, because an environment-supplied
-# window is an override of a merge gate that exists to be un-overridable;
-# FM_PR_MERGE_NOW_OVERRIDE is the one seam tests use, by pinning "now".
+# reported yet. Fixed rather than tunable, and read against the real clock
+# with no override seam of any kind, because anything an environment can supply
+# here is an override of a merge gate that exists to be un-overridable; tests
+# pin "now" by mocking date itself.
 FM_PR_MERGE_CI_GRACE_SECS=300
 
 if [ "$#" -lt 2 ]; then
@@ -707,23 +719,29 @@ WORKFLOWS
 # FM_PR_GITHUB_DROPPED_CI to:
 #   present    - at least one pull_request-event run exists at this head; the
 #                ordinary check-rollup logic above already judges it.
-#   grace      - zero such runs, but the head commit is younger than
+#   grace      - zero such runs, and the head commit is provably younger than
 #                FM_PR_MERGE_CI_GRACE_SECS; not arrived yet, not actionable.
 #                Refused all the same, because merging a head whose checks are
 #                still in flight is the same unverified merge as merging a
 #                dropped one; the refusal says to re-check rather than to act.
-#   dropped    - zero such runs and the head commit is older than the grace
-#                window: a suspected dropped event. Never treated as green.
-#   unreadable - the run count or the commit's push time could not be read.
-#                Treated like "present" by the caller (no new refusal) for
-#                the same reason github_repo_has_pr_ci_workflow's "unreadable"
-#                never arms this check: an inconclusive read must never turn
-#                into a merge refusal nothing but a genuinely dropped event
-#                should cause. The caller prints a stderr note so the
-#                disarmed gate is visible.
+#   dropped    - zero such runs, and the head commit is older than the grace
+#                window or its age could not be established. Never green.
+#   unreadable - the run count itself could not be read, so no absence was ever
+#                confirmed. Treated like "present" by the caller (no new
+#                refusal) for the same reason github_repo_has_pr_ci_workflow's
+#                "unreadable" never arms this check: an inconclusive read must
+#                never turn into a merge refusal nothing but a genuinely
+#                dropped event should cause. The caller prints a stderr note so
+#                the disarmed gate is visible.
+#
+# Once the run count confirms zero, every remaining path refuses. The commit
+# date is read only to choose between the two refusal wordings and can never
+# return the verdict to "merge": a failed date read, an unparseable date, or an
+# unreadable clock all land on "dropped", whose wording already covers an age
+# it could not establish.
 FM_PR_GITHUB_DROPPED_CI=unreadable
 github_check_dropped_ci_event() {
-  local sha=$1 total committer_date commit_epoch now_epoch age
+  local sha=$1 total committer_date commit_epoch now_epoch
   FM_PR_GITHUB_DROPPED_CI=unreadable
   if ! total=$(gh api "repos/$PR_OWNER/$PR_REPO/actions/runs?head_sha=$sha&event=pull_request" \
     --jq '.total_count' 2>/dev/null); then
@@ -736,20 +754,16 @@ github_check_dropped_ci_event() {
     FM_PR_GITHUB_DROPPED_CI=present
     return 0
   fi
-  if ! committer_date=$(gh api "repos/$PR_OWNER/$PR_REPO/commits/$sha" \
-    --jq '.commit.committer.date' 2>/dev/null); then
-    return 0
-  fi
+  FM_PR_GITHUB_DROPPED_CI=dropped
+  committer_date=$(gh api "repos/$PR_OWNER/$PR_REPO/commits/$sha" \
+    --jq '.commit.committer.date' 2>/dev/null) || return 0
   commit_epoch=$(fm_utc_iso_to_epoch "$committer_date") || return 0
-  now_epoch=${FM_PR_MERGE_NOW_OVERRIDE:-$(date -u +%s)}
+  now_epoch=$(date -u +%s 2>/dev/null) || return 0
   case "$now_epoch" in
     ''|*[!0-9]*) return 0 ;;
   esac
-  age=$((now_epoch - commit_epoch))
-  if [ "$age" -lt "$FM_PR_MERGE_CI_GRACE_SECS" ]; then
+  if [ "$((now_epoch - commit_epoch))" -lt "$FM_PR_MERGE_CI_GRACE_SECS" ]; then
     FM_PR_GITHUB_DROPPED_CI=grace
-  else
-    FM_PR_GITHUB_DROPPED_CI=dropped
   fi
 }
 
@@ -808,11 +822,14 @@ FIELDS
     return 1
   fi
 
-  # An empty statusCheckRollup reads as vacuously green above - the exact trap
-  # this closes (report Section 2). Only a positively confirmed pull_request
-  # trigger arms this: "no" and "unreadable" both leave today's merge
-  # behavior untouched, and an inconclusive read says so on stderr rather than
-  # disarming the gate in silence.
+  # github_checks_not_green above judges whatever the rollup reports and cannot
+  # see what never arrived - the exact trap this closes (report Section 2). It
+  # runs independently of the rollup, so a rollup made non-empty and green by a
+  # workflow_dispatch diagnostic run, a push-triggered run, or an external
+  # status context does not satisfy it. Only a positively confirmed
+  # pull_request trigger arms it: "no" and "unreadable" both leave today's
+  # merge behavior untouched, and an inconclusive read says so on stderr rather
+  # than disarming the gate in silence.
   github_repo_has_pr_ci_workflow
   case "$FM_PR_GITHUB_PR_CI" in
     unreadable)
@@ -822,14 +839,14 @@ FIELDS
       github_check_dropped_ci_event "$live_head"
       case "$FM_PR_GITHUB_DROPPED_CI" in
         unreadable)
-          echo "note: could not read the pull_request-event run count or head commit date for head $live_head, so the dropped-CI-event check is disarmed for this merge attempt" >&2
+          echo "note: could not read the pull_request-event run count for head $live_head, so no absence was confirmed and the dropped-CI-event check is disarmed for this merge attempt" >&2
           ;;
         grace)
           refusals="$refusals  - no pull_request-triggered check has reported for head $live_head yet, and its commit is younger than the delivery grace window; re-check shortly
 "
           ;;
         dropped)
-          refusals="$refusals  - suspected dropped CI event: no pull_request-triggered check ever reported for head $live_head, and its commit is older than the delivery grace window; this is never treated as green
+          refusals="$refusals  - no pull_request-triggered check has reported for head $live_head, and its commit is already past the delivery grace window: wait and retry this merge first, because a run still on its way looks identical here once the commit has aged out of the window, and treat it as a suspected dropped CI event only if a retry still finds none. Neither is ever treated as green
 "
           ;;
       esac

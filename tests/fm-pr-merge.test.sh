@@ -28,6 +28,7 @@ MR_STALE_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 
 JQ_BIN=$(command -v jq) || fail "these tests read glab's JSON with the real jq, which was not found"
 REAL_MV=$(command -v mv) || fail "these tests need mv to simulate a failed poll publish"
+REAL_DATE=$(command -v date) || fail "these tests need date to pin the grace-window clock"
 
 # Build a fresh sandbox for one test case: a state dir with task metadata and a
 # directory for its forge-command mocks. Echoes the case directory.
@@ -222,6 +223,10 @@ case "${1:-} ${2:-}" in
     exit 0
     ;;
   api\ repos/*/commits/*)
+    if [ -f "${FM_TEST_GH_COMMIT_FAIL:-}" ]; then
+      echo 'gh: Bad gateway (HTTP 502)' >&2
+      exit 1
+    fi
     cat "$FM_TEST_GH_COMMIT_DATE"
     exit 0
     ;;
@@ -314,11 +319,40 @@ set_pr_run_count() {
   printf '%s\n' "$count" > "$case_dir/github-pr-run-count"
 }
 
+# The head commit's date read fails outright, the way a 502 or a secondary rate
+# limit fails it, so a case can prove what the gate does when it cannot
+# establish the age of a head whose run count it already read as zero.
+fail_commit_date() {
+  local case_dir=$1
+  : > "$case_dir/github-commit-fail"
+}
+
 # The head commit's committer date, as github_check_dropped_ci_event reads it
-# to judge the grace window against FM_PR_MERGE_NOW_OVERRIDE.
+# to judge the grace window against the clock pinned by pin_now.
 set_commit_date() {
   local case_dir=$1 date=$2
   printf '%s\n' "$date" > "$case_dir/github-commit-date"
+}
+
+# Pin what the merge script sees as "now" to a fixed epoch, so a grace-window
+# case is not a race against the wall clock. The script takes its clock from
+# date itself and offers no override, so this mocks the command: only the bare
+# `date -u +%s` reading of now is answered from the case, and every other form
+# - including both the `date -u -j -f ...` (BSD) and `date -u -d ...` (GNU)
+# spellings fm_utc_iso_to_epoch tries in turn - is handed to the real date, so
+# the ISO parsing under test stays the platform's own.
+pin_now() {
+  local case_dir=$1 epoch=$2
+  printf '%s\n' "$epoch" > "$case_dir/now-epoch"
+  cat > "$case_dir/fakebin/date" <<'SH'
+#!/usr/bin/env bash
+if [ "$#" -eq 2 ] && [ "$1" = -u ] && [ "$2" = +%s ]; then
+  cat "$FM_TEST_NOW_EPOCH"
+  exit 0
+fi
+exec "$FM_TEST_REAL_DATE" "$@"
+SH
+  chmod +x "$case_dir/fakebin/date"
 }
 
 add_failing_poll_publish_mv() {
@@ -466,6 +500,7 @@ run_pr_merge() {
   FM_TEST_GH_WORKFLOW_CONTENT_B64="$case_dir/github-workflow-content-b64" \
   FM_TEST_GH_PR_RUN_COUNT="$case_dir/github-pr-run-count" \
   FM_TEST_GH_COMMIT_DATE="$case_dir/github-commit-date" \
+  FM_TEST_GH_COMMIT_FAIL="$case_dir/github-commit-fail" \
   FM_TEST_GH_VIEW_JSON="$case_dir/github-view.json" \
   FM_TEST_GH_HEAD="$case_dir/github-head" \
   FM_TEST_GH_MERGE_RC_FILE="$case_dir/github-merge-rc" \
@@ -481,6 +516,8 @@ run_pr_merge() {
   FM_TEST_AWAY_MUTATE_RC="$case_dir/away-mutate-rc" \
   FM_TEST_AWAY_GRANTS_AT_MERGE="$case_dir/away-grants-at-merge" \
   FM_TEST_REAL_MV="$REAL_MV" \
+  FM_TEST_REAL_DATE="$REAL_DATE" \
+  FM_TEST_NOW_EPOCH="$case_dir/now-epoch" \
   FM_TEST_GLAB_LOG="$case_dir/glab.log" \
   FM_TEST_GLAB_JSON="$case_dir/mr.json" \
   HOME="${FM_TEST_USER_HOME:-$case_dir/user-home}" \
@@ -2720,8 +2757,9 @@ test_push_only_workflow_does_not_arm_the_dropped_event_gate() {
   set_push_only_workflow "$case_dir"
   set_pr_run_count "$case_dir" 0
   set_commit_date "$case_dir" 2026-01-01T00:00:00Z
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
 
-  FM_PR_MERGE_NOW_OVERRIDE=1767225600 run_pr_merge "$case_dir" task-x1 \
+  run_pr_merge "$case_dir" task-x1 \
     https://github.com/example/repo/pull/102 \
     > "$case_dir/stdout" 2> "$case_dir/stderr" \
     || fail "push-only-workflow: a push-only workflow must not arm the dropped-event gate"
@@ -2754,8 +2792,9 @@ jobs:
 '
   set_pr_run_count "$case_dir" 0
   set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
 
-  FM_PR_MERGE_NOW_OVERRIDE=1767225600 run_pr_merge "$case_dir" task-x1 \
+  run_pr_merge "$case_dir" task-x1 \
     https://github.com/example/repo/pull/107 \
     > "$case_dir/stdout" 2> "$case_dir/stderr" \
     || fail "commented-out-trigger: a commented-out trigger must not arm the dropped-event gate"$'\n'"$(cat "$case_dir/stderr")"
@@ -2784,8 +2823,9 @@ test_nested_input_named_pull_request_does_not_arm_the_dropped_event_gate() {
 '
   set_pr_run_count "$case_dir" 0
   set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
 
-  FM_PR_MERGE_NOW_OVERRIDE=1767225600 run_pr_merge "$case_dir" task-x1 \
+  run_pr_merge "$case_dir" task-x1 \
     https://github.com/example/repo/pull/109 \
     > "$case_dir/stdout" 2> "$case_dir/stderr" \
     || fail "nested-input-named-pull-request: a nested input key must not arm the dropped-event gate"$'\n'"$(cat "$case_dir/stderr")"
@@ -2808,9 +2848,10 @@ test_single_quoted_on_key_arms_the_dropped_event_gate() {
 "
   set_pr_run_count "$case_dir" 0
   set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
 
   set +e
-  FM_PR_MERGE_NOW_OVERRIDE=1767225600 run_pr_merge "$case_dir" task-x1 \
+  run_pr_merge "$case_dir" task-x1 \
     https://github.com/example/repo/pull/108 \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
@@ -2846,18 +2887,18 @@ test_pr_ci_configured_with_a_run_present_merges_normally() {
 # than the grace window: not arrived yet, not actionable, and never reported
 # as a suspected drop.
 test_dropped_ci_event_within_grace_window_is_not_actionable() {
-  local case_dir rc head now
+  local case_dir rc head
   head=4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a
-  now=1767225600 # 2026-01-01T00:00:00Z
   case_dir=$(make_case github-ci-grace-window)
   mkdir -p "$case_dir/wt"
   add_gh_mocks "$case_dir" "$head"
   set_pr_ci_workflow "$case_dir"
   set_pr_run_count "$case_dir" 0
   set_commit_date "$case_dir" 2025-12-31T23:57:00Z # 180s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
 
   set +e
-  FM_PR_MERGE_NOW_OVERRIDE=$now run_pr_merge "$case_dir" task-x1 \
+  run_pr_merge "$case_dir" task-x1 \
     https://github.com/example/repo/pull/104 \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
@@ -2877,18 +2918,18 @@ test_dropped_ci_event_within_grace_window_is_not_actionable() {
 # - a genuinely green-looking rollup (empty statusCheckRollup) must never be
 # merged.
 test_dropped_ci_event_past_grace_window_refuses_as_suspected_drop() {
-  local case_dir rc head now
+  local case_dir rc head
   head=5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
-  now=1767225600 # 2026-01-01T00:00:00Z
   case_dir=$(make_case github-ci-suspected-drop)
   mkdir -p "$case_dir/wt"
   add_gh_mocks "$case_dir" "$head"
   set_pr_ci_workflow "$case_dir"
   set_pr_run_count "$case_dir" 0
   set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
 
   set +e
-  FM_PR_MERGE_NOW_OVERRIDE=$now run_pr_merge "$case_dir" task-x1 \
+  run_pr_merge "$case_dir" task-x1 \
     https://github.com/example/repo/pull/105 \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
@@ -2896,6 +2937,8 @@ test_dropped_ci_event_past_grace_window_refuses_as_suspected_drop() {
   expect_code 1 "$rc" "ci-suspected-drop: a stale zero-run head must refuse"
   assert_grep 'suspected dropped CI event' "$case_dir/stderr" \
     "ci-suspected-drop: the suspected-drop reason was not reported"
+  assert_grep 'wait and retry this merge first' "$case_dir/stderr" \
+    "ci-suspected-drop: the refusal must offer the retry before the drop verdict"
   assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "ci-suspected-drop: gh pr merge ran on a suspected dropped CI event"
 
@@ -2911,6 +2954,35 @@ test_dropped_ci_event_past_grace_window_refuses_as_suspected_drop() {
   assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "ci-suspected-drop: gh pr merge ran under --allow-red on a suspected dropped event"
   pass "fm-pr-merge never treats a suspected dropped CI event as green, even with --allow-red"
+}
+
+# The head's run count already confirmed zero pull_request-event runs, and only
+# then does the commit-date read fail. Both readable ages refuse, so the date
+# can never do more than choose the wording - an unreadable one must not hand
+# back the merge. This is the PR-34 state reached through a 502.
+test_unreadable_head_commit_date_still_refuses_a_zero_run_head() {
+  local case_dir rc head
+  head=1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b
+  case_dir=$(make_case github-ci-unreadable-commit-date)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir"
+  set_pr_run_count "$case_dir" 0
+  fail_commit_date "$case_dir"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/110 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "ci-unreadable-commit-date: a confirmed zero-run head must refuse whatever its age reads as"
+  assert_grep 'no pull_request-triggered check has reported' "$case_dir/stderr" \
+    "ci-unreadable-commit-date: the absent-check reason was not reported"
+  assert_no_grep 'disarmed for this merge attempt' "$case_dir/stderr" \
+    "ci-unreadable-commit-date: a confirmed absence must never disarm the gate"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "ci-unreadable-commit-date: gh pr merge ran on a head with zero pull_request runs"
+  pass "fm-pr-merge refuses a zero-run head even when the head commit date cannot be read"
 }
 
 # A transient failure to list or read workflow files must never become a new
@@ -3458,6 +3530,7 @@ test_single_quoted_on_key_arms_the_dropped_event_gate
 test_pr_ci_configured_with_a_run_present_merges_normally
 test_dropped_ci_event_within_grace_window_is_not_actionable
 test_dropped_ci_event_past_grace_window_refuses_as_suspected_drop
+test_unreadable_head_commit_date_still_refuses_a_zero_run_head
 test_unreadable_workflow_listing_does_not_block_a_green_merge
 test_allow_red_still_waives_only_the_current_failure
 test_allow_red_is_refused_while_away
