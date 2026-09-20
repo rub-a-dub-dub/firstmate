@@ -1,0 +1,45 @@
+Regression proof: the five new/changed cases in tests/fm-backlog-atomicity.test.sh
+fail against base 6339e2d and pass against this change (3fe19dd).
+
+Each case was run alone, with only bin/fm-backlog-transition-lib.sh, bin/fm-bootstrap.sh
+and bin/fm-teardown.sh swapped between revisions. tasks-axi 0.2.5 on PATH.
+
+AGAINST BASE 6339e2d
+--------------------
+test_completion_accepts_a_row_already_archived_by_retention
+  not ok - teardown failed against a row already archived by retention: error:
+  atomic-close-archived-b13's endpoint and local copy are cleaned up, but its backlog
+  item could not be closed atomically (error: "Task \"atomic-close-archived-b13\" not
+  found in this backlog"); the pending close is recorded and the next session start
+  retries it
+      ^ this is the filed incident's error, reproduced verbatim
+
+test_interrupted_cleanup_of_an_archived_row_still_warns_about_its_endpoint
+  not ok - destructive cleanup began before recording its authoritative close
+
+test_recovery_retires_a_close_for_a_row_archived_by_retention
+  not ok - a retired pending close was resolved silently, leaving the operator to
+  infer it (missing: 'had already left this backlog')
+
+test_recovery_reports_a_row_that_left_the_backlog_mid_close
+  not ok - a close whose row left the backlog mid-replay was left to retry forever
+
+test_recovery_drops_a_close_for_a_newer_meta_incarnation
+  not ok - discarding a superseded incarnation's close was not reported to the
+  operator (missing: 'still owes its own close')
+
+AGAINST THIS CHANGE 3fe19dd
+---------------------------
+(run together with four pre-existing neighbours that guard the genuine-failure path,
+ so the acceptance cannot have been widened into swallowing real errors)
+
+ok - completion accepts a row retention already archived as the close it was reaching for
+ok - completion refuses to report success while its item is still open, and records what it owes
+ok - restart recovers closes recorded before destructive cleanup
+ok - restart retiring an archived row's close still warns that cleanup never finished
+ok - session start finishes a close an interrupted cleanup recorded but never landed
+ok - recovery retires a pending close whose row already left the backlog through retention
+ok - recovery reports a close whose row left the backlog inside its own replay window
+ok - session start preserves a pending close across a transient backlog read failure
+ok - recovery preserves incomplete-cleanup evidence across a failed replay
+ok - session start drops a close recorded for an older meta incarnation

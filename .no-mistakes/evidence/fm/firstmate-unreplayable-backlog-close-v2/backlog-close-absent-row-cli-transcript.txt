@@ -1,0 +1,98 @@
+Unreplayable backlog close — end-to-end CLI transcript
+======================================================
+
+Incident (from the intent): a teardown ran for a task whose backlog row had closed
+and then aged out of done_keep retention. Cleanup succeeded, but the close could not
+be recorded, and the pending-close record it left behind could never land.
+
+Both halves below drive the REAL bin/fm-teardown.sh and bin/fm-bootstrap.sh against a
+real markdown backlog and the real tasks-axi CLI (v0.2.5). The only difference between
+the BEFORE and AFTER halves is which revision bin/fm-backlog-transition-lib.sh,
+bin/fm-bootstrap.sh and bin/fm-teardown.sh are checked out at:
+  BEFORE = 6339e2d (base)   AFTER = 3fe19dd (this change)
+
+Long temp paths below are the throwaway fixture homes each run builds.
+
+
+###############################################################################
+#  BEFORE  (base 6339e2d)
+###############################################################################
+
+========== SCENARIO A [BEFORE] - teardown of a task whose row aged out of done_keep retention ==========
+$ tasks-axi show demo-retention-aged-out --file data/backlog.md
+  error: "Task \"demo-retention-aged-out\" not found in this backlog"
+  code: NOT_FOUND
+  help[1]: Run `tasks-axi list --file=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-backlog-atomicity.QTug8Q/evidence-a-BEFORE/home/data/backlog.md` to see existing tasks
+
+$ bin/fm-teardown.sh          # operator finishes the task
+  error: demo-retention-aged-out's endpoint and local copy are cleaned up, but its backlog item could not be closed atomically (error: "Task \"demo-retention-aged-out\" not found in this backlog"); the pending close is recorded and the next session start retries it
+  [exit status: 1]
+
+$ ls home/state/
+  demo-retention-aged-out.backlog-close
+  terminal-outcomes
+  -> a pending close record remains, to be retried at every session start
+
+========== SCENARIO B [BEFORE] - session start meets a pending close whose row already left the backlog ==========
+$ cat home/state/demo-pending-close-unlandable.backlog-close
+  id=demo-pending-close-unlandable
+  data=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-backlog-atomicity.QTug8Q/evidence-b-BEFORE/home/data
+  spawn_gen=spawn-demo
+  arg=--note
+  arg=local%20main
+
+$ bin/fm-bootstrap.sh         # session start, pass 1
+  -> pending close record STILL PRESENT after session start
+
+$ bin/fm-bootstrap.sh         # session start, pass 2
+  -> pending close record retired
+
+
+###############################################################################
+#  AFTER  (this change, 3fe19dd)
+###############################################################################
+
+========== SCENARIO A [AFTER] - teardown of a task whose row aged out of done_keep retention ==========
+$ tasks-axi show demo-retention-aged-out --file data/backlog.md
+  error: "Task \"demo-retention-aged-out\" not found in this backlog"
+  code: NOT_FOUND
+  help[1]: Run `tasks-axi list --file=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-backlog-atomicity.ChFYWf/evidence-a-AFTER/home/data/backlog.md` to see existing tasks
+
+$ bin/fm-teardown.sh          # operator finishes the task
+  teardown demo-retention-aged-out complete (window firstmate:fm-demo-retention-aged-out, worktree /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-backlog-atomicity.ChFYWf/evidence-a-AFTER/absent-worktree)
+  Backlog: demo-retention-aged-out had already left /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-backlog-atomicity.ChFYWf/evidence-a-AFTER/home/data/backlog.md, so cleanup recorded no close there. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+  [exit status: 0]
+
+$ ls home/state/
+  home-summary.json
+  terminal-outcomes
+  -> no pending close record left behind
+
+========== SCENARIO B [AFTER] - session start meets a pending close whose row already left the backlog ==========
+$ cat home/state/demo-pending-close-unlandable.backlog-close
+  id=demo-pending-close-unlandable
+  data=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-backlog-atomicity.ChFYWf/evidence-b-AFTER/home/data
+  spawn_gen=spawn-demo
+  arg=--note
+  arg=local%20main
+
+$ bin/fm-bootstrap.sh         # session start, pass 1
+  BOOTSTRAP_INFO: retired the pending close for demo-pending-close-unlandable; its backlog row had already left this backlog, so no close was left to land
+  -> pending close record retired
+
+
+========== SCENARIO C [AFTER] - a genuine lookup failure is still refused and kept for replay ==========
+$ bin/fm-teardown.sh          # backlog backend is broken, not empty
+  error: demo-backlog-unreadable's endpoint and local copy are cleaned up, but its backlog item could not be closed atomically (error: "backlog is unwritable"); the pending close is recorded and the next session start retries it
+  [exit status: 1]
+
+$ ls home/state/
+  demo-backlog-unreadable.backlog-close
+  terminal-outcomes
+  -> pending close preserved for the next session start, as intended
+
+$ bin/fm-bootstrap.sh         # backend recovered
+  BOOTSTRAP_INFO: closed the backlog item for demo-backlog-unreadable that an interrupted cleanup left open
+$ tasks-axi show demo-backlog-unreadable --file data/backlog.md   # row state after replay
+  state: done
+  -> record retired by the close that finally landed
