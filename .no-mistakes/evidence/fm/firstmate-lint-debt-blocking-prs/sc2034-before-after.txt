@@ -1,0 +1,19 @@
+# Lint-debt reproduction: bin/fm-ff-lib.sh SC2034
+
+ShellCheck under test: version: 0.11.0
+bin/fm-lint.sh --required-version: 0.11.0   (local ShellCheck is CI-pinned parity)
+Invocation mirrors the CI Lint job full mode: bin/fm-lint.sh -> shellcheck --norc --external-sources
+
+## BEFORE - base 6339e2d (what reddened the Lint job on the in-flight PR)
+
+$ shellcheck --norc --external-sources --format=gcc -- bin/fm-ff-lib.sh
+bin/fm-ff-lib.sh:382:5: warning: FF_UPDATE_FAILED appears unused. Verify use (or export if used externally). [SC2034]
+bin/fm-ff-lib.sh:436:1: warning: REMOTE_UPDATE_FAILED_STATUS appears unused. Verify use (or export if used externally). [SC2034]
+bin/fm-ff-lib.sh:511:37: warning: FF_RUN_VERIFIED appears unused. Verify use (or export if used externally). [SC2034]
+-> 3 warnings; shellcheck exits 1; Lint job FAILS
+
+## AFTER - target fafc84e (this change)
+
+$ shellcheck --norc --external-sources --format=gcc -- bin/fm-ff-lib.sh bin/fm-update.sh bin/fm-remote-secondmate-control.sh
+(no output)
+-> shellcheck exits 0; all three implicated files clean; Lint job PASSES on this file set

@@ -1,0 +1,47 @@
+FM_TEST_BEGIN 2026-09-20T04:14:58Z tests/fm-update.test.sh family=session-bootstrap expected_gate_skip=none
+ok - T1 main + secondmate fast-forward (single-parent), reread + restart signalled
+ok - T3 a non-instruction advance still restarts the live secondmate
+ok - T3b a bin/-only advance restarts the secondmate
+ok - T3c an unverifiable secondmate receives the fallback nudge
+ok - T3d an already-stopped secondmate is left to startup recovery
+ok - T3e a legacy remote advance still restarts the live remote mate
+ok - T3f a remote fork-synchronization failure fails the whole run, not merely that host
+ok - T3f2 an ordinary remote failure distinct from the fork-sync classifier stays a skip, not a fleet failure
+ok - T3g an unverified remote host never reports already current to the captain
+ok - T3h a remote host that proves verification still reports already current
+ok - T3i the host-local update leg raises the fork-sync status only for its own classifier's verdict
+ok - T4 dirty secondmate skipped, local edit preserved
+ok - T5 diverged secondmate skipped, local commit preserved
+ok - T6 an already-current live secondmate is still restarted
+ok - T6b an already-current mate with an unprovable runtime is steered, not claimed as reloaded
+ok - T7 registry backstop resolves, dedups meta+registry, excludes the firstmate repo
+ok - T9 firstmate off its default branch is skipped, not forced
+ok - T10 firstmate detached HEAD is skipped
+ok - T11 unsafe secondmate home is not fast-forwarded
+ok - T12 a self-update rebinds a locally armed watch on the primary
+ok - fork origin spelled plain: custom default, safe push, worktree convergence, idempotence
+ok - fork origin spelled credential: custom default, safe push, worktree convergence, idempotence
+ok - fork origin spelled scp: custom default, safe push, worktree convergence, idempotence
+ok - fork origin spelled ssh: custom default, safe push, worktree convergence, idempotence
+ok - authoritative origin is a no-op even with an unrelated upstream remote
+ok - fork unclassifiable failure is visible and preserves both tips
+ok - fork mismatch failure is visible and preserves both tips
+ok - fork diverged failure is visible and preserves both tips
+ok - fork reject failure is visible and preserves both tips
+ok - fork offline failure is visible and preserves both tips
+ok - fork discovery auth falls back to plain Git without claiming currency
+ok - fork discovery malformed falls back to plain Git without claiming currency
+ok - gh-axi real metadata record is honoured by contract
+ok - gh-axi absent-parent metadata record is honoured by contract
+ok - gh-axi json metadata record is honoured by contract
+ok - gh-axi reordered-extra metadata record is honoured by contract
+ok - a push-to-mirrors origin still synchronizes the fork
+ok - an authoritative origin keeps its own default branch untouched
+ok - the fork verdict is per object store, not per run
+ok - an ordinary unreachable origin is a skip, not a whole-fleet failure
+ok - fork ahead of upstream keeps its existing commits
+# all fm-update tests passed
+FM_TEST_END 2026-09-20T04:16:17Z tests/fm-update.test.sh exit=0 duration_ms=79212 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=79319
+FM_TEST_SUMMARY_FAMILY family=session-bootstrap count=1 duration_ms=79212 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-update.test.sh duration_ms=79212

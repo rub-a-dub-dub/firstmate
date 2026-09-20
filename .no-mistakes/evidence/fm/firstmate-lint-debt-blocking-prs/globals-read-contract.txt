@@ -1,0 +1,12 @@
+# The external-read contract the SC2034 directives assert is live at runtime
+
+Each directive claims the global is "read by fm-update.sh / fm-remote-secondmate-control.sh
+after sourcing this library". Executed, not asserted from source text:
+
+$ bash -c '. bin/fm-ff-lib.sh; printf "FF_UPDATE_FAILED=%s\nFF_RUN_VERIFIED=%s\nREMOTE_UPDATE_FAILED_STATUS=%s\n" "$FF_UPDATE_FAILED" "$FF_RUN_VERIFIED" "$REMOTE_UPDATE_FAILED_STATUS"'
+FF_UPDATE_FAILED=0
+FF_RUN_VERIFIED=yes
+REMOTE_UPDATE_FAILED_STATUS=3
+
+All three cross the source boundary with live values, so the directives suppress a
+false positive rather than masking genuinely dead variables.
