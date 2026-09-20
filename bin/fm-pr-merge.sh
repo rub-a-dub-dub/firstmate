@@ -599,25 +599,37 @@ github_checks_not_green() {
 # pull_request_target trigger. Comments are stripped first, and only the
 # trigger block is scanned: from a line whose key is on:, or one of the "on": /
 # 'on': spellings that work around YAML 1.1 parsing bare on as true, to the
-# next unindented line. Within that block the word only counts where it is
-# shaped like a trigger - the inline "on: [push, pull_request]" list, a nested
-# "pull_request:" key, or a "- pull_request" sequence entry - so a
-# commented-out trigger, a comment elsewhere in the file, a path filter naming
-# a pull_request.yml file, and a job step that merely mentions the word are
-# never mistaken for a trigger declaration. This is a text heuristic, not a
-# YAML parser.
+# next unindented line. Within that block the word counts only where it is
+# shaped like a trigger AND sits at the block's own immediate child indentation
+# (taken from its first non-blank child line) - the inline
+# "on: [push, pull_request]" list, a nested "pull_request:" key, or a
+# "- pull_request" sequence entry. An event name is a direct child of on: and
+# nothing else, so requiring that depth is what separates a real trigger from a
+# same-named key nested deeper, such as a workflow_dispatch input called
+# pull_request, which declares no PR CI at all. A commented-out trigger, a
+# comment elsewhere in the file, a path filter naming a pull_request.yml file,
+# and a job step that merely mentions the word are likewise never mistaken for
+# a trigger declaration. This is a text heuristic, not a YAML parser.
 github_workflow_declares_pull_request() {
   printf '%s\n' "$1" | awk '
-    { sub(/[[:space:]]*#.*$/, "") }
-    $0 ~ "^(on|\"on\"|\047on\047)[[:space:]]*:" {
+    function indent_of(s) { match(s, /^[[:space:]]*/); return RLENGTH }
+    { line = $0; sub(/[[:space:]]*#.*$/, "", line) }
+    line ~ "^(on|\"on\"|\047on\047)[[:space:]]*:" {
       in_on = 1
-      rest = $0
+      child = -1
+      rest = line
       sub(/^[^:]*:/, "", rest)
       if (rest ~ /(^|[^A-Za-z0-9_])pull_request(_target)?([^A-Za-z0-9_]|$)/) found = 1
       next
     }
-    in_on && /^[^[:space:]]/ { in_on = 0 }
-    in_on && /^[[:space:]]*(-[[:space:]]*)?pull_request(_target)?[[:space:]]*(:|$)/ { found = 1 }
+    !in_on { next }
+    line ~ /^[[:space:]]*$/ { next }
+    line ~ /^[^[:space:]]/ { in_on = 0; next }
+    {
+      here = indent_of(line)
+      if (child < 0) child = here
+      if (here == child && line ~ /^[[:space:]]*(-[[:space:]]*)?pull_request(_target)?[[:space:]]*(:|$)/) found = 1
+    }
     END { exit(found ? 0 : 1) }
   '
 }

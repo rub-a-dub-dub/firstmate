@@ -2763,6 +2763,36 @@ jobs:
   pass "fm-pr-merge never reads comment text as a pull_request trigger declaration"
 }
 
+# A key named pull_request nested deeper than on:'s direct children - here a
+# workflow_dispatch input taking a PR number - declares no PR CI at all. An
+# event name is a direct child of on: and nothing else, so this repository must
+# keep merging exactly as it did before this gate existed, rather than having
+# every one of its pull requests refused, unwaivably, as a suspected dropped
+# event it can never produce a run for.
+test_nested_input_named_pull_request_does_not_arm_the_dropped_event_gate() {
+  local case_dir rc head
+  head=9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a
+  case_dir=$(make_case github-nested-input-named-pull-request)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir" 'on:
+  workflow_dispatch:
+    inputs:
+      pull_request:
+        description: the PR number to diagnose
+        type: string
+'
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+
+  FM_PR_MERGE_NOW_OVERRIDE=1767225600 run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/109 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "nested-input-named-pull-request: a nested input key must not arm the dropped-event gate"$'\n'"$(cat "$case_dir/stderr")"
+  assert_logged_gh_merge "$case_dir" 109 example/repo --squash
+  pass "fm-pr-merge reads only on:'s own children as trigger declarations"
+}
+
 # 'on': is the other YAML 1.1 quoting workaround for the on-parses-as-true
 # problem, so a workflow spelling its key that way does have PR CI and its
 # stale, zero-run head is a suspected dropped event like any other.
@@ -3423,6 +3453,7 @@ test_undated_runs_never_supersede
 test_no_workflows_directory_merges_unaffected
 test_push_only_workflow_does_not_arm_the_dropped_event_gate
 test_commented_out_trigger_does_not_arm_the_dropped_event_gate
+test_nested_input_named_pull_request_does_not_arm_the_dropped_event_gate
 test_single_quoted_on_key_arms_the_dropped_event_gate
 test_pr_ci_configured_with_a_run_present_merges_normally
 test_dropped_ci_event_within_grace_window_is_not_actionable
