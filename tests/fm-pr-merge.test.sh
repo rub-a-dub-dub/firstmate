@@ -2706,6 +2706,58 @@ test_reported_rollup_past_the_grace_window_still_merges() {
   pass "fm-pr-merge leaves a rollup that reported alone however old the pull request is"
 }
 
+# The age of an empty rollup IS the verdict, so an age that cannot be read must
+# refuse rather than pass for want of it. Two ways that happens, both of which
+# would otherwise merge a checkless pull request of any age in silence: a gh
+# response carrying no updatedAt at all (jq's // "" still emits the field, so
+# the seven-field guard above does not catch it), and an unusable clock.
+test_unreadable_empty_rollup_age_refuses_rather_than_passing() {
+  local case_dir rc head
+  head=4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a
+  case_dir=$(make_case github-empty-rollup-ageless)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  write_github_rollup_json "$case_dir" "$head"
+  sed 's|,"updatedAt":"[^"]*"||' "$case_dir/github-view.json" \
+    > "$case_dir/github-view.json.next"
+  mv "$case_dir/github-view.json.next" "$case_dir/github-view.json"
+  assert_no_grep updatedAt "$case_dir/github-view.json" \
+    "empty-rollup-ageless: the fixture still carries an updatedAt"
+
+  set +e
+  FM_PR_MERGE_NOW_OVERRIDE=1767225600 run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/104 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "empty-rollup-ageless: an unreadable rollup age must refuse"
+  assert_grep 'could not tell how old' "$case_dir/stderr" \
+    "empty-rollup-ageless: the unreadable age was not reported"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "empty-rollup-ageless: gh pr merge ran on a rollup whose age could not be read"
+
+  # An unusable clock is the same verdict: a stray non-numeric override must not
+  # quietly switch off a refusal the tests above prove is unwaivable.
+  case_dir=$(make_case github-empty-rollup-clockless)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  write_github_rollup_json "$case_dir" "$head"
+  set_pr_updated_at "$case_dir" 2025-12-31T23:00:00Z
+
+  set +e
+  FM_PR_MERGE_NOW_OVERRIDE=not-a-timestamp run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/105 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "empty-rollup-clockless: an unusable clock must refuse"
+  assert_grep 'could not tell how old' "$case_dir/stderr" \
+    "empty-rollup-clockless: the unusable clock was not reported"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "empty-rollup-clockless: gh pr merge ran with no usable clock"
+  pass "fm-pr-merge refuses an empty check rollup whose age it cannot establish"
+}
+
 # A superseded failure changes nothing about the waiver: --allow-red still covers
 # exactly the named check, still needs every other check green, and the merge is
 # still bound to the verified head.
@@ -3202,6 +3254,7 @@ test_undated_runs_never_supersede
 test_empty_rollup_within_the_grace_window_merges_normally
 test_empty_rollup_past_the_grace_window_is_never_green
 test_reported_rollup_past_the_grace_window_still_merges
+test_unreadable_empty_rollup_age_refuses_rather_than_passing
 test_allow_red_still_waives_only_the_current_failure
 test_allow_red_is_refused_while_away
 test_allow_red_requires_one_separate_name

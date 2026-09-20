@@ -16,7 +16,9 @@
 # An EMPTY check rollup is the one state that reads as vacuously green there,
 # and it is never accepted on its own once the pull request's own last update
 # is a grace window or more old: zero checks reported that long after the last
-# push is not delivery latency, and the merge is refused. Within the window an
+# push is not delivery latency, and the merge is refused. An empty rollup whose
+# age cannot be read at all is refused too, rather than passing for want of the
+# one value that would have judged it. Within the window an
 # empty rollup is left exactly as it has always behaved, because refusing every
 # pull request for the first minutes after every push is a false alarm, and a
 # merge gate that false-alarms gets turned off. A rollup that reported anything
@@ -656,8 +658,16 @@ FIELDS
     case "$now_epoch" in
       ''|*[!0-9]*) now_epoch='' ;;
     esac
-    if updated_epoch=$(fm_utc_iso_to_epoch "$updated") && [ -n "$now_epoch" ] \
-      && [ "$((now_epoch - updated_epoch))" -ge "$FM_PR_MERGE_CI_GRACE_SECS_DEFAULT" ]; then
+    # Both clocks are load-bearing only on this path, so they are required only
+    # on it: an empty rollup whose age cannot be established is never green,
+    # because the age is the whole verdict. A gh response carrying no usable
+    # updatedAt, or an unusable clock, therefore refuses like every other
+    # unreadable field this function reads.
+    if ! updated_epoch=$(fm_utc_iso_to_epoch "$updated") || [ -z "$now_epoch" ]; then
+      echo "error: could not tell how old this pull request's empty check rollup is, so it cannot be judged green before merging" >&2
+      return 1
+    fi
+    if [ "$((now_epoch - updated_epoch))" -ge "$FM_PR_MERGE_CI_GRACE_SECS_DEFAULT" ]; then
       refusals="$refusals  - no check has reported for head $live_head at all, and this pull request was last updated more than the delivery grace window ago; an empty check rollup this stale is never treated as green
 "
     fi
