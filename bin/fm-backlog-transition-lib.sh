@@ -55,6 +55,22 @@
 # closes a row that reads as an open captain call. An answer that closes the row
 # first applies any supported retained artifact from the validated record, then
 # replay simply retires the record.
+#
+# A retain marker's row can also be absent when replay runs: the captain may
+# have already answered it (closed, then the Done row aged out of done_keep
+# retention into the archive before replay ever caught it in the `done` live
+# state), or the row may be genuinely gone with no answer on record at all.
+# Those are not the same outcome and must not be reported the same way: the
+# first needs nothing further, the second still owes the captain a decision.
+# Telling them apart means checking the archive (fm_backlog_archive_row_probe)
+# before concluding absence; a hit there is routed through the identical
+# `answered`/`answered_incomplete` handling a live Done row gets. A genuine
+# miss retires the marker under `retain_unresolved`/`retain_unresolved_incomplete`
+# and is never silently reported once and forgotten: see
+# fm_backlog_reconcile_marker_write and bin/fm-bootstrap.sh's
+# `state/*.backlog-reconcile` sweep, which re-reports it every session start
+# until an explicit `bin/fm-backlog-reconcile.sh ack` retires it. Data/design
+# notes: data/firstmate-retain-report-single-shot/design.md.
 
 # Set by fm_backlog_transition_applies for a return-1 exemption.
 # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
@@ -68,10 +84,22 @@ FM_BACKLOG_ROW_ERROR=
 # the row is not held.
 # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
 FM_BACKLOG_ROW_HOLD_KIND=
+# Set by fm_backlog_archive_row_probe: found | not_found | error. Never touched
+# by fm_backlog_row_probe/fm_backlog_row_show, which stay pinned to the live
+# backlog file for every other caller.
+# shellcheck disable=SC2034 # Output global, read by the sourcing caller.
+FM_BACKLOG_ARCHIVE_ROW_RESULT=
+FM_BACKLOG_ARCHIVE_ROW_ERROR=
 # Set by fm_backlog_close_marker_replay: closed | closed_incomplete | retained |
-# retained_incomplete | answered | stale | noop.
+# retained_incomplete | answered | answered_incomplete | retain_unresolved |
+# retain_unresolved_incomplete | stale | noop.
 # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
 FM_BACKLOG_CLOSE_REPLAY_RESULT=
+# Set by fm_backlog_close_marker_replay with a retain_unresolved(_incomplete)
+# result: the deliverable text the retired record carried (fm_backlog_retain_deliverable),
+# empty when it recorded none.
+# shellcheck disable=SC2034 # Output global, read by the sourcing caller.
+FM_BACKLOG_CLOSE_REPLAY_DELIVERABLE=
 
 # Bounded execution is fm-timeout-lib.sh's alone; source it rather than
 # re-deriving a deadline here. It is stateless, so the memoisation reason this
@@ -146,6 +174,24 @@ fm_backlog_file() {  # <data-dir>
     printf '/backlog.md\n'
   else
     printf '%s/backlog.md\n' "$data"
+  fi
+}
+
+# The fixed sibling of fm_backlog_file: `tasks-axi prune` archives pruned Done
+# rows to <data>/done-archive.md (the same fixed name
+# bin/fm-bootstrap.sh's detect_code_root_backlog_fork already hardcodes), never
+# a `.tasks.toml`-configured path, exactly as fm_backlog_file itself never
+# consults `.tasks.toml`'s own `path=` override.
+fm_backlog_archive_file() {  # <data-dir>
+  local data
+  data=$(fm_backlog_data_absolute "$1") || {
+    FM_BACKLOG_TRANSITION_ERROR="data directory cannot be resolved: $1"
+    return 1
+  }
+  if [ "$data" = / ]; then
+    printf '/done-archive.md\n'
+  else
+    printf '%s/done-archive.md\n' "$data"
   fi
 }
 
@@ -522,6 +568,58 @@ fm_backlog_row_probe() {  # <data-dir> <id>
   return 0
 }
 
+# Retain replay's own narrow lookup for whether an absent row's captain call
+# was already answered before its close aged out of done_keep retention into
+# the archive. Deliberately separate from fm_backlog_row_probe/
+# fm_backlog_row_show, which stay pinned to the live backlog file for every
+# other caller (widening their file pinning would change behavior for every
+# site that calls them, not just this one).
+#
+# `tasks-axi show --file <archive>` cannot be used here: tasks-axi's own
+# markdown backend refuses to read an archive file through `--file` at all
+# ("Archive path must not be the active backlog path", VALIDATION_ERROR -
+# checked directly against the installed backend before writing this), and
+# even without that refusal the archive's compact per-line rendering is not a
+# live task record `show` can answer from. So this reads the archive's own
+# fixed rendering directly: `tasks-axi prune --state done` always appends an
+# archived row as `- [x] <id> - <title> ...`, the same line shape it renders
+# in the live backlog's Done section before pruning, just relocated under a
+# `## Archived <date>` heading. Grep for that line rather than trying to
+# parse the archive as a task file. A `not_found` result - no match, or no
+# archive file at all - means the archive has nothing either; this is a
+# closed-safe default: a read failure or format surprise also falls to
+# `not_found`, which routes the caller to escalation, never to a false
+# "answered".
+fm_backlog_archive_row_probe() {  # <data-dir> <id>
+  local data authorized_data=$1 id=$2 archive escaped_id pattern
+  FM_BACKLOG_ARCHIVE_ROW_RESULT=error
+  FM_BACKLOG_ARCHIVE_ROW_ERROR=
+  if ! data=$(fm_backlog_data_absolute "$authorized_data"); then
+    FM_BACKLOG_ARCHIVE_ROW_ERROR="data directory cannot be resolved: $authorized_data"
+    return 1
+  fi
+  archive=$(fm_backlog_archive_file "$data") || {
+    FM_BACKLOG_ARCHIVE_ROW_ERROR=$FM_BACKLOG_TRANSITION_ERROR
+    return 1
+  }
+  if [ ! -e "$archive" ] && [ ! -L "$archive" ]; then
+    FM_BACKLOG_ARCHIVE_ROW_RESULT=not_found
+    return 0
+  fi
+  if [ ! -f "$archive" ] || [ -L "$archive" ]; then
+    FM_BACKLOG_ARCHIVE_ROW_RESULT=not_found
+    return 0
+  fi
+  escaped_id=$(printf '%s' "$id" | sed 's/[.[\*^$]/\\&/g')
+  pattern="^- \\[x\\] ${escaped_id} - "
+  if grep -Eq -- "$pattern" "$archive" 2>/dev/null; then
+    FM_BACKLOG_ARCHIVE_ROW_RESULT=found
+  else
+    FM_BACKLOG_ARCHIVE_ROW_RESULT=not_found
+  fi
+  return 0
+}
+
 # Run one tasks-axi mutation against <home>'s backlog, capturing its first
 # output line in FM_BACKLOG_TRANSITION_ERROR on failure. The home boundary is
 # authorized through fm_backlog_source_present first; fm_backlog_tasks_axi owns
@@ -577,6 +675,23 @@ fm_backlog_row_artifact_supported() {
   esac
 }
 
+# The single owner of how a retention's deliverable is put into words, so a
+# live retain's row body and a retain-unresolved reconcile report (bin/fm-bootstrap.sh's
+# `state/*.backlog-reconcile` sweep) never disagree on the wording for the
+# same recorded args.
+fm_backlog_retain_deliverable() {  # [flag value]...
+  local arg previous_arg='' deliverable=''
+  for arg in "$@"; do
+    case "$previous_arg" in
+      --report) deliverable="${deliverable:+$deliverable; }report $arg" ;;
+      --pr) deliverable="${deliverable:+$deliverable; }PR $arg" ;;
+      --note) deliverable="${deliverable:+$deliverable; }$arg" ;;
+    esac
+    previous_arg=$arg
+  done
+  printf '%s\n' "$deliverable"
+}
+
 # Keep a captain-held row open across the removal of the work record that
 # discovered it: record the finished work's deliverable as one line at the end
 # of the task body (a line already present is left alone), preserve supported
@@ -594,19 +709,15 @@ fm_backlog_retain() {  # <data-dir> <id> [flag...]
   fi
   shift 2
   FM_BACKLOG_TRANSITION_ERROR=
+  deliverable=$(fm_backlog_retain_deliverable "$@")
   for arg in "$@"; do
     case "$previous_arg" in
       --report)
-        deliverable="${deliverable:+$deliverable; }report $arg"
         if fm_backlog_row_artifact_supported "$id" --report "$arg"; then
           row_args=(--report "$arg")
         fi
         ;;
-      --pr)
-        deliverable="${deliverable:+$deliverable; }PR $arg"
-        row_args=(--pr "$arg")
-        ;;
-      --note) deliverable="${deliverable:+$deliverable; }$arg" ;;
+      --pr) row_args=(--pr "$arg") ;;
     esac
     previous_arg=$arg
   done
@@ -1142,8 +1253,44 @@ fm_backlog_close_marker_clear() {  # <state-dir> <id>
   fm_backlog_close_marker_remove "$marker" "$1"
 }
 
+fm_backlog_reconcile_marker_path() {  # <state-dir> <id>
+  printf '%s/%s.backlog-reconcile\n' "$1" "$2"
+}
+
+# Retire a `.backlog-close` retain marker whose replay found no answer
+# anywhere (neither the live row nor the archive) into a durable
+# `.backlog-reconcile` record instead of deleting it. The record's content and
+# schema are unchanged - the same fm_backlog_close_marker_validate keeps
+# applying to it - only its name changes, so the single `mv` this rename
+# performs (fm_backlog_record_publish's own mechanism) is the only state
+# transition: there is no window where the marker is gone and the reconcile
+# record does not yet exist, or vice versa. bin/fm-bootstrap.sh's
+# `state/*.backlog-reconcile` sweep re-derives and re-prints the same
+# BACKLOG_RECONCILE line from this file every session start, for as long as
+# it exists, so the deliverable it names is never destroyed by the act of
+# reporting it. Only an explicit fm_backlog_reconcile_marker_ack (bin/fm-backlog-reconcile.sh
+# ack) retires it.
+fm_backlog_reconcile_marker_write() {  # <state-dir> <marker-path> <id>
+  local state=$1 marker=$2 id=$3 target
+  target=$(fm_backlog_reconcile_marker_path "$state" "$id")
+  fm_backlog_atomic_transition publish "$marker" "$target" \
+    "retain-unresolved reconcile record" "$state"
+}
+
+# The explicit "I reconciled this with the captain" act: the only way a
+# retain-unresolved reconcile record is ever cleared. Exposed through
+# bin/fm-backlog-reconcile.sh ack.
+fm_backlog_reconcile_marker_ack() {  # <state-dir> <id>
+  local marker
+  marker=$(fm_backlog_reconcile_marker_path "$1" "$2")
+  fm_backlog_close_marker_remove "$marker" "$1"
+}
+
 # Replay one recorded close or retention. Returns 0 when the row is closed (or
-# retained), the marker is stale, or an answer already closed a retained row,
+# retained), the marker is stale, an answer already closed a retained row
+# (live or discovered through the archive), or a retain marker's row is
+# genuinely unresolved (retired into a durable reconcile record rather than
+# reopened or reported once and forgotten - see fm_backlog_reconcile_marker_write),
 # and 1 when marker validation or recovery fails. Validation completes before
 # any meta or backlog mutation.
 fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data-dir>
@@ -1151,6 +1298,7 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
   local id data marker_spawn_gen meta meta_spawn_gen row_state cleanup_incomplete mode
   local args=() mode_flags=()
   FM_BACKLOG_CLOSE_REPLAY_RESULT=noop
+  FM_BACKLOG_CLOSE_REPLAY_DELIVERABLE=
   fm_backlog_directory_present "$state" "state directory" || return 1
   [ -e "$marker" ] || [ -L "$marker" ] || return 0
   marker_name=${marker##*/}
@@ -1205,9 +1353,15 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
     done\ *)
       if [ "$mode" = retain ]; then
         # The captain's answer closed the row before this replay; the retained
-        # transition owes it nothing more than retiring the record.
+        # transition owes it nothing more than retiring the record, honestly
+        # reporting whether cleanup itself actually finished rather than
+        # claiming it did unconditionally.
         fm_backlog_close_marker_remove "$marker" "$state" || return 1
-        FM_BACKLOG_CLOSE_REPLAY_RESULT=answered
+        if [ "$cleanup_incomplete" = 1 ]; then
+          FM_BACKLOG_CLOSE_REPLAY_RESULT=answered_incomplete
+        else
+          FM_BACKLOG_CLOSE_REPLAY_RESULT=answered
+        fi
         return 0
       fi
       if fm_backlog_atomic_transition close '' "$marker" "$data" "$id" "$state" \
@@ -1222,6 +1376,39 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
       return 1
       ;;
     '')
+      if [ "$mode" = retain ]; then
+        # The row is gone from the live backlog, but a captain-held row that
+        # was answered and closed can still age out of done_keep retention
+        # into the archive before this replay ever catches it in the `done`
+        # live state above. Check there before concluding the call was never
+        # answered: an already-answered call must never resurface as an
+        # outstanding one.
+        if ! fm_backlog_archive_row_probe "$data" "$id"; then
+          FM_BACKLOG_TRANSITION_ERROR=$FM_BACKLOG_ARCHIVE_ROW_ERROR
+          return 1
+        fi
+        if [ "$FM_BACKLOG_ARCHIVE_ROW_RESULT" = found ]; then
+          fm_backlog_close_marker_remove "$marker" "$state" || return 1
+          if [ "$cleanup_incomplete" = 1 ]; then
+            FM_BACKLOG_CLOSE_REPLAY_RESULT=answered_incomplete
+          else
+            FM_BACKLOG_CLOSE_REPLAY_RESULT=answered
+          fi
+          return 0
+        fi
+        # Genuinely unresolved: nothing closed this call anywhere. Retire the
+        # marker into a durable reconcile record instead of deleting it, so
+        # the deliverable it carried survives being read only once (or never).
+        FM_BACKLOG_CLOSE_REPLAY_DELIVERABLE=$(fm_backlog_retain_deliverable \
+          "${args[@]+"${args[@]}"}")
+        fm_backlog_reconcile_marker_write "$state" "$marker" "$id" || return 1
+        if [ "$cleanup_incomplete" = 1 ]; then
+          FM_BACKLOG_CLOSE_REPLAY_RESULT=retain_unresolved_incomplete
+        else
+          FM_BACKLOG_CLOSE_REPLAY_RESULT=retain_unresolved
+        fi
+        return 0
+      fi
       fm_backlog_close_marker_remove "$marker" "$state" || return 1
       FM_BACKLOG_CLOSE_REPLAY_RESULT=stale
       return 0

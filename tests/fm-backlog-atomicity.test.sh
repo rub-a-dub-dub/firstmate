@@ -33,6 +33,7 @@ unset TASKS_AXI_BACKEND || :
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
 BOOTSTRAP="$ROOT/bin/fm-bootstrap.sh"
+RECONCILE="$ROOT/bin/fm-backlog-reconcile.sh"
 TMP_ROOT=$(fm_test_tmproot fm-backlog-atomicity)
 
 command -v tasks-axi >/dev/null 2>&1 || {
@@ -626,6 +627,14 @@ run_bootstrap() {  # <case-dir>
     FM_BOOTSTRAP_NETWORK=skip \
     PATH="$case_dir/fakebin:$PATH" \
     "$BOOTSTRAP" 2>&1
+}
+
+run_reconcile() {  # <case-dir> <args...>
+  local case_dir=$1
+  shift
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$(home_of "$case_dir")" \
+    PATH="$case_dir/fakebin:$PATH" \
+    "$RECONCILE" "$@" 2>&1
 }
 
 # --- dispatch ---------------------------------------------------------------
@@ -2049,6 +2058,122 @@ test_recovery_backfills_a_recorded_link_on_an_already_done_item() {
   pass "recovery backfills recorded links onto already Done items"
 }
 
+# Defect: the retain replay path's "answered" arm printed "finished the
+# interrupted cleanup" unconditionally, even when its own surviving
+# state/<id>.meta record proved cleanup never finished. Force that record to
+# survive to replay time (matching the mechanism
+# fm_backlog_close_marker_replay itself uses to set cleanup_incomplete) and
+# assert the report is honest about it instead of claiming completion.
+test_recovery_reports_incomplete_cleanup_for_an_answered_retain() {
+  local case_dir id marker out
+  id=atomic-heal-answered-incomplete-b17
+  case_dir=$(make_home heal-answered-incomplete)
+  add_item "$case_dir" "$id"
+  start_item "$case_dir" "$id"
+  tasks-axi hold "$id" --reason "captain decision pending" --kind captain \
+    --file "$(backlog_of "$case_dir")" >/dev/null
+  tasks-axi "done" "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  write_task_meta "$case_dir" "$id" ship no-mistakes "spawn_gen=spawn-answered-incomplete"
+  marker="$(home_of "$case_dir")/state/$id.backlog-close"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-answered-incomplete\nmode=retain\narg=--pr\narg=https://github.com/example/repo/pull/14\n' \
+    "$id" "$(home_of "$case_dir")/data" > "$marker"
+
+  out=$(run_bootstrap "$case_dir")
+  assert_absent "$(home_of "$case_dir")/state/$id.meta" \
+    "replay left the interrupted task record behind for an already-answered retain"
+  assert_absent "$marker" \
+    "replay left an already-answered retain marker behind"
+  assert_not_contains "$out" "finished the interrupted cleanup for $id; the captain had already answered its call" \
+    "replay claimed cleanup finished even though its own surviving meta record proved cleanup was still interrupted"
+  assert_contains "$out" "the captain had already answered the call for $id before cleanup finished" \
+    "an answered retain with cleanup still interrupted was not reported honestly"
+  assert_contains "$out" "endpoint or local copy may remain" \
+    "an answered retain's incomplete-cleanup warning was dropped"
+  pass "recovery does not claim an interrupted cleanup finished when only the captain's answer closed the row"
+}
+
+# Defect: the retain replay path could not tell a row the captain already
+# answered (closed, then aged out of done_keep retention into the archive)
+# from a row that vanished with no answer at all - both read as an empty
+# `tasks-axi show`. An already-answered call must never resurface as an
+# outstanding one asking the captain to re-decide it.
+test_recovery_recognizes_a_retain_row_answered_then_archived() {
+  local case_dir id marker out
+  id=atomic-heal-answered-archived-b18
+  case_dir=$(make_home heal-answered-archived)
+  add_item "$case_dir" "$id"
+  start_item "$case_dir" "$id"
+  tasks-axi hold "$id" --reason "captain decision pending" --kind captain \
+    --file "$(backlog_of "$case_dir")" >/dev/null
+  tasks-axi "done" "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  (cd "$(home_of "$case_dir")" \
+    && tasks-axi prune --keep 0 --state "done" --file "$(backlog_of "$case_dir")" >/dev/null)
+  [ -z "$(row_state "$case_dir" "$id")" ] \
+    || fail "the fixture's pruned row is still visible to tasks-axi show"
+  marker="$(home_of "$case_dir")/state/$id.backlog-close"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-answered-archived\nmode=retain\narg=--pr\narg=https://github.com/example/repo/pull/15\n' \
+    "$id" "$(home_of "$case_dir")/data" > "$marker"
+
+  out=$(run_bootstrap "$case_dir")
+  assert_absent "$marker" \
+    "an answered-then-archived retain marker was left to retry forever"
+  assert_absent "$(home_of "$case_dir")/state/$id.backlog-reconcile" \
+    "an already-answered captain call resurfaced as an unresolved reconcile record"
+  assert_not_contains "$out" "could not be returned to Queued" \
+    "an already-answered call was reported as though it still needed a captain decision"
+  assert_contains "$out" "the captain had already answered its call" \
+    "an answered-then-archived retain was not recognized as answered"
+  pass "recovery does not ask the captain to re-decide a call already answered before its row aged into the archive"
+}
+
+# Defect: the reconcile report for a genuinely unresolved retain (no answer
+# anywhere, row truly gone) was single-shot and self-erasing - printed once,
+# with the marker deleted in the same breath, so an unread digest lost the
+# deliverable forever. The record must survive being unread and only clear on
+# an explicit acknowledgement.
+test_recovery_reconcile_record_survives_being_unread() {
+  local case_dir id marker pr out out2 out3 reconcile_marker ack
+  id=atomic-heal-retain-unresolved-b19
+  pr=https://github.com/example/repo/pull/16
+  case_dir=$(make_home heal-retain-unresolved)
+  add_item "$case_dir" "$id"
+  tasks-axi hold "$id" --reason "captain decision pending" --kind captain \
+    --file "$(backlog_of "$case_dir")" >/dev/null
+  tasks-axi rm "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  [ -z "$(row_state "$case_dir" "$id")" ] \
+    || fail "the fixture's removed row is still visible to tasks-axi show"
+  marker="$(home_of "$case_dir")/state/$id.backlog-close"
+  reconcile_marker="$(home_of "$case_dir")/state/$id.backlog-reconcile"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-retain-unresolved\nmode=retain\narg=--pr\narg=%s\n' \
+    "$id" "$(home_of "$case_dir")/data" "$pr" > "$marker"
+
+  out=$(run_bootstrap "$case_dir")
+  assert_absent "$marker" \
+    "a genuinely unresolved retain marker was left on the .backlog-close glob to retry forever"
+  assert_present "$reconcile_marker" \
+    "a genuinely unresolved retain's deliverable was destroyed instead of retained for reconciliation"
+  assert_contains "$out" "BACKLOG_RECONCILE: $id:" \
+    "a genuinely unresolved retain went unreported on its first replay"
+  assert_contains "$out" "PR $pr" \
+    "the reconcile report did not name the deliverable it was retiring"
+
+  out2=$(run_bootstrap "$case_dir")
+  assert_present "$reconcile_marker" \
+    "a second session start deleted the reconcile record with nobody having acknowledged it"
+  assert_contains "$out2" "BACKLOG_RECONCILE: $id:" \
+    "a second, unacknowledged session start silently dropped the reconcile report - it is not supposed to be single-shot"
+  assert_contains "$out2" "PR $pr" \
+    "the re-reported reconcile line lost the deliverable it was carrying"
+
+  ack=$(run_reconcile "$case_dir" ack "$id") || fail "could not acknowledge the reconcile record for $id: $ack"
+  assert_absent "$reconcile_marker" "acknowledging the reconcile record did not remove it"
+
+  out3=$(run_bootstrap "$case_dir")
+  assert_not_contains "$out3" "BACKLOG_RECONCILE: $id:" \
+    "an acknowledged reconcile record still reported itself on a later session start"
+  pass "a genuinely unresolved retain's reconcile report survives being unread until explicitly acknowledged"
+}
+
 test_recovery_preserves_a_close_when_the_backlog_cannot_be_read() {
   local case_dir id out
   id=atomic-heal-read-error-b10
@@ -3054,6 +3179,9 @@ test_recovery_rejects_an_internal_worker_record_symlink
 test_recovery_ignores_a_symlinked_worker_record
 test_recovery_replays_a_close_an_interrupted_cleanup_left_open
 test_recovery_backfills_a_recorded_link_on_an_already_done_item
+test_recovery_reports_incomplete_cleanup_for_an_answered_retain
+test_recovery_recognizes_a_retain_row_answered_then_archived
+test_recovery_reconcile_record_survives_being_unread
 test_recovery_preserves_a_close_when_the_backlog_cannot_be_read
 test_recovery_retry_preserves_incomplete_cleanup_warning
 test_recovery_finishes_a_close_for_the_same_meta_incarnation

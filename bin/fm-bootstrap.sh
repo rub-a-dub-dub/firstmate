@@ -1212,6 +1212,7 @@ crew_dispatch_validate() {
 # backstops for what this cannot see. Never reads or writes another home.
 backlog_record_reconcile() {
   local marker meta control_lock meta_lock id row label has_record=0 gate_status
+  local deliverable disposition
   # A fresh home with no state directory has no physical task records to pair.
   # Keep bootstrap diagnostics working without creating state just for a no-op.
   [ -e "$STATE" ] || [ -L "$STATE" ] || return 0
@@ -1266,12 +1267,45 @@ backlog_record_reconcile() {
         answered)
           echo "BOOTSTRAP_INFO: finished the interrupted cleanup for $label; the captain had already answered its call"
           ;;
+        answered_incomplete)
+          echo "BOOTSTRAP_INFO: the captain had already answered the call for $label before cleanup finished; its endpoint or local copy may remain and should be reconciled"
+          ;;
+        retain_unresolved | retain_unresolved_incomplete)
+          # Reported by the state/*.backlog-reconcile sweep below, which runs
+          # this same session start (the rename already landed) and every
+          # session start after it, not just this one.
+          ;;
       esac
     else
       echo "BACKLOG_RECONCILE: $label: recorded backlog close could not be replayed: $FM_BACKLOG_TRANSITION_ERROR"
     fi
     fm_lock_release "$meta_lock"
     fm_lock_release "$control_lock"
+  done
+
+  # Re-report every retain-unresolved reconcile record on EVERY session start,
+  # not once: fm_backlog_reconcile_marker_write retires these off the
+  # .backlog-close glob above without deleting them precisely so a missed
+  # digest costs nothing but a repeat of the next one. Only an explicit
+  # `bin/fm-backlog-reconcile.sh ack <id>` ever clears one.
+  for marker in "$STATE"/*.backlog-reconcile; do
+    [ -e "$marker" ] || [ -L "$marker" ] || continue
+    label=$(basename "$marker" .backlog-reconcile)
+    if ! fm_backlog_close_marker_validate "$marker" "$DATA" "$label" "$STATE"; then
+      echo "BACKLOG_RECONCILE: $label: recorded reconcile record could not be read: $FM_BACKLOG_TRANSITION_ERROR"
+      continue
+    fi
+    deliverable=$(fm_backlog_retain_deliverable \
+      "${FM_BACKLOG_CLOSE_VALIDATED_ARGS[@]+"${FM_BACKLOG_CLOSE_VALIDATED_ARGS[@]}"}")
+    if [ -n "$deliverable" ]; then
+      disposition="its recorded deliverable ($deliverable) should be reconciled with the captain"
+    else
+      disposition="it recorded no deliverable, so the call's disposition must be settled with the captain"
+    fi
+    if [ "$FM_BACKLOG_CLOSE_VALIDATED_CLEANUP_INCOMPLETE" = 1 ]; then
+      disposition="its endpoint or local copy may also remain, and $disposition"
+    fi
+    echo "BACKLOG_RECONCILE: $label: the captain-held call could not be returned to Queued because its backlog row is on record nowhere, live or archived; $disposition. Run bin/fm-backlog-reconcile.sh ack $label once reconciled."
   done
 
   # A home that owns no records has nothing to pair, so it never pays for a
@@ -1380,6 +1414,24 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ] && local_phase; then
       BOOTSTRAP_BACKLOG_GATE_KIND=ship
       break
     done
+    # A retain-unresolved reconcile record is retired off the .backlog-close
+    # glob above without being deleted (fm_backlog_reconcile_marker_write), so
+    # a home carrying nothing else still has ship work: its surviving
+    # reconcile record. Without this, the very act of retiring the marker on
+    # its first replay would make this gate skip reconciliation on every
+    # later session start, and backlog_record_reconcile's own
+    # state/*.backlog-reconcile sweep would never run again.
+    if [ "$BOOTSTRAP_BACKLOG_GATE_KIND" = secondmate ]; then
+      for BOOTSTRAP_BACKLOG_MARKER in "$STATE"/*.backlog-reconcile; do
+        [ -e "$BOOTSTRAP_BACKLOG_MARKER" ] || [ -L "$BOOTSTRAP_BACKLOG_MARKER" ] || continue
+        if ! fm_backlog_record_present "$BOOTSTRAP_BACKLOG_MARKER" "reconcile record" "$STATE"; then
+          echo "error: bootstrap refused unsafe reconcile record ($FM_BACKLOG_TRANSITION_ERROR)" >&2
+          exit 1
+        fi
+        BOOTSTRAP_BACKLOG_GATE_KIND=ship
+        break
+      done
+    fi
     if [ "$BOOTSTRAP_BACKLOG_GATE_KIND" = secondmate ]; then
       for BOOTSTRAP_BACKLOG_META in "$STATE"/*.meta; do
         [ -e "$BOOTSTRAP_BACKLOG_META" ] || [ -L "$BOOTSTRAP_BACKLOG_META" ] || continue
