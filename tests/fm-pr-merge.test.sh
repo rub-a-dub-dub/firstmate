@@ -2646,13 +2646,13 @@ test_empty_rollup_within_the_grace_window_merges_normally() {
 }
 
 # The incident this rule exists for. An empty rollup past the grace window is
-# never green: this repository's own ci.yml declared a valid, unfiltered
-# pull_request trigger for its entire history while GitHub delivered zero
-# pull_request-triggered runs to it, so pull requests merged with no checks at
-# all and the PR "Checks" summary read exactly like a repository with no CI
-# configured. Any rule that asked the workflow file whether CI ought to exist
-# would have been satisfied by precisely the absence it exists to catch, so
-# this one asks only the rollup.
+# never green: this repository's own ci.yml declared, for its entire history, a
+# valid pull_request trigger whose only filter is the base branch these pull
+# requests already target, while GitHub delivered zero pull_request-triggered
+# runs to it, so pull requests merged with no checks at all and the PR "Checks"
+# summary read exactly like a repository with no CI configured. Any rule that
+# asked the workflow file whether CI ought to exist would have been satisfied by
+# precisely the absence it exists to catch, so this one asks only the rollup.
 test_empty_rollup_past_the_grace_window_is_never_green() {
   local case_dir rc head
   head=2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a
