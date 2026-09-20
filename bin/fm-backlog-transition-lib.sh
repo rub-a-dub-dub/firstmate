@@ -69,7 +69,11 @@ FM_BACKLOG_ROW_ERROR=
 # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
 FM_BACKLOG_ROW_HOLD_KIND=
 # Set by fm_backlog_close_marker_replay: closed | closed_incomplete | retained |
-# retained_incomplete | answered | stale | noop.
+# retained_incomplete | answered | absent | absent_incomplete | stale | noop.
+# `absent` and `absent_incomplete` are the retain-mode twin of `stale`: the row
+# a retention was returning to Queued left the backlog entirely, so retiring
+# the marker is the only safe move, but it is not the close path's `stale`
+# outcome and must not be reported as one.
 # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
 FM_BACKLOG_CLOSE_REPLAY_RESULT=
 
@@ -1223,7 +1227,19 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
       ;;
     '')
       fm_backlog_close_marker_remove "$marker" "$state" || return 1
-      FM_BACKLOG_CLOSE_REPLAY_RESULT=stale
+      if [ "$mode" = retain ]; then
+        # The row a captain-held retention was returning to Queued is gone
+        # from the backlog entirely, so there is nothing left to reopen; that
+        # is not the outcome a retain transition was trying to reach, so it
+        # earns its own result rather than borrowing the close path's `stale`.
+        if [ "$cleanup_incomplete" = 1 ]; then
+          FM_BACKLOG_CLOSE_REPLAY_RESULT=absent_incomplete
+        else
+          FM_BACKLOG_CLOSE_REPLAY_RESULT=absent
+        fi
+      else
+        FM_BACKLOG_CLOSE_REPLAY_RESULT=stale
+      fi
       return 0
       ;;
   esac

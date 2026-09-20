@@ -2049,6 +2049,43 @@ test_recovery_backfills_a_recorded_link_on_an_already_done_item() {
   pass "recovery backfills recorded links onto already Done items"
 }
 
+# A captain-held row's retention marker exists to return that row to Queued;
+# if the row has already left the backlog entirely by the time recovery
+# replays the marker, the retention's own goal was never reached - unlike the
+# close path's matching row-archived-by-retention case, where absence already
+# is the goal. This must retire the marker under its own honest outcome
+# instead of the close path's `stale`, and the report must never read as a
+# close.
+test_recovery_retires_a_retain_for_a_row_absent_from_the_backlog() {
+  local case_dir id marker out
+  id=atomic-heal-retain-absent-b13
+  case_dir=$(make_home heal-retain-absent)
+  add_item "$case_dir" "$id"
+  tasks-axi hold "$id" --reason "captain decision pending" --kind captain \
+    --file "$(backlog_of "$case_dir")" >/dev/null
+  tasks-axi rm "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  [ -z "$(row_state "$case_dir" "$id")" ] \
+    || fail "the fixture's removed row is still visible to tasks-axi show"
+  marker="$(home_of "$case_dir")/state/$id.backlog-close"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-retain-absent\nmode=retain\narg=--note\narg=local%%20main\n' \
+    "$id" "$(home_of "$case_dir")/data" > "$marker"
+
+  out=$(run_bootstrap "$case_dir")
+  assert_absent "$marker" \
+    "a retain for a row absent from the backlog was left to retry forever"
+  assert_not_contains "$out" "could not be replayed" \
+    "an absent row's retention was reported as a lookup failure instead of a completed retirement"
+  assert_not_contains "$out" "closed the backlog item" \
+    "a retain transition for an absent row was reported using the close path's wording"
+  assert_contains "$out" "could not be returned to Queued" \
+    "an absent row's retention retirement gave no retain-flavored report"
+
+  out=$(run_bootstrap "$case_dir")
+  assert_not_contains "$out" "could not be replayed" \
+    "a retired retain marker somehow left work behind for a later restart to retry"
+  pass "recovery retires a pending retention whose row already left the backlog, reported as a retain outcome"
+}
+
 test_recovery_preserves_a_close_when_the_backlog_cannot_be_read() {
   local case_dir id out
   id=atomic-heal-read-error-b10
@@ -3054,6 +3091,7 @@ test_recovery_rejects_an_internal_worker_record_symlink
 test_recovery_ignores_a_symlinked_worker_record
 test_recovery_replays_a_close_an_interrupted_cleanup_left_open
 test_recovery_backfills_a_recorded_link_on_an_already_done_item
+test_recovery_retires_a_retain_for_a_row_absent_from_the_backlog
 test_recovery_preserves_a_close_when_the_backlog_cannot_be_read
 test_recovery_retry_preserves_incomplete_cleanup_warning
 test_recovery_finishes_a_close_for_the_same_meta_incarnation

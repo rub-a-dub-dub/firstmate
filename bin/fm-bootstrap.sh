@@ -1266,6 +1266,12 @@ backlog_record_reconcile() {
         answered)
           echo "BOOTSTRAP_INFO: finished the interrupted cleanup for $label; the captain had already answered its call"
           ;;
+        absent)
+          echo "BOOTSTRAP_INFO: the captain-held call for $label could not be returned to Queued after an interrupted cleanup because its backlog row no longer exists; reconcile its deliverable with the captain"
+          ;;
+        absent_incomplete)
+          echo "BOOTSTRAP_INFO: the captain-held call for $label could not be returned to Queued after interrupted cleanup because its backlog row no longer exists; its endpoint or local copy may also remain, and its deliverable should be reconciled with the captain"
+          ;;
       esac
     else
       echo "BACKLOG_RECONCILE: $label: recorded backlog close could not be replayed: $FM_BACKLOG_TRANSITION_ERROR"
