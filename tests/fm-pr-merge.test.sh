@@ -26,6 +26,11 @@ MR_URL="$MR_PROJECT_URL/-/merge_requests/7"
 MR_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 MR_STALE_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 
+# The pull request's last-update time every case starts with. The gate measures
+# its grace window from this, so a case that exercises the window pins both
+# ends: this value and FM_PR_MERGE_NOW_OVERRIDE.
+FM_TEST_PR_UPDATED_AT_DEFAULT=2026-01-01T00:00:00Z
+
 JQ_BIN=$(command -v jq) || fail "these tests read glab's JSON with the real jq, which was not found"
 REAL_MV=$(command -v mv) || fail "these tests need mv to simulate a failed poll publish"
 
@@ -59,7 +64,8 @@ make_case() {
   : > "$case_dir/github-workflows-listing"
   : > "$case_dir/github-workflow-content-b64"
   : > "$case_dir/github-pr-run-count"
-  : > "$case_dir/github-commit-date"
+  printf '0\n' > "$case_dir/github-pr-target-run-count"
+  printf '%s\n' "$FM_TEST_PR_UPDATED_AT_DEFAULT" > "$case_dir/github-pr-updated-at"
   # No worktree/project on disk; fm-pr-check.sh tolerates a worktree it cannot
   # stat and simply skips the pr_head lookup via `gh` in that case, so give it
   # one that resolves for cases that want pr_head recorded.
@@ -73,7 +79,7 @@ write_github_live_json() {
   local case_dir=$1 head=$2
   printf '%s\n' "$head" > "$case_dir/github-head"
   cat > "$case_dir/github-view.json" <<JSON
-{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"main","statusCheckRollup":[{"__typename":"CheckRun","name":"ci","status":"COMPLETED","conclusion":"SUCCESS"}]}
+{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"main","updatedAt":"$(cat "$case_dir/github-pr-updated-at")","statusCheckRollup":[{"__typename":"CheckRun","name":"ci","status":"COMPLETED","conclusion":"SUCCESS"}]}
 JSON
 }
 
@@ -81,7 +87,7 @@ write_github_red_json() {
   local case_dir=$1 head=$2 name=$3
   printf '%s\n' "$head" > "$case_dir/github-head"
   cat > "$case_dir/github-view.json" <<JSON
-{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"main","statusCheckRollup":[{"__typename":"CheckRun","name":"$name","status":"COMPLETED","conclusion":"FAILURE"}]}
+{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"main","updatedAt":"$(cat "$case_dir/github-pr-updated-at")","statusCheckRollup":[{"__typename":"CheckRun","name":"$name","status":"COMPLETED","conclusion":"FAILURE"}]}
 JSON
 }
 
@@ -116,7 +122,7 @@ write_github_rollup_json() {
   done
   printf '%s\n' "$head" > "$case_dir/github-head"
   cat > "$case_dir/github-view.json" <<JSON
-{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"main","statusCheckRollup":[$rollup]}
+{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"main","updatedAt":"$(cat "$case_dir/github-pr-updated-at")","statusCheckRollup":[$rollup]}
 JSON
 }
 
@@ -210,19 +216,16 @@ case "${1:-} ${2:-}" in
     exit 0
     ;;
   api\ repos/*/actions/runs\?*)
-    # The PR 34 SHA state: a manual workflow_dispatch diagnostic run sits at
-    # the head, so an unfiltered query reports one run while the
-    # pull_request-filtered one reports the case's configured count. A reader
-    # that drops &event=pull_request therefore reads the diagnostic run as
+    # Per-event run counts, so a reader that asks the wrong question gets the
+    # wrong answer. The unfiltered fallback of 1 is the PR 34 SHA state: a
+    # manual workflow_dispatch diagnostic run sits at the head, so a reader
+    # that drops &event= entirely would take firstmate's own diagnostic as
     # proof the checks arrived.
     case "$*" in
+      *event=pull_request_target*) cat "$FM_TEST_GH_PR_TARGET_RUN_COUNT" ;;
       *event=pull_request*) cat "$FM_TEST_GH_PR_RUN_COUNT" ;;
       *) printf '1\n' ;;
     esac
-    exit 0
-    ;;
-  api\ repos/*/commits/*)
-    cat "$FM_TEST_GH_COMMIT_DATE"
     exit 0
     ;;
   api\ *)
@@ -314,11 +317,24 @@ set_pr_run_count() {
   printf '%s\n' "$count" > "$case_dir/github-pr-run-count"
 }
 
-# The head commit's committer date, as github_check_dropped_ci_event reads it
-# to judge the grace window against FM_PR_MERGE_NOW_OVERRIDE.
-set_commit_date() {
+# The count of pull_request_target-event Actions runs at the same head. A
+# pull_request_target workflow produces runs under that event name and none
+# under pull_request, so the gate must count the events it actually armed on.
+set_pr_target_run_count() {
+  local case_dir=$1 count=$2
+  printf '%s\n' "$count" > "$case_dir/github-pr-target-run-count"
+}
+
+# The pull request's own last-update time, which is what the gate measures the
+# grace window from (the push that set the head bumps it). Patches any view
+# JSON already written for this case, so it can be called in any order.
+set_pr_updated_at() {
   local case_dir=$1 date=$2
-  printf '%s\n' "$date" > "$case_dir/github-commit-date"
+  printf '%s\n' "$date" > "$case_dir/github-pr-updated-at"
+  [ -f "$case_dir/github-view.json" ] || return 0
+  sed "s|\"updatedAt\":\"[^\"]*\"|\"updatedAt\":\"$date\"|" \
+    "$case_dir/github-view.json" > "$case_dir/github-view.json.next"
+  mv "$case_dir/github-view.json.next" "$case_dir/github-view.json"
 }
 
 add_failing_poll_publish_mv() {
@@ -465,7 +481,7 @@ run_pr_merge() {
   FM_TEST_GH_WORKFLOWS_LISTING="$case_dir/github-workflows-listing" \
   FM_TEST_GH_WORKFLOW_CONTENT_B64="$case_dir/github-workflow-content-b64" \
   FM_TEST_GH_PR_RUN_COUNT="$case_dir/github-pr-run-count" \
-  FM_TEST_GH_COMMIT_DATE="$case_dir/github-commit-date" \
+  FM_TEST_GH_PR_TARGET_RUN_COUNT="$case_dir/github-pr-target-run-count" \
   FM_TEST_GH_VIEW_JSON="$case_dir/github-view.json" \
   FM_TEST_GH_HEAD="$case_dir/github-head" \
   FM_TEST_GH_MERGE_RC_FILE="$case_dir/github-merge-rc" \
@@ -2710,7 +2726,7 @@ test_no_workflows_directory_merges_unaffected() {
 
 # A workflow exists but declares no pull_request(_target) trigger (push-only
 # here). The repository still has no PR CI in this rule's sense, so a stale,
-# zero-run head with no recent commit must not be refused.
+# zero-run head must not be refused.
 test_push_only_workflow_does_not_arm_the_dropped_event_gate() {
   local case_dir rc head
   head=2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a
@@ -2719,7 +2735,7 @@ test_push_only_workflow_does_not_arm_the_dropped_event_gate() {
   add_gh_mocks "$case_dir" "$head"
   set_push_only_workflow "$case_dir"
   set_pr_run_count "$case_dir" 0
-  set_commit_date "$case_dir" 2026-01-01T00:00:00Z
+  set_pr_updated_at "$case_dir" 2026-01-01T00:00:00Z
 
   FM_PR_MERGE_NOW_OVERRIDE=1767225600 run_pr_merge "$case_dir" task-x1 \
     https://github.com/example/repo/pull/102 \
@@ -2753,7 +2769,7 @@ jobs:
       - run: echo pull_request
 '
   set_pr_run_count "$case_dir" 0
-  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  set_pr_updated_at "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
 
   FM_PR_MERGE_NOW_OVERRIDE=1767225600 run_pr_merge "$case_dir" task-x1 \
     https://github.com/example/repo/pull/107 \
@@ -2774,10 +2790,10 @@ test_single_quoted_on_key_arms_the_dropped_event_gate() {
   add_gh_mocks "$case_dir" "$head"
   set_pr_ci_workflow "$case_dir" "'on':
   pull_request:
-    branches: [main]
+  push:
 "
   set_pr_run_count "$case_dir" 0
-  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  set_pr_updated_at "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
 
   set +e
   FM_PR_MERGE_NOW_OVERRIDE=1767225600 run_pr_merge "$case_dir" task-x1 \
@@ -2791,6 +2807,98 @@ test_single_quoted_on_key_arms_the_dropped_event_gate() {
   assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "single-quoted-on-key: gh pr merge ran on a suspected dropped CI event"
   pass "fm-pr-merge recognises the 'on': trigger-key spelling"
+}
+
+# A FILTERED pull_request trigger. GitHub creates no workflow run at all for a
+# pull request its branches:/paths:/types: filters exclude, so zero runs is the
+# correct, healthy state for such a repository and must never be read as a
+# dropped event: that refusal would be permanent and unwaivable on a perfectly
+# green pull request, which is the one outcome this gate may not produce.
+test_filtered_pull_request_trigger_does_not_arm_the_dropped_event_gate() {
+  local case_dir rc head spec
+  for spec in 'branches|on:
+  pull_request:
+    branches: [main]
+' 'paths|on:
+  pull_request:
+    paths:
+      - "src/**"
+' 'types|on:
+  pull_request:
+    types: [closed]
+'; do
+    head=9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a
+    case_dir=$(make_case "github-filtered-trigger-${spec%%|*}")
+    mkdir -p "$case_dir/wt"
+    add_gh_mocks "$case_dir" "$head"
+    set_pr_ci_workflow "$case_dir" "${spec#*|}"
+    set_pr_run_count "$case_dir" 0
+    set_pr_updated_at "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+
+    FM_PR_MERGE_NOW_OVERRIDE=1767225600 run_pr_merge "$case_dir" task-x1 \
+      https://github.com/example/repo/pull/109 \
+      > "$case_dir/stdout" 2> "$case_dir/stderr" \
+      || fail "filtered-trigger-${spec%%|*}: a filtered trigger must not arm the dropped-event gate"$'\n'"$(cat "$case_dir/stderr")"
+    assert_logged_gh_merge "$case_dir" 109 example/repo --squash
+  done
+  pass "fm-pr-merge never arms the dropped-event gate on a filtered pull_request trigger"
+}
+
+# A repository whose only unfiltered PR trigger is pull_request_target produces
+# runs under THAT event and none under pull_request. The gate counts the events
+# it armed on, so such a head is ordinary rather than a suspected drop.
+test_pull_request_target_runs_are_counted() {
+  local case_dir rc head
+  head=1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b
+  case_dir=$(make_case github-pr-target-run-present)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir" 'on:
+  pull_request_target:
+'
+  set_pr_run_count "$case_dir" 0
+  set_pr_target_run_count "$case_dir" 1
+  set_pr_updated_at "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+
+  FM_PR_MERGE_NOW_OVERRIDE=1767225600 run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/110 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "pr-target-run-present: a pull_request_target run must count as arrived"$'\n'"$(cat "$case_dir/stderr")"
+  assert_logged_gh_merge "$case_dir" 110 example/repo --squash
+  pass "fm-pr-merge counts runs for every trigger event that armed the gate"
+}
+
+# The grace window is measured from the pull request's own update time, not the
+# head commit's committer date. This pipeline commits, then spends minutes on
+# review, tests, lint and docs before it pushes, so a commit can be far older
+# than the pull_request delivery being judged: reading the commit's date would
+# report an event still in flight as a suspected drop and send the operator off
+# to rebase a healthy pull request.
+test_grace_window_is_measured_from_the_pull_request_update() {
+  local case_dir rc head now
+  head=2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b
+  now=1767225600 # 2026-01-01T00:00:00Z
+  case_dir=$(make_case github-ci-grace-from-update)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir"
+  set_pr_run_count "$case_dir" 0
+  set_pr_updated_at "$case_dir" 2025-12-31T23:59:00Z # pushed 60s before "now"
+
+  set +e
+  FM_PR_MERGE_NOW_OVERRIDE=$now run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/111 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "ci-grace-from-update: not-yet-arrived CI must not merge"
+  assert_grep "pull request's last update is younger than the delivery grace window" \
+    "$case_dir/stderr" "ci-grace-from-update: the grace-window reason was not reported"
+  assert_no_grep 'suspected dropped' "$case_dir/stderr" \
+    "ci-grace-from-update: a freshly updated head must never be reported as a suspected drop"
+  assert_no_grep 'api repos/example/repo/commits/' "$case_dir/gh.log" \
+    "ci-grace-from-update: the verdict still consulted the head commit's own date"
+  pass "fm-pr-merge judges delivery latency by the pull request's update time"
 }
 
 # The ordinary case: PR CI is configured and a pull_request-event run already
@@ -2812,9 +2920,9 @@ test_pr_ci_configured_with_a_run_present_merges_normally() {
   pass "fm-pr-merge merges normally once a pull_request-event run exists at the head"
 }
 
-# Zero pull_request-event runs at the head, but the head commit is younger
-# than the grace window: not arrived yet, not actionable, and never reported
-# as a suspected drop.
+# Zero pull_request-event runs at the head, but the pull request was updated
+# less than the grace window ago: not arrived yet, not actionable, and never
+# reported as a suspected drop.
 test_dropped_ci_event_within_grace_window_is_not_actionable() {
   local case_dir rc head now
   head=4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a
@@ -2824,7 +2932,7 @@ test_dropped_ci_event_within_grace_window_is_not_actionable() {
   add_gh_mocks "$case_dir" "$head"
   set_pr_ci_workflow "$case_dir"
   set_pr_run_count "$case_dir" 0
-  set_commit_date "$case_dir" 2025-12-31T23:57:00Z # 180s before "now"
+  set_pr_updated_at "$case_dir" 2025-12-31T23:57:00Z # 180s before "now"
 
   set +e
   FM_PR_MERGE_NOW_OVERRIDE=$now run_pr_merge "$case_dir" task-x1 \
@@ -2833,8 +2941,8 @@ test_dropped_ci_event_within_grace_window_is_not_actionable() {
   rc=$?
   set -e
   expect_code 1 "$rc" "ci-grace-window: not-yet-arrived CI must not merge"
-  assert_grep 'younger than the delivery grace window' "$case_dir/stderr" \
-    "ci-grace-window: the grace-window reason was not reported"
+  assert_grep "pull request's last update is younger than the delivery grace window" \
+    "$case_dir/stderr" "ci-grace-window: the grace-window reason was not reported"
   assert_no_grep 'suspected dropped' "$case_dir/stderr" \
     "ci-grace-window: a fresh head must never be reported as a suspected drop"
   assert_no_grep 'pr merge' "$case_dir/gh.log" \
@@ -2855,7 +2963,7 @@ test_dropped_ci_event_past_grace_window_refuses_as_suspected_drop() {
   add_gh_mocks "$case_dir" "$head"
   set_pr_ci_workflow "$case_dir"
   set_pr_run_count "$case_dir" 0
-  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  set_pr_updated_at "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
 
   set +e
   FM_PR_MERGE_NOW_OVERRIDE=$now run_pr_merge "$case_dir" task-x1 \
@@ -2922,7 +3030,9 @@ SH
     > "$case_dir/stdout" 2> "$case_dir/stderr" \
     || fail "unreadable-workflow-listing: an unreadable listing must not block an otherwise green merge"
   assert_logged_gh_merge "$case_dir" 106 example/repo --squash
-  pass "fm-pr-merge does not refuse a merge merely because the workflow listing could not be read"
+  assert_grep 'dropped-CI-event check is disarmed' "$case_dir/stderr" \
+    "unreadable-workflow-listing: a disarmed gate was not reported to the operator"
+  pass "fm-pr-merge reports, rather than hides, a gate disarmed by an unreadable listing"
 }
 
 # A superseded failure changes nothing about the waiver: --allow-red still covers
@@ -3422,6 +3532,9 @@ test_no_workflows_directory_merges_unaffected
 test_push_only_workflow_does_not_arm_the_dropped_event_gate
 test_commented_out_trigger_does_not_arm_the_dropped_event_gate
 test_single_quoted_on_key_arms_the_dropped_event_gate
+test_filtered_pull_request_trigger_does_not_arm_the_dropped_event_gate
+test_pull_request_target_runs_are_counted
+test_grace_window_is_measured_from_the_pull_request_update
 test_pr_ci_configured_with_a_run_present_merges_normally
 test_dropped_ci_event_within_grace_window_is_not_actionable
 test_dropped_ci_event_past_grace_window_refuses_as_suspected_drop
