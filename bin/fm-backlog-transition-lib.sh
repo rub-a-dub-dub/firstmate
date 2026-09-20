@@ -1419,6 +1419,19 @@ fm_backlog_reconcile_marker_ack() {  # <state-dir> <id>
   fm_backlog_close_marker_remove "$marker" "$1"
 }
 
+# A close transition that reached a row already gone from the backlog retires
+# the record without one landing, so label the replay by what it reached rather
+# than by the transition having returned 0.
+fm_backlog_close_replay_result() {  # <cleanup-incomplete>
+  local outcome=closed
+  [ "$FM_BACKLOG_CLOSE_ROW_ABSENT" != 1 ] || outcome=absent
+  if [ "$1" = 1 ]; then
+    FM_BACKLOG_CLOSE_REPLAY_RESULT=${outcome}_incomplete
+  else
+    FM_BACKLOG_CLOSE_REPLAY_RESULT=$outcome
+  fi
+}
+
 # Replay one recorded close or retention. Returns 0 when the row is closed (or
 # retained), the marker is stale, an answer already closed a retained row
 # (live or discovered through the archive), or a retain marker's row is
@@ -1498,11 +1511,7 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
       fi
       if fm_backlog_atomic_transition close '' "$marker" "$data" "$id" "$state" \
           "${args[@]+"${args[@]}"}"; then
-        if [ "$cleanup_incomplete" = 1 ]; then
-          FM_BACKLOG_CLOSE_REPLAY_RESULT=closed_incomplete
-        else
-          FM_BACKLOG_CLOSE_REPLAY_RESULT=closed
-        fi
+        fm_backlog_close_replay_result "$cleanup_incomplete"
         return 0
       fi
       return 1
@@ -1556,10 +1565,8 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
       else
         FM_BACKLOG_CLOSE_REPLAY_RESULT=retained
       fi
-    elif [ "$cleanup_incomplete" = 1 ]; then
-      FM_BACKLOG_CLOSE_REPLAY_RESULT=closed_incomplete
     else
-      FM_BACKLOG_CLOSE_REPLAY_RESULT=closed
+      fm_backlog_close_replay_result "$cleanup_incomplete"
     fi
     return 0
   fi
