@@ -1266,6 +1266,15 @@ backlog_record_reconcile() {
         answered)
           echo "BOOTSTRAP_INFO: finished the interrupted cleanup for $label; the captain had already answered its call"
           ;;
+        absent)
+          echo "BOOTSTRAP_INFO: retired the pending close for $label; its backlog row had already left this backlog, so no close was left to land"
+          ;;
+        absent_incomplete)
+          echo "BOOTSTRAP_INFO: retired the pending close for $label after interrupted cleanup; its backlog row had already left this backlog, so no close was left to land, and its endpoint or local copy may remain and should be reconciled"
+          ;;
+        stale)
+          echo "BOOTSTRAP_INFO: discarded a pending close for $label recorded by a superseded incarnation; the incarnation now on record still owes its own close"
+          ;;
       esac
     else
       echo "BACKLOG_RECONCILE: $label: recorded backlog close could not be replayed: $FM_BACKLOG_TRANSITION_ERROR"

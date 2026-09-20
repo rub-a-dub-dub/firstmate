@@ -11,9 +11,13 @@
 # completion links (the PR, the report path, a local-main note) live only in the
 # record being removed, the intended transition is recorded in
 # state/<id>.backlog-close first, so a process killed between the halves leaves
-# the next session start enough to finish it; a landed close removes that record.
-# A close that fails is fatal and loud, preserves its pending-close record, and
-# is retried by the next session start. The transition is skipped on a
+# the next session start enough to finish it; a landed close removes that record,
+# and so does a row that has already left this backlog, which the close accepts
+# and reports as an absence rather than as a landing
+# (bin/fm-backlog-transition-lib.sh owns that acceptance and its signal).
+# A close that fails for any other reason is fatal and loud, preserves its
+# pending-close record, and is retried by the next session start.
+# The transition is skipped on a
 # config/backlog-backend=manual home and in a markdown home that keeps no
 # data/backlog.md; those cases print the manual follow-up. A configured
 # non-markdown adapter remains active without a markdown file; any active
@@ -1434,6 +1438,8 @@ backlog_refresh_reminder() {
   fi
   if [ "$BACKLOG_CLOSED" = 1 ] && [ "$BACKLOG_TRANSITION" = retain ]; then
     printf '%s\n' "Backlog: $ID stays open in $backlog_display, still held for the captain with its deliverable recorded. Relay the question and close it only with bin/fm-captain-hold.sh answer."
+  elif [ "$BACKLOG_CLOSED" = 1 ] && [ "$BACKLOG_ROW_ABSENT" = 1 ]; then
+    printf '%s\n' "Backlog: $ID had already left $backlog_display, so cleanup recorded no close there. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due."
   elif [ "$BACKLOG_CLOSED" = 1 ]; then
     printf '%s\n' "Backlog: $ID is closed in $backlog_display. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due."
   else
@@ -3201,6 +3207,7 @@ if [ "$BACKEND" = herdr ]; then
 fi
 
 BACKLOG_CLOSED=0
+BACKLOG_ROW_ABSENT=0
 BACKLOG_TRANSITION=$TEARDOWN_BACKLOG_TRANSITION
 BACKLOG_TRANSITION_FLAGS=()
 [ "$BACKLOG_TRANSITION" = close ] || BACKLOG_TRANSITION_FLAGS=(--retain)
@@ -3482,6 +3489,7 @@ if [ "$BACKLOG_CLOSED" = 1 ]; then
     fi
     exit 1
   fi
+  BACKLOG_ROW_ABSENT=$FM_BACKLOG_CLOSE_ROW_ABSENT
 elif [ "$KIND" = secondmate ] && [ ! -e "$STATE" ] && [ ! -L "$STATE" ]; then
   # A nested remote retirement can keep its route record inside the home being
   # removed. remove_firstmate_home above already performed that physical
