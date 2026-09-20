@@ -1,0 +1,85 @@
+Every scenario below is run twice against the same mocked GitHub state: once
+with the base-commit (126eaec) merge script and once with this branch's, to
+show the new rule only ever refuses MORE, never less, and never turns a
+healthy pull request into an unmergeable one.
+
+========================================================================
+A repository with NO pull_request CI keeps merging (empty rollup, hour-old head)
+========================================================================
+
+[BASE] $ bin/fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/201
+verified: https://github.com/example/repo/pull/201 is open and mergeable, with every required check green at head 1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a
+armed: state/task-x1.check.sh
+verified: https://github.com/example/repo/pull/201 is merged (state=MERGED, merged=true, isInMergeQueue=false)
+exit status: 0   |   gh pr merge issued: YES
+
+[AFTER] $ bin/fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/201
+verified: https://github.com/example/repo/pull/201 is open and mergeable, with every required check green at head 1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a
+armed: state/task-x1.check.sh
+verified: https://github.com/example/repo/pull/201 is merged (state=MERGED, merged=true, isInMergeQueue=false)
+exit status: 0   |   gh pr merge issued: YES
+
+========================================================================
+A green pull request whose pull_request-event run exists merges normally
+========================================================================
+
+[BASE] $ bin/fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/202
+verified: https://github.com/example/repo/pull/202 is open and mergeable, with every required check green at head 3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a
+armed: state/task-x1.check.sh
+verified: https://github.com/example/repo/pull/202 is merged (state=MERGED, merged=true, isInMergeQueue=false)
+exit status: 0   |   gh pr merge issued: YES
+
+[AFTER] $ bin/fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/202
+verified: https://github.com/example/repo/pull/202 is open and mergeable, with every required check green at head 3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a
+armed: state/task-x1.check.sh
+verified: https://github.com/example/repo/pull/202 is merged (state=MERGED, merged=true, isInMergeQueue=false)
+exit status: 0   |   gh pr merge issued: YES
+
+========================================================================
+A head committed 3 minutes ago: not arrived yet, re-check - never called a dropped event
+========================================================================
+
+[BASE] $ bin/fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/203
+verified: https://github.com/example/repo/pull/203 is open and mergeable, with every required check green at head 4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a
+armed: state/task-x1.check.sh
+verified: https://github.com/example/repo/pull/203 is merged (state=MERGED, merged=true, isInMergeQueue=false)
+exit status: 0   |   gh pr merge issued: YES
+
+[AFTER] $ bin/fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/203
+error: refusing to merge https://github.com/example/repo/pull/203
+  - no pull_request-triggered check has reported for head 4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a yet, and its commit is younger than the delivery grace window; re-check shortly
+armed: state/task-x1.check.sh
+exit status: 1   |   gh pr merge issued: no
+
+========================================================================
+A pull_request_target-only repository keeps merging
+========================================================================
+
+[BASE] $ bin/fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/204
+verified: https://github.com/example/repo/pull/204 is open and mergeable, with every required check green at head 2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b
+armed: state/task-x1.check.sh
+verified: https://github.com/example/repo/pull/204 is merged (state=MERGED, merged=true, isInMergeQueue=false)
+exit status: 0   |   gh pr merge issued: YES
+
+[AFTER] $ bin/fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/204
+verified: https://github.com/example/repo/pull/204 is open and mergeable, with every required check green at head 2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b
+armed: state/task-x1.check.sh
+verified: https://github.com/example/repo/pull/204 is merged (state=MERGED, merged=true, isInMergeQueue=false)
+exit status: 0   |   gh pr merge issued: YES
+
+========================================================================
+An unreadable workflow listing disarms the gate loudly instead of refusing
+========================================================================
+
+[BASE] $ bin/fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/205
+verified: https://github.com/example/repo/pull/205 is open and mergeable, with every required check green at head 6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a
+armed: state/task-x1.check.sh
+verified: https://github.com/example/repo/pull/205 is merged (state=MERGED, merged=true, isInMergeQueue=false)
+exit status: 0   |   gh pr merge issued: YES
+
+[AFTER] $ bin/fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/205
+note: could not read this repository's workflow triggers, so the dropped-CI-event check is disarmed for this merge attempt
+verified: https://github.com/example/repo/pull/205 is open and mergeable, with every required check green at head 6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a
+armed: state/task-x1.check.sh
+verified: https://github.com/example/repo/pull/205 is merged (state=MERGED, merged=true, isInMergeQueue=false)
+exit status: 0   |   gh pr merge issued: YES

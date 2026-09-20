@@ -1,0 +1,16 @@
+tests/fm-pr-merge.test.sh - the 12 cases this change adds, run case by case
+
+ok - fm-pr-merge merges normally when the repository has no .github/workflows directory
+ok - fm-pr-merge ignores a workflow with no pull_request trigger
+ok - fm-pr-merge never arms the dropped-event gate on a pull_request_target-only repository
+ok - fm-pr-merge never reads comment text as a pull_request trigger declaration
+ok - fm-pr-merge reads only on:'s own children as trigger declarations
+ok - fm-pr-merge recognises the 'on': trigger-key spelling
+ok - fm-pr-merge recognises a zero-indented sequence of triggers under on:
+ok - fm-pr-merge merges normally once a pull_request-event run exists at the head
+ok - fm-pr-merge treats a fresh zero-run head as not-yet-arrived, not a drop
+ok - fm-pr-merge never treats a suspected dropped CI event as green, even with --allow-red
+ok - fm-pr-merge refuses a zero-run head even when the head commit date cannot be read
+ok - fm-pr-merge does not refuse a merge merely because the workflow listing could not be read
+
+12 cases run, 0 failed.
