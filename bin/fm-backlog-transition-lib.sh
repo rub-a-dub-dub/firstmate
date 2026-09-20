@@ -79,8 +79,9 @@ FM_BACKLOG_ROW_HOLD_KIND=
 # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
 FM_BACKLOG_CLOSE_REPLAY_RESULT=
 # Set by fm_backlog_close_marker_replay with a retain_absent result: the
-# deliverable the retired record carried, so the operator that result asks to
-# reconcile is told which artifact the retirement discarded.
+# deliverable the retired record carried, named by fm_backlog_retain_deliverable
+# so the operator that result asks to reconcile is told which artifact the
+# retirement discarded, and empty when the retention recorded none.
 # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
 FM_BACKLOG_CLOSE_REPLAY_DELIVERABLE=
 
@@ -588,6 +589,21 @@ fm_backlog_row_artifact_supported() {
   esac
 }
 
+# The single owner of how a retention's deliverable is put into words, so the
+# row body and every later report of that retention name it identically.
+fm_backlog_retain_deliverable() {  # [flag value]...
+  local arg previous_arg='' deliverable=''
+  for arg in "$@"; do
+    case "$previous_arg" in
+      --report) deliverable="${deliverable:+$deliverable; }report $arg" ;;
+      --pr) deliverable="${deliverable:+$deliverable; }PR $arg" ;;
+      --note) deliverable="${deliverable:+$deliverable; }$arg" ;;
+    esac
+    previous_arg=$arg
+  done
+  printf '%s\n' "$deliverable"
+}
+
 # Keep a captain-held row open across the removal of the work record that
 # discovered it: record the finished work's deliverable as one line at the end
 # of the task body (a line already present is left alone), preserve supported
@@ -605,19 +621,15 @@ fm_backlog_retain() {  # <data-dir> <id> [flag...]
   fi
   shift 2
   FM_BACKLOG_TRANSITION_ERROR=
+  deliverable=$(fm_backlog_retain_deliverable "$@")
   for arg in "$@"; do
     case "$previous_arg" in
       --report)
-        deliverable="${deliverable:+$deliverable; }report $arg"
         if fm_backlog_row_artifact_supported "$id" --report "$arg"; then
           row_args=(--report "$arg")
         fi
         ;;
-      --pr)
-        deliverable="${deliverable:+$deliverable; }PR $arg"
-        row_args=(--pr "$arg")
-        ;;
-      --note) deliverable="${deliverable:+$deliverable; }$arg" ;;
+      --pr) row_args=(--pr "$arg") ;;
     esac
     previous_arg=$arg
   done
@@ -1246,12 +1258,8 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
       # the record discards the only durable copy of the deliverable it
       # carried, so name that deliverable first: the caller cannot ask for a
       # reconciliation it can no longer identify.
-      case "${args[0]-}" in
-        --pr) FM_BACKLOG_CLOSE_REPLAY_DELIVERABLE="pull request ${args[1]}" ;;
-        --report) FM_BACKLOG_CLOSE_REPLAY_DELIVERABLE="report ${args[1]}" ;;
-        --note) FM_BACKLOG_CLOSE_REPLAY_DELIVERABLE="note ${args[1]}" ;;
-        *) FM_BACKLOG_CLOSE_REPLAY_DELIVERABLE="no deliverable recorded" ;;
-      esac
+      FM_BACKLOG_CLOSE_REPLAY_DELIVERABLE=$(fm_backlog_retain_deliverable \
+        "${args[@]+"${args[@]}"}")
       fm_backlog_close_marker_remove "$marker" "$state" || return 1
       if [ "$cleanup_incomplete" = 1 ]; then
         FM_BACKLOG_CLOSE_REPLAY_RESULT=retain_absent_incomplete

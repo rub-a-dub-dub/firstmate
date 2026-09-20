@@ -2080,7 +2080,7 @@ test_recovery_retires_a_retain_for_a_row_absent_from_the_backlog() {
     "a retain transition for an absent row was reported using the close path's wording"
   assert_contains "$out" "BACKLOG_RECONCILE: $id: the captain-held call could not be returned to Queued" \
     "an absent row's retention retirement gave no actionable retain-flavored report"
-  assert_contains "$out" "reconcile its recorded deliverable (pull request $pr) with the captain" \
+  assert_contains "$out" "its recorded deliverable (PR $pr) should be reconciled with the captain" \
     "the retirement asked for a reconciliation without naming the deliverable it had just discarded"
 
   out=$(run_bootstrap "$case_dir")
@@ -2089,6 +2089,37 @@ test_recovery_retires_a_retain_for_a_row_absent_from_the_backlog() {
   assert_not_contains "$out" "could not be returned to Queued" \
     "a retired retain marker reported its retirement a second time"
   pass "recovery retires a pending retention whose row already left the backlog, naming its deliverable on an actionable line"
+}
+
+# A captain-held task that paused to ask a question before producing any
+# artifact retains with no completion flags at all, so the retirement of its
+# absent row has no deliverable to name. The report must still say something
+# true the operator can act on, never instruct a reconciliation of a
+# deliverable the same sentence denies.
+test_recovery_retires_a_retain_that_recorded_no_deliverable() {
+  local case_dir id marker out
+  id=atomic-heal-retain-absent-bare-b14
+  case_dir=$(make_home heal-retain-absent-bare)
+  add_item "$case_dir" "$id"
+  tasks-axi hold "$id" --reason "captain decision pending" --kind captain \
+    --file "$(backlog_of "$case_dir")" >/dev/null
+  tasks-axi rm "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  [ -z "$(row_state "$case_dir" "$id")" ] \
+    || fail "the fixture's removed row is still visible to tasks-axi show"
+  marker="$(home_of "$case_dir")/state/$id.backlog-close"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-retain-absent-bare\nmode=retain\n' \
+    "$id" "$(home_of "$case_dir")/data" > "$marker"
+
+  out=$(run_bootstrap "$case_dir")
+  assert_absent "$marker" \
+    "a deliverable-free retain for an absent row was left to retry forever"
+  assert_contains "$out" "BACKLOG_RECONCILE: $id: the captain-held call could not be returned to Queued" \
+    "a deliverable-free retention retirement gave no actionable report"
+  assert_contains "$out" "it recorded no deliverable, so the call's disposition must be settled with the captain" \
+    "a deliverable-free retirement did not say what it actually knew"
+  assert_not_contains "$out" "recorded deliverable (" \
+    "a retirement that captured nothing still pointed the operator at a recorded deliverable"
+  pass "recovery reports a retention that recorded no deliverable without asking for one"
 }
 
 test_recovery_preserves_a_close_when_the_backlog_cannot_be_read() {
@@ -3097,6 +3128,7 @@ test_recovery_ignores_a_symlinked_worker_record
 test_recovery_replays_a_close_an_interrupted_cleanup_left_open
 test_recovery_backfills_a_recorded_link_on_an_already_done_item
 test_recovery_retires_a_retain_for_a_row_absent_from_the_backlog
+test_recovery_retires_a_retain_that_recorded_no_deliverable
 test_recovery_preserves_a_close_when_the_backlog_cannot_be_read
 test_recovery_retry_preserves_incomplete_cleanup_warning
 test_recovery_finishes_a_close_for_the_same_meta_incarnation
