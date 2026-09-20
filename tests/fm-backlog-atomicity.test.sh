@@ -2057,8 +2057,9 @@ test_recovery_backfills_a_recorded_link_on_an_already_done_item() {
 # instead of the close path's `stale`, and the report must never read as a
 # close.
 test_recovery_retires_a_retain_for_a_row_absent_from_the_backlog() {
-  local case_dir id marker out
+  local case_dir id marker pr out
   id=atomic-heal-retain-absent-b13
+  pr=https://github.com/example/repo/pull/11
   case_dir=$(make_home heal-retain-absent)
   add_item "$case_dir" "$id"
   tasks-axi hold "$id" --reason "captain decision pending" --kind captain \
@@ -2067,8 +2068,8 @@ test_recovery_retires_a_retain_for_a_row_absent_from_the_backlog() {
   [ -z "$(row_state "$case_dir" "$id")" ] \
     || fail "the fixture's removed row is still visible to tasks-axi show"
   marker="$(home_of "$case_dir")/state/$id.backlog-close"
-  printf 'id=%s\ndata=%s\nspawn_gen=spawn-retain-absent\nmode=retain\narg=--note\narg=local%%20main\n' \
-    "$id" "$(home_of "$case_dir")/data" > "$marker"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-retain-absent\nmode=retain\narg=--pr\narg=%s\n' \
+    "$id" "$(home_of "$case_dir")/data" "$pr" > "$marker"
 
   out=$(run_bootstrap "$case_dir")
   assert_absent "$marker" \
@@ -2077,13 +2078,17 @@ test_recovery_retires_a_retain_for_a_row_absent_from_the_backlog() {
     "an absent row's retention was reported as a lookup failure instead of a completed retirement"
   assert_not_contains "$out" "closed the backlog item" \
     "a retain transition for an absent row was reported using the close path's wording"
-  assert_contains "$out" "could not be returned to Queued" \
-    "an absent row's retention retirement gave no retain-flavored report"
+  assert_contains "$out" "BACKLOG_RECONCILE: $id: the captain-held call could not be returned to Queued" \
+    "an absent row's retention retirement gave no actionable retain-flavored report"
+  assert_contains "$out" "reconcile its recorded deliverable (pull request $pr) with the captain" \
+    "the retirement asked for a reconciliation without naming the deliverable it had just discarded"
 
   out=$(run_bootstrap "$case_dir")
   assert_not_contains "$out" "could not be replayed" \
     "a retired retain marker somehow left work behind for a later restart to retry"
-  pass "recovery retires a pending retention whose row already left the backlog, reported as a retain outcome"
+  assert_not_contains "$out" "could not be returned to Queued" \
+    "a retired retain marker reported its retirement a second time"
+  pass "recovery retires a pending retention whose row already left the backlog, naming its deliverable on an actionable line"
 }
 
 test_recovery_preserves_a_close_when_the_backlog_cannot_be_read() {

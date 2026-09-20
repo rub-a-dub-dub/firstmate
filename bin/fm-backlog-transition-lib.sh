@@ -69,13 +69,20 @@ FM_BACKLOG_ROW_ERROR=
 # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
 FM_BACKLOG_ROW_HOLD_KIND=
 # Set by fm_backlog_close_marker_replay: closed | closed_incomplete | retained |
-# retained_incomplete | answered | absent | absent_incomplete | stale | noop.
-# `absent` and `absent_incomplete` are the retain-mode twin of `stale`: the row
-# a retention was returning to Queued left the backlog entirely, so retiring
-# the marker is the only safe move, but it is not the close path's `stale`
-# outcome and must not be reported as one.
+# retained_incomplete | answered | retain_absent | retain_absent_incomplete |
+# stale | noop.
+# `retain_absent` and `retain_absent_incomplete` belong to the retain path
+# alone: the row a retention was returning to Queued left the backlog entirely,
+# so retiring the record is the only safe move, but the retention never reached
+# the outcome it was trying to reach and must not be reported through the close
+# path's `stale`.
 # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
 FM_BACKLOG_CLOSE_REPLAY_RESULT=
+# Set by fm_backlog_close_marker_replay with a retain_absent result: the
+# deliverable the retired record carried, so the operator that result asks to
+# reconcile is told which artifact the retirement discarded.
+# shellcheck disable=SC2034 # Output global, read by the sourcing caller.
+FM_BACKLOG_CLOSE_REPLAY_DELIVERABLE=
 
 # Bounded execution is fm-timeout-lib.sh's alone; source it rather than
 # re-deriving a deadline here. It is stateless, so the memoisation reason this
@@ -1155,6 +1162,7 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
   local id data marker_spawn_gen meta meta_spawn_gen row_state cleanup_incomplete mode
   local args=() mode_flags=()
   FM_BACKLOG_CLOSE_REPLAY_RESULT=noop
+  FM_BACKLOG_CLOSE_REPLAY_DELIVERABLE=
   fm_backlog_directory_present "$state" "state directory" || return 1
   [ -e "$marker" ] || [ -L "$marker" ] || return 0
   marker_name=${marker##*/}
@@ -1226,19 +1234,29 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
       return 1
       ;;
     '')
-      fm_backlog_close_marker_remove "$marker" "$state" || return 1
-      if [ "$mode" = retain ]; then
-        # The row a captain-held retention was returning to Queued is gone
-        # from the backlog entirely, so there is nothing left to reopen; that
-        # is not the outcome a retain transition was trying to reach, so it
-        # earns its own result rather than borrowing the close path's `stale`.
-        if [ "$cleanup_incomplete" = 1 ]; then
-          FM_BACKLOG_CLOSE_REPLAY_RESULT=absent_incomplete
-        else
-          FM_BACKLOG_CLOSE_REPLAY_RESULT=absent
-        fi
-      else
+      if [ "$mode" != retain ]; then
+        fm_backlog_close_marker_remove "$marker" "$state" || return 1
         FM_BACKLOG_CLOSE_REPLAY_RESULT=stale
+        return 0
+      fi
+      # The row a captain-held retention was returning to Queued is gone from
+      # the backlog entirely, so there is nothing left to reopen; that is not
+      # the outcome a retain transition was trying to reach, so it earns its
+      # own result rather than borrowing the close path's `stale`. Retiring
+      # the record discards the only durable copy of the deliverable it
+      # carried, so name that deliverable first: the caller cannot ask for a
+      # reconciliation it can no longer identify.
+      case "${args[0]-}" in
+        --pr) FM_BACKLOG_CLOSE_REPLAY_DELIVERABLE="pull request ${args[1]}" ;;
+        --report) FM_BACKLOG_CLOSE_REPLAY_DELIVERABLE="report ${args[1]}" ;;
+        --note) FM_BACKLOG_CLOSE_REPLAY_DELIVERABLE="note ${args[1]}" ;;
+        *) FM_BACKLOG_CLOSE_REPLAY_DELIVERABLE="no deliverable recorded" ;;
+      esac
+      fm_backlog_close_marker_remove "$marker" "$state" || return 1
+      if [ "$cleanup_incomplete" = 1 ]; then
+        FM_BACKLOG_CLOSE_REPLAY_RESULT=retain_absent_incomplete
+      else
+        FM_BACKLOG_CLOSE_REPLAY_RESULT=retain_absent
       fi
       return 0
       ;;
