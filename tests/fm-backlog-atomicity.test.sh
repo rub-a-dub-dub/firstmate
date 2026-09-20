@@ -220,6 +220,27 @@ SH
   chmod +x "$case_dir/fakebin/tasks-axi"
 }
 
+# Shadow tasks-axi with a wrapper whose `done` first archives the row out of the
+# backlog and then reports the NOT_FOUND a vanished row reads as, which is what a
+# retention prune landing inside a replay's own close window looks like from the
+# transition: the probe that chose the close saw a row, the close itself did not.
+archive_row_during_close() {  # <case-dir>
+  local case_dir=$1 real backlog
+  real=$(command -v tasks-axi)
+  backlog=$(backlog_of "$case_dir")
+  cat > "$case_dir/fakebin/tasks-axi" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = done ]; then
+  "$real" prune --keep 0 --state done --file "$backlog" >/dev/null 2>&1
+  printf 'error: Task "%s" not found in this backlog\n' "\${2:-}" >&2
+  printf 'code: NOT_FOUND\n' >&2
+  exit 1
+fi
+exec "$real" "\$@"
+SH
+  chmod +x "$case_dir/fakebin/tasks-axi"
+}
+
 break_verb() {  # <case-dir> <verb>
   local case_dir=$1 verb=$2 real
   real=$(command -v tasks-axi)
@@ -2147,6 +2168,37 @@ test_recovery_retires_a_close_for_a_row_archived_by_retention() {
   pass "recovery retires a pending close whose row already left the backlog through retention"
 }
 
+# The same absence reached from the other side: the row is still there when
+# replay probes it, and leaves the backlog before the close replay then runs.
+# The record is still correctly retired, but nothing closed, so a replay that
+# reported this as a landed close would tell the operator the opposite of what
+# its own transition found.
+test_recovery_reports_a_row_that_left_the_backlog_mid_close() {
+  local case_dir home id marker out
+  id=atomic-heal-vanished-b13
+  case_dir=$(make_home heal-vanished)
+  home=$(home_of "$case_dir")
+  add_item "$case_dir" "$id"
+  start_item "$case_dir" "$id"
+  tasks-axi "done" "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  [ "$(row_state "$case_dir" "$id")" = "done" ] \
+    || fail "the fixture's row is not the done row replay must probe before its close"
+  marker="$home/state/$id.backlog-close"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-vanished\narg=--note\narg=local%%20main\n' \
+    "$id" "$home/data" > "$marker"
+  archive_row_during_close "$case_dir"
+
+  out=$(run_bootstrap "$case_dir")
+  rm -f "$case_dir/fakebin/tasks-axi"
+  assert_absent "$marker" \
+    "a close whose row left the backlog mid-replay was left to retry forever"
+  assert_contains "$out" "had already left this backlog" \
+    "replay hid that its close found no row to land against"
+  assert_not_contains "$out" "that an interrupted cleanup left open" \
+    "replay reported a close as landed against a row that had left the backlog"
+  pass "recovery reports a close whose row left the backlog inside its own replay window"
+}
+
 test_recovery_preserves_a_close_when_the_backlog_cannot_be_read() {
   local case_dir id out
   id=atomic-heal-read-error-b10
@@ -3159,6 +3211,7 @@ test_recovery_ignores_a_symlinked_worker_record
 test_recovery_replays_a_close_an_interrupted_cleanup_left_open
 test_recovery_backfills_a_recorded_link_on_an_already_done_item
 test_recovery_retires_a_close_for_a_row_archived_by_retention
+test_recovery_reports_a_row_that_left_the_backlog_mid_close
 test_recovery_preserves_a_close_when_the_backlog_cannot_be_read
 test_recovery_retry_preserves_incomplete_cleanup_warning
 test_recovery_finishes_a_close_for_the_same_meta_incarnation
