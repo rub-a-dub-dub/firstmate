@@ -1,0 +1,57 @@
+
+========================================================
+SCENARIO A - teardown for a task whose backlog row closed and then aged out of done_keep retention
+========================================================
+
+$ tasks-axi done demo-shipped-then-aged-out   # the row is closed normally
+
+$ tasks-axi prune --keep 0 --state done   # retention archives the row out of the backlog
+
+$ tasks-axi show demo-shipped-then-aged-out
+code: NOT_FOUND (row_state is now '')
+
+$ bin/fm-teardown.sh demo-shipped-then-aged-out
+teardown demo-shipped-then-aged-out complete (window firstmate:fm-demo-shipped-then-aged-out, worktree /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-backlog-atomicity.M6CDWm/demo-teardown/absent-worktree)
+Backlog: demo-shipped-then-aged-out had already left /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-backlog-atomicity.M6CDWm/demo-teardown/home/data/backlog.md, so cleanup recorded no close there. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+
+[exit status] 0
+
+$ ls home/state/   # is a pending-close record left behind?
+(no demo-shipped-then-aged-out.backlog-close record)
+
+========================================================
+SCENARIO B - the next session start, with that pending close on disk
+========================================================
+
+$ bin/fm-bootstrap.sh   # what does the operator see about the pending close?
+BOOTSTRAP_INFO: retired the pending close for demo-shipped-then-aged-out; its backlog row had already left this backlog, so no close was left to land
+
+$ ls home/state/   # did session start retire the record?
+(retired: no demo-shipped-then-aged-out.backlog-close record)
+
+========================================================
+SCENARIO C - same archived row, but the teardown was killed mid-cleanup
+========================================================
+
+$ bin/fm-teardown.sh demo-interrupted-then-aged-out   # killed during destructive cleanup
+[exit status] 143
+
+$ bin/fm-bootstrap.sh   # next session start
+BOOTSTRAP_INFO: retired the pending close for demo-interrupted-then-aged-out after interrupted cleanup; its backlog row had already left this backlog, so no close was left to land, and its endpoint or local copy may remain and should be reconciled
+
+$ ls home/state/
+(retired: no demo-interrupted-then-aged-out.backlog-close record)
+
+========================================================
+SCENARIO D - unchanged case: a live In-flight row whose pending close came from a superseded incarnation
+========================================================
+
+$ tasks-axi show demo-live-row-newer-incarnation
+state: in_flight
+
+$ bin/fm-bootstrap.sh
+BOOTSTRAP_INFO: discarded a pending close for demo-live-row-newer-incarnation recorded by a superseded incarnation; the incarnation now on record still owes its own close
+
+$ tasks-axi show demo-live-row-newer-incarnation   # the live row is untouched
+state: in_flight
+

@@ -1,0 +1,8 @@
+ok - completion accepts a row retention already archived as the close it was reaching for
+ok - completion refuses to report success while its item is still open, and records what it owes
+ok - restart recovers closes recorded before destructive cleanup
+ok - restart retiring an archived row's close still warns that cleanup never finished
+ok - recovery retires a pending close whose row already left the backlog through retention
+ok - session start preserves a pending close across a transient backlog read failure
+ok - recovery preserves incomplete-cleanup evidence across a failed replay
+ok - session start drops a close recorded for an older meta incarnation

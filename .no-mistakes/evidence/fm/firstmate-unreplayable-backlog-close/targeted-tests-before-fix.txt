@@ -1,0 +1,15 @@
+Each new/changed test from tests/fm-backlog-atomicity.test.sh, run against
+base commit 6339e2d (the tree before this change). All four fail.
+
+# test_completion_accepts_a_row_already_archived_by_retention
+not ok - teardown failed against a row already archived by retention: error: teardown refused: task record authorized directory cannot be resolved at /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-backlog-atomicity.NsvA5r/close-archived/home/state
+
+# test_interrupted_cleanup_of_an_archived_row_still_warns_about_its_endpoint
+not ok - retiring an unlandable close silently dropped the orphaned-cleanup warning (missing: 'endpoint or local copy may remain')
+
+# test_recovery_retires_a_close_for_a_row_archived_by_retention
+not ok - a retired pending close was resolved silently, leaving the operator to infer it (missing: 'had already left this backlog')
+
+# test_recovery_drops_a_close_for_a_newer_meta_incarnation
+not ok - discarding a superseded incarnation's close was not reported to the operator (missing: 'still owes its own close')
+
