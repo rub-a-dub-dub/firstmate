@@ -18,11 +18,19 @@
 # it reports - because the rollup is the very surface that collapsed "no CI
 # configured" and "the checks never arrived" into one green-looking string.
 # The rule has two
-# steps. First, repo-level: does any workflow declare a pull_request or
-# pull_request_target trigger (github_repo_has_pr_ci_workflow)? A declared
-# trigger ARMS the rule; a repository that declares none genuinely has no PR
-# CI, absence of checks there is expected, and it merges exactly as it did
-# before this gate existed. Second, per-head: the current head must show at
+# steps. First, repo-level: does any workflow declare a pull_request trigger
+# (github_repo_has_pr_ci_workflow)? A declared trigger ARMS the rule; a
+# repository that declares none genuinely has no PR CI, absence of checks
+# there is expected, and it merges exactly as it did before this gate existed.
+# pull_request_target deliberately does NOT arm it, even though it is also a
+# pull-request trigger: GitHub records such a run under the
+# pull_request_target event and against the BASE branch's SHA, so it can never
+# appear in step two's head-SHA-filtered pull_request count no matter how that
+# query is widened. Absence is therefore expected by construction for a
+# repository whose only PR trigger is pull_request_target, which is exactly
+# what step one exists to exempt; arming on it would instead trap every one of
+# that repository's pull requests in a refusal its green, running CI can never
+# clear. Second, per-head: the current head must show at
 # least one Actions run whose event is pull_request
 # (github_check_dropped_ci_event), counted through the API's own event filter
 # rather than by whether any run object exists at the SHA - a workflow_dispatch
@@ -607,8 +615,9 @@ github_checks_not_green() {
   ' 2>/dev/null || return 1
 }
 
-# Whether a workflow file's raw text declares a pull_request or
-# pull_request_target trigger. Comments are stripped first, and only the
+# Whether a workflow file's raw text declares a pull_request trigger, and that
+# event exactly: pull_request_target does not count, because step two can never
+# count a run for it (see the header). Comments are stripped first, and only the
 # trigger block is scanned: from a line whose key is on:, or one of the "on": /
 # 'on': spellings that work around YAML 1.1 parsing bare on as true, to the
 # next unindented line. Within that block the word counts only where it is
@@ -631,7 +640,7 @@ github_workflow_declares_pull_request() {
       child = -1
       rest = line
       sub(/^[^:]*:/, "", rest)
-      if (rest ~ /(^|[^A-Za-z0-9_])pull_request(_target)?([^A-Za-z0-9_]|$)/) found = 1
+      if (rest ~ /(^|[^A-Za-z0-9_])pull_request([^A-Za-z0-9_]|$)/) found = 1
       next
     }
     !in_on { next }
@@ -640,13 +649,13 @@ github_workflow_declares_pull_request() {
     {
       here = indent_of(line)
       if (child < 0) child = here
-      if (here == child && line ~ /^[[:space:]]*(-[[:space:]]*)?pull_request(_target)?[[:space:]]*(:|$)/) found = 1
+      if (here == child && line ~ /^[[:space:]]*(-[[:space:]]*)?pull_request[[:space:]]*(:|$)/) found = 1
     }
     END { exit(found ? 0 : 1) }
   '
 }
 
-# Whether this repository has any pull_request(_target)-triggered workflow at
+# Whether this repository has any pull_request-triggered workflow at
 # all, read once per merge attempt (not cached across attempts or repos; each
 # invocation of this script judges exactly one merge). Sets
 # FM_PR_GITHUB_PR_CI to:

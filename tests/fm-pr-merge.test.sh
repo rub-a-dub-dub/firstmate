@@ -295,13 +295,25 @@ set_pr_ci_workflow() {
   printf '%s' "$content" | base64 > "$case_dir/github-workflow-content-b64"
 }
 
-# A workflow file exists but declares no pull_request(_target) trigger (e.g.
-# push- or schedule-only), so github_repo_has_pr_ci_workflow still reads "no"
-# despite .github/workflows being non-empty.
+# A workflow file exists but declares no pull_request trigger (e.g. push- or
+# schedule-only), so github_repo_has_pr_ci_workflow still reads "no" despite
+# .github/workflows being non-empty.
 set_push_only_workflow() {
   local case_dir=$1
   printf 'ci.yml\n' > "$case_dir/github-workflows-listing"
   printf 'on:\n  push:\n' | base64 > "$case_dir/github-workflow-content-b64"
+}
+
+# The repository's only pull-request trigger is pull_request_target, the
+# fork-safe pattern for CI that needs secrets. GitHub files those runs under
+# the pull_request_target event and against the base branch's SHA, so the head
+# SHA can never show a pull_request-event run for them, and the gate must not
+# arm on this.
+set_pull_request_target_workflow() {
+  local case_dir=$1
+  printf 'ci.yml\n' > "$case_dir/github-workflows-listing"
+  printf 'on:\n  pull_request_target:\n    branches: [main]\n' \
+    | base64 > "$case_dir/github-workflow-content-b64"
 }
 
 # The repository has no .github/workflows directory at all (a 404 on the
@@ -2745,7 +2757,7 @@ test_no_workflows_directory_merges_unaffected() {
   pass "fm-pr-merge merges normally when the repository has no .github/workflows directory"
 }
 
-# A workflow exists but declares no pull_request(_target) trigger (push-only
+# A workflow exists but declares no pull_request trigger (push-only
 # here). The repository still has no PR CI in this rule's sense, so a stale,
 # zero-run head with no recent commit must not be refused.
 test_push_only_workflow_does_not_arm_the_dropped_event_gate() {
@@ -2765,6 +2777,32 @@ test_push_only_workflow_does_not_arm_the_dropped_event_gate() {
     || fail "push-only-workflow: a push-only workflow must not arm the dropped-event gate"
   assert_logged_gh_merge "$case_dir" 102 example/repo --squash
   pass "fm-pr-merge ignores a workflow with no pull_request trigger"
+}
+
+# A repository whose only pull-request trigger is pull_request_target has real,
+# green CI running on its pull requests, but GitHub files those runs under the
+# pull_request_target event and against the base branch's SHA, so a head-SHA
+# pull_request count is zero for every one of them, forever. Arming here would
+# make every pull request in such a repository permanently unmergeable through
+# this script, unwaivable by --allow-red, so absence is expected for it and the
+# gate stays out of the way exactly as it does for a repository with no PR CI.
+test_pull_request_target_only_workflow_does_not_arm_the_dropped_event_gate() {
+  local case_dir rc head
+  head=2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b
+  case_dir=$(make_case github-pull-request-target-only)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pull_request_target_workflow "$case_dir"
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+
+  run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/111 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "pull-request-target-only: a pull_request_target-only repo must keep merging"$'\n'"$(cat "$case_dir/stderr")"
+  assert_logged_gh_merge "$case_dir" 111 example/repo --squash
+  pass "fm-pr-merge never arms the dropped-event gate on a pull_request_target-only repository"
 }
 
 # Comment text is not a trigger declaration. This repository's only workflow
@@ -3524,6 +3562,7 @@ test_supersession_never_crosses_check_names
 test_undated_runs_never_supersede
 test_no_workflows_directory_merges_unaffected
 test_push_only_workflow_does_not_arm_the_dropped_event_gate
+test_pull_request_target_only_workflow_does_not_arm_the_dropped_event_gate
 test_commented_out_trigger_does_not_arm_the_dropped_event_gate
 test_nested_input_named_pull_request_does_not_arm_the_dropped_event_gate
 test_single_quoted_on_key_arms_the_dropped_event_gate
