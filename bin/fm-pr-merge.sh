@@ -22,15 +22,16 @@
 # exactly as it has always behaved, because refusing every pull request for the
 # first minutes after every push is a false alarm, and a merge gate that
 # false-alarms gets turned off. A rollup that reported anything at all is
-# untouched by this rule at any age, and a pull request that is not open, not a
-# draft and mergeable-clean is not judged by it at all, because a conflict or a
-# draft already refuses below with the remedy that applies.
+# untouched by this rule at any age, and a pull request that is not all three of
+# open, non-draft and mergeable-clean is not judged by it at all, because a
+# conflict or a draft already refuses below with the remedy that applies.
 #
 # This asks no workflow file whether the repository ought to have CI. That
 # distinction was tried and proved unreliable: this repository's own ci.yml
-# declared a valid, unfiltered pull_request trigger for its entire history while
-# GitHub delivered zero pull_request-triggered runs to it, so a prediction read
-# from that file would have been satisfied by exactly the absence it exists to
+# declared, for its entire history, a valid pull_request trigger whose only
+# filter is the base branch these pull requests already target, while GitHub
+# delivered zero pull_request-triggered runs to it, so a prediction read from
+# that file would have been satisfied by exactly the absence it exists to
 # detect. Three consequences follow, all intentional and none of them hidden.
 #
 # First, absence of any check is deliberately no longer distinguishable from a
