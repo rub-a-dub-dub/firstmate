@@ -13,8 +13,47 @@
 # is open, not a draft, mergeable, free of conflicts, and every unwaived check
 # is green at the exact current head commit, where github_checks_not_green below
 # owns what makes a check green and judges each one by its current run.
-# Every failing condition is reported, not
-# just the first. The verified head is then passed to gh as
+# An EMPTY check rollup is the one state that reads as vacuously green there,
+# and it is never accepted on its own once the pull request's own last update
+# is a grace window or more old: zero checks reported that long after the last
+# push is not delivery latency, and the merge is refused. An empty rollup whose
+# age cannot be read at all is refused too, rather than passing for want of the
+# one value that would have judged it. Within the window an empty rollup is left
+# exactly as it has always behaved, because refusing every pull request for the
+# first minutes after every push is a false alarm, and a merge gate that
+# false-alarms gets turned off. A rollup that reported anything at all is
+# untouched by this rule at any age, and a pull request that is not all three of
+# open, non-draft and mergeable-clean is not judged by it at all, because a
+# conflict or a draft already refuses below with the remedy that applies.
+#
+# This asks no workflow file whether the repository ought to have CI. That
+# distinction was tried and proved unreliable: this repository's own ci.yml
+# declared, for its entire history, a valid pull_request trigger whose only
+# filter is the base branch these pull requests already target, while GitHub
+# delivered zero pull_request-triggered runs to it, so a prediction read from
+# that file would have been satisfied by exactly the absence it exists to
+# detect. Three consequences follow, all intentional and none of them hidden.
+#
+# First, absence of any check is deliberately no longer distinguishable from a
+# dropped one. A repository that has never configured PR CI, and never intends
+# to, therefore also refuses here once one of its pull requests sits past the
+# grace window with an empty rollup, and nothing waives it. Such a merge has to
+# happen by a path this script does not gate; that is the accepted price of
+# never again reading "no checks configured" as a green board.
+#
+# Second, the rule judges whether the rollup is EMPTY, not whether a
+# pull_request event was specifically delivered. A check attached to the same
+# head by any other trigger - a push-triggered workflow, a scheduled run, a
+# workflow_dispatch that leaves a visible check - makes the rollup non-empty and
+# this rule does not fire, even when the pull_request delivery was the thing
+# that was dropped; github_checks_not_green still judges whatever did report.
+#
+# Third, the age is the pull request's updatedAt, which any activity bumps, so a
+# stale dropped-event pull request commented on or approved shortly before a
+# merge attempt reads as fresh and skips the refusal, as does a clock skew that
+# dates updatedAt ahead of now. github_verify_mergeable carries the detail.
+# Every failing condition is reported, not just the first. The verified head is
+# then passed to gh as
 # --match-head-commit, so a push that lands between that read and the merge
 # fails the merge instead of landing commits nothing verified. Reading that
 # state needs gh and jq, and either one absent stops the merge before any
@@ -124,6 +163,16 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-merge-authority-lib.sh"
 # shellcheck source=bin/fm-afk-contract.sh
 . "$SCRIPT_DIR/fm-afk-contract.sh"
+# shellcheck source=bin/fm-classify-lib.sh
+. "$SCRIPT_DIR/fm-classify-lib.sh"
+
+# How long after a pull request's last update an empty check rollup is still
+# explainable as ordinary in-flight delivery latency rather than checks that
+# are never coming: normal delivery lands in 2-3 seconds observed, so 5 minutes
+# is roughly 100x that, generous enough to absorb jitter without false-alarming
+# a check that simply has not reported yet. Fixed rather than tunable;
+# FM_PR_MERGE_NOW_OVERRIDE is the one seam tests use, by pinning "now".
+FM_PR_MERGE_CI_GRACE_SECS_DEFAULT=300
 
 if [ "$#" -lt 2 ]; then
   echo "error: invalid PR merge request" >&2
@@ -567,11 +616,11 @@ github_checks_not_green() {
 # Pre-merge conditions for a GitHub pull request, read from one live view.
 # Sets FM_PR_MERGE_HEAD to the verified head on success.
 github_verify_mergeable() {
-  local json fields line red name covered
+  local json fields line red name covered updated_epoch now_epoch
   local total=0 named=0 refusals=''
-  local state='' draft='' mergeable='' merge_state='' live_head='' base=''
+  local state='' draft='' mergeable='' merge_state='' live_head='' base='' updated=''
 
-  if ! json=$(gh pr view "$URL" --json state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,statusCheckRollup 2>/dev/null) \
+  if ! json=$(gh pr view "$URL" --json state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,updatedAt,statusCheckRollup 2>/dev/null) \
     || [ -z "$json" ]; then
     echo "error: could not read the GitHub pull request state before merging" >&2
     return 1
@@ -583,7 +632,8 @@ github_verify_mergeable() {
         "mergeable=" + ((.mergeable // "") | tostring),
         "merge_state=" + ((.mergeStateStatus // "") | tostring),
         "head=" + ((.headRefOid // "") | tostring),
-        "base=" + ((.baseRefName // "") | tostring)
+        "base=" + ((.baseRefName // "") | tostring),
+        "updated=" + ((.updatedAt // "") | tostring)
       else
         error("pull request payload is not an object")
       end' 2>/dev/null); then
@@ -599,13 +649,14 @@ github_verify_mergeable() {
       merge_state=*) merge_state=${line#merge_state=} ;;
       head=*) live_head=${line#head=} ;;
       base=*) base=${line#base=} ;;
+      updated=*) updated=${line#updated=} ;;
       *) continue ;;
     esac
     named=$((named + 1))
   done <<FIELDS
 $fields
 FIELDS
-  if [ "$named" -ne 6 ] || [ "$total" -ne 6 ] || [ -z "$base" ]; then
+  if [ "$named" -ne 7 ] || [ "$total" -ne 7 ] || [ -z "$base" ]; then
     echo "error: could not read the GitHub pull request state before merging" >&2
     return 1
   fi
@@ -618,6 +669,61 @@ FIELDS
     echo "error: could not read the GitHub pull request state before merging" >&2
     return 1
   fi
+
+  # An empty rollup reads as vacuously green above: github_checks_not_green
+  # finds no red entry in zero entries, which is the exact trap this closes.
+  # Past the grace window that absence is no longer explainable as delivery
+  # latency, so it is never treated as green. Within the window it is left
+  # alone, because refusing every pull request for the first minutes after
+  # every push is a false alarm, and a merge gate that false-alarms gets
+  # turned off. A rollup that reported anything at all is untouched here at
+  # any age; github_checks_not_green alone judges it.
+  #
+  # Only an open, non-draft, mergeable-clean pull request is judged here. A
+  # conflicting one legitimately shows an empty rollup, because GitHub creates no
+  # pull_request run while it cannot compute a merge commit, and so does a draft
+  # in a repository that skips CI on drafts. Both already refuse below - on
+  # mergeable/DIRTY and on draft - with the remedy that applies, and this block
+  # runs first, so a suspected-dropped-event line would lead the operator's
+  # output with the one explanation that is not the reason.
+  #
+  # Two limits of this rule are accepted rather than hidden. It judges whether
+  # the rollup is EMPTY, not whether a pull_request event was specifically
+  # delivered, so a check attached to this same head by any other trigger - a
+  # push-triggered workflow, a scheduled run, a workflow_dispatch that leaves a
+  # visible check - makes the rollup non-empty and this rule does not fire even
+  # when the pull_request delivery was the thing that was dropped;
+  # github_checks_not_green still judges whatever did report. And the age is the
+  # pull request's own updatedAt, which ANY activity bumps - a comment, a review,
+  # a label, a body edit - so a genuinely stale dropped-event pull request that
+  # is approved or commented on shortly before a merge attempt reads as fresh
+  # and skips this refusal, as does a clock skew that dates updatedAt ahead of
+  # now. That is the cost of the pull request's activity clock, and no field in
+  # this one live read carries a true push timestamp to replace it with.
+  case "$state" in
+    [oO][pP][eE][nN])
+      if [ "$draft" = false ] && [ "$mergeable" = MERGEABLE ] && [ "$merge_state" != DIRTY ] \
+        && [ "$(printf '%s' "$json" | jq -r '.statusCheckRollup | length' 2>/dev/null)" = 0 ]; then
+        now_epoch=${FM_PR_MERGE_NOW_OVERRIDE:-$(date -u +%s)}
+        case "$now_epoch" in
+          ''|*[!0-9]*) now_epoch='' ;;
+        esac
+        # Both clocks are load-bearing only on this path, so they are required
+        # only on it: an empty rollup whose age cannot be established is never
+        # green, because the age is the whole verdict. A gh response carrying no
+        # usable updatedAt, or an unusable clock, therefore refuses like every
+        # other unreadable field this function reads.
+        if ! updated_epoch=$(fm_utc_iso_to_epoch "$updated") || [ -z "$now_epoch" ]; then
+          echo "error: could not tell how old this pull request's empty check rollup is, so it cannot be judged green before merging" >&2
+          return 1
+        fi
+        if [ "$((now_epoch - updated_epoch))" -ge "$FM_PR_MERGE_CI_GRACE_SECS_DEFAULT" ]; then
+          refusals="$refusals  - no check has reported for head $live_head at all, and this pull request was last updated more than the delivery grace window ago; an empty check rollup this stale is never treated as green
+"
+        fi
+      fi
+      ;;
+  esac
 
   case "$state" in
     [oO][pP][eE][nN]) ;;
