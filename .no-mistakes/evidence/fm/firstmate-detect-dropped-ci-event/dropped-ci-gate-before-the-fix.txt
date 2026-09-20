@@ -1,0 +1,19 @@
+firstmate merge gate - the behaviour this change replaces
+=========================================================
+The real bin/fm-pr-merge.sh at the BASE commit 6339e2d, driven against the same
+mocked `gh`. The pull request is open, mergeable-clean, and its check rollup is
+EMPTY - the exact board firstmate read on PR 34, which was red and one merge
+from landing.
+
+$ gh pr view https://github.com/example/repo/pull/102 --json state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,statusCheckRollup
+{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a","baseRefName":"main","statusCheckRollup":[]}
+
+$ bin/fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/102
+verified: https://github.com/example/repo/pull/102 is open and mergeable, with every required check green at head 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a
+armed: state/task-x1.check.sh
+verified: https://github.com/example/repo/pull/102 is merged (state=MERGED, merged=true, isInMergeQueue=false)
+[exit]   0
+[forge]  pr merge 102 --repo example/repo --match-head-commit 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a --squash
+
+Zero checks reported, and the gate said every required check was green and
+issued the merge. That is the state the new refusal closes.

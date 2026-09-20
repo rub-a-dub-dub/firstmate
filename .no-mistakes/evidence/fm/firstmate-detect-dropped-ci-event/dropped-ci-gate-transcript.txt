@@ -1,0 +1,135 @@
+firstmate merge gate - suspected dropped CI event
+=================================================
+The real bin/fm-pr-merge.sh at 9dcbea2, driven against a mocked `gh`. Each block
+shows the pull-request state the gate reads, the operator output it prints, its
+exit code, and whether a merge was actually issued to the forge.
+"now" is pinned to 2026-01-01T00:05:00Z; the grace window is 300s.
+
+-------------------------------------------------------------------------------
+[1] THE INCIDENT - an empty check rollup past the grace window
+-------------------------------------------------------------------------------
+An open, mergeable-clean pull request whose check rollup is EMPTY, last updated
+an hour before "now". At the base commit this exact state printed "every
+required check green" and merged (see dropped-ci-gate-before-the-fix.txt).
+
+$ gh pr view https://github.com/example/repo/pull/102 --json state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,updatedAt,statusCheckRollup
+{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a","baseRefName":"main","updatedAt":"2025-12-31T23:00:00Z","statusCheckRollup":[]}
+
+$ bin/fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/102 
+error: refusing to merge https://github.com/example/repo/pull/102
+  - no check has reported for head 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a at all, and this pull request was last updated more than the delivery grace window ago; an empty check rollup this stale is never treated as green
+armed: state/task-x1.check.sh
+[exit]   1
+[forge]  no 'gh pr merge' was issued
+
+   Retried with the attended red-check waiver. --allow-red names a red check
+   to waive; there is no check here to name, and this refusal is unwaivable:
+
+$ gh pr view https://github.com/example/repo/pull/102 --json state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,updatedAt,statusCheckRollup
+{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a","baseRefName":"main","updatedAt":"2025-12-31T23:00:00Z","statusCheckRollup":[]}
+
+$ bin/fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/102 --allow-red ci
+error: refusing to merge https://github.com/example/repo/pull/102
+  - no check has reported for head 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a at all, and this pull request was last updated more than the delivery grace window ago; an empty check rollup this stale is never treated as green
+armed: state/task-x1.check.sh
+[exit]   1
+[forge]  no 'gh pr merge' was issued
+
+-------------------------------------------------------------------------------
+[2] NO FALSE ALARM - an empty rollup inside the grace window merges
+-------------------------------------------------------------------------------
+This is the state of every pull request in the first minutes after a push: last
+updated 60s before "now".
+
+$ gh pr view https://github.com/example/repo/pull/101 --json state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,updatedAt,statusCheckRollup
+{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a","baseRefName":"main","updatedAt":"2025-12-31T23:59:00Z","statusCheckRollup":[]}
+
+$ bin/fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/101 
+verified: https://github.com/example/repo/pull/101 is open and mergeable, with every required check green at head 1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a
+armed: state/task-x1.check.sh
+verified: https://github.com/example/repo/pull/101 is merged (state=MERGED, merged=true, isInMergeQueue=false)
+[exit]   0
+[forge]  pr merge 101 --repo example/repo --match-head-commit 1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a --squash
+
+-------------------------------------------------------------------------------
+[3] NO FALSE ALARM - a rollup that reported is untouched at any age
+-------------------------------------------------------------------------------
+A green check run at the head; the pull request was last updated a month before
+"now". This is also why a check left by any other trigger - a push-triggered
+workflow, a schedule, a workflow_dispatch - disarms the rule: the rollup is no
+longer empty, and the conclusion alone decides.
+
+$ gh pr view https://github.com/example/repo/pull/103 --json state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,updatedAt,statusCheckRollup
+{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a","baseRefName":"main","updatedAt":"2025-12-01T00:00:00Z","statusCheckRollup":[{"__typename":"CheckRun","name":"ci","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2025-12-01T00:00:00Z","completedAt":"2025-12-01T00:00:00Z"}]}
+
+$ bin/fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/103 
+verified: https://github.com/example/repo/pull/103 is open and mergeable, with every required check green at head 3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a
+armed: state/task-x1.check.sh
+verified: https://github.com/example/repo/pull/103 is merged (state=MERGED, merged=true, isInMergeQueue=false)
+[exit]   0
+[forge]  pr merge 103 --repo example/repo --match-head-commit 3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a --squash
+
+-------------------------------------------------------------------------------
+[4] AN AGE THAT CANNOT BE READ REFUSES RATHER THAN PASSES
+-------------------------------------------------------------------------------
+(a) gh returns no updatedAt at all:
+
+$ gh pr view https://github.com/example/repo/pull/104 --json state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,updatedAt,statusCheckRollup
+{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a","baseRefName":"main","statusCheckRollup":[]}
+
+$ bin/fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/104 
+error: could not tell how old this pull request's empty check rollup is, so it cannot be judged green before merging
+armed: state/task-x1.check.sh
+[exit]   1
+[forge]  no 'gh pr merge' was issued
+
+(b) the clock itself is unusable (FM_PR_MERGE_NOW_OVERRIDE=not-a-timestamp):
+
+$ gh pr view https://github.com/example/repo/pull/105 --json state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,updatedAt,statusCheckRollup
+{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a","baseRefName":"main","updatedAt":"2025-12-31T23:00:00Z","statusCheckRollup":[]}
+
+$ bin/fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/105 
+error: could not tell how old this pull request's empty check rollup is, so it cannot be judged green before merging
+armed: state/task-x1.check.sh
+[exit]   1
+[forge]  no 'gh pr merge' was issued
+
+-------------------------------------------------------------------------------
+[5] THE REFUSAL NAMES THE REMEDY THAT APPLIES
+-------------------------------------------------------------------------------
+A conflicting pull request legitimately has an empty rollup - GitHub creates no
+pull_request run while it cannot compute a merge commit. It is refused as a
+conflict, with no "no check has reported" line leading the output:
+
+$ gh pr view https://github.com/example/repo/pull/106 --json state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,updatedAt,statusCheckRollup
+{"state":"OPEN","isDraft":false,"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY","headRefOid":"5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a","baseRefName":"main","updatedAt":"2025-12-31T23:00:00Z","statusCheckRollup":[]}
+
+$ bin/fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/106 
+error: refusing to merge https://github.com/example/repo/pull/106
+  - mergeable is "CONFLICTING", not MERGEABLE
+  - mergeStateStatus is DIRTY (conflicts)
+armed: state/task-x1.check.sh
+[exit]   1
+[forge]  no 'gh pr merge' was issued
+
+A draft pull request in a repository that skips CI on drafts is the same story.
+GitHub reports a draft as mergeable with mergeStateStatus DRAFT, not DIRTY:
+
+$ gh pr view https://github.com/example/repo/pull/107 --json state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,updatedAt,statusCheckRollup
+{"state":"OPEN","isDraft":true,"mergeable":"MERGEABLE","mergeStateStatus":"DRAFT","headRefOid":"6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a","baseRefName":"main","updatedAt":"2025-12-31T23:00:00Z","statusCheckRollup":[]}
+
+$ bin/fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/107 
+error: refusing to merge https://github.com/example/repo/pull/107
+  - the pull request is a draft
+armed: state/task-x1.check.sh
+[exit]   1
+[forge]  no 'gh pr merge' was issued
+
+-------------------------------------------------------------------------------
+DEPENDENCY RESOLVED
+-------------------------------------------------------------------------------
+The intent noted that `gh-axi pr view` does not surface the head SHA. The gate
+reads the head, the rollup and the age from the one live `gh pr view` it already
+made, adding no API call. The exact command issued in every block above:
+
+  pr view <url> --json state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,updatedAt,statusCheckRollup
