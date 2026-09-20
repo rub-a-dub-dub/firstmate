@@ -1,0 +1,8 @@
+One retention, one vocabulary: the row body and the session-start
+reconcile line must name the same deliverable the same way.
+
+--- (1) the retained backlog row, as the captain sees it ---
+  body: "Deliverable of the finished work: PR https://github.com/example/repo/pull/11"
+
+--- (2) session start after that row left the backlog ---
+BACKLOG_RECONCILE: captain-hold-vocab: the captain-held call could not be returned to Queued after an interrupted cleanup because its backlog row no longer exists; its recorded deliverable (PR https://github.com/example/repo/pull/11) should be reconciled with the captain

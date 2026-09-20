@@ -1,0 +1,21 @@
+Base-vs-change behaviour of the three new regression tests
+(tests/fm-backlog-atomicity.test.sh; run against the base tree at 6339e2d and against this change)
+
+### test_recovery_retires_a_retain_for_a_row_absent_from_the_backlog
+-- against BASE 6339e2d --
+not ok - an absent row's retention retirement gave no actionable retain-flavored report (missing: 'BACKLOG_RECONCILE: atomic-heal-retain-absent-b13: the captain-held call could not be returned to Queued')
+-- against THIS CHANGE 1ba4356 --
+ok - recovery retires a pending retention whose row already left the backlog, naming its deliverable on an actionable line
+
+### test_recovery_retires_a_retain_that_recorded_no_deliverable
+-- against BASE 6339e2d --
+not ok - a deliverable-free retention retirement gave no actionable report (missing: 'BACKLOG_RECONCILE: atomic-heal-retain-absent-bare-b14: the captain-held call could not be returned to Queued')
+-- against THIS CHANGE 1ba4356 --
+ok - recovery reports a retention that recorded no deliverable without asking for one
+
+### test_recovery_warns_about_surviving_resources_when_a_retain_row_is_absent
+-- against BASE 6339e2d --
+not ok - an interrupted retention of an absent row went unreported: STARTUP_MEMORY_BUDGET: invalid config/startup-memory-budget - could not create config directory
+-- against THIS CHANGE 1ba4356 --
+ok - recovery warns about surviving resources when an absent row's retention was interrupted mid-cleanup
+

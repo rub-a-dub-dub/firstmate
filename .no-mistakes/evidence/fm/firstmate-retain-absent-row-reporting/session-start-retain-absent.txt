@@ -1,0 +1,93 @@
+firstmate: retain replay of a captain-held row absent from the backlog
+host: Darwin 25.6.0 arm64 | perl: 5.034001 | tasks-axi: 0.2.5
+
+================================================================
+SCENARIO: retention that captured a PR
+================================================================
+
+--- pending retain record teardown left behind (state/<id>.backlog-close) ---
+id=captain-hold-retain-pr-head
+data=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-backlog-atomicity.TUY1fQ/evidence-retain-pr-head-1390/home/data
+spawn_gen=spawn-retain-pr-head
+mode=retain
+arg=--pr
+arg=https://github.com/example/repo/pull/11
+
+--- the row is gone from this home backlog ---
+tasks-axi show captain-hold-retain-pr-head -> state []
+
+--- SESSION START on BASE 6339e2d (bin/fm-bootstrap.sh) ---
+(no BACKLOG_RECONCILE line at all - the retain was retired silently)
+
+--- SESSION START on THIS CHANGE 1ba4356 (bin/fm-bootstrap.sh) ---
+BACKLOG_RECONCILE: captain-hold-retain-pr-head: the captain-held call could not be returned to Queued after an interrupted cleanup because its backlog row no longer exists; its recorded deliverable (PR https://github.com/example/repo/pull/11) should be reconciled with the captain
+
+--- record retired, so nothing retries forever: marker present after session start? no ---
+
+--- SECOND SESSION START on THIS CHANGE (must not repeat or resurrect) ---
+(silent, as expected)
+
+================================================================
+SCENARIO: retention that captured nothing (paused to ask before any artifact)
+================================================================
+
+--- pending retain record teardown left behind (state/<id>.backlog-close) ---
+id=captain-hold-retain-bare-head
+data=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-backlog-atomicity.TUY1fQ/evidence-retain-bare-head-27408/home/data
+spawn_gen=spawn-retain-bare-head
+mode=retain
+
+--- the row is gone from this home backlog ---
+tasks-axi show captain-hold-retain-bare-head -> state []
+
+--- SESSION START on BASE 6339e2d (bin/fm-bootstrap.sh) ---
+(no BACKLOG_RECONCILE line at all - the retain was retired silently)
+
+--- SESSION START on THIS CHANGE 1ba4356 (bin/fm-bootstrap.sh) ---
+BACKLOG_RECONCILE: captain-hold-retain-bare-head: the captain-held call could not be returned to Queued after an interrupted cleanup because its backlog row no longer exists; it recorded no deliverable, so the call's disposition must be settled with the captain
+
+--- record retired, so nothing retries forever: marker present after session start? no ---
+
+--- SECOND SESSION START on THIS CHANGE (must not repeat or resurrect) ---
+(silent, as expected)
+
+================================================================
+SCENARIO: retention whose cleanup was also interrupted (meta still on disk)
+================================================================
+
+--- pending retain record teardown left behind (state/<id>.backlog-close) ---
+id=captain-hold-retain-incomplete-head
+data=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-backlog-atomicity.TUY1fQ/evidence-retain-incomplete-head-14642/home/data
+spawn_gen=spawn-retain-incomplete-head
+mode=retain
+arg=--pr
+arg=https://github.com/example/repo/pull/12
+
+--- the row is gone from this home backlog ---
+tasks-axi show captain-hold-retain-incomplete-head -> state []
+
+--- SESSION START on BASE 6339e2d (bin/fm-bootstrap.sh) ---
+(no BACKLOG_RECONCILE line at all - the retain was retired silently)
+
+--- SESSION START on THIS CHANGE 1ba4356 (bin/fm-bootstrap.sh) ---
+BACKLOG_RECONCILE: captain-hold-retain-incomplete-head: the captain-held call could not be returned to Queued after an interrupted cleanup because its backlog row no longer exists; its endpoint or local copy may also remain, and its recorded deliverable (PR https://github.com/example/repo/pull/12) should be reconciled with the captain
+
+--- record retired, so nothing retries forever: marker present after session start? no ---
+
+--- SECOND SESSION START on THIS CHANGE (must not repeat or resurrect) ---
+(silent, as expected)
+
+================================================================
+CONTROL SCENARIO: a CLOSE-mode record whose row is also absent
+The new report belongs to mode=retain alone; the close path must be
+byte-for-byte what the base commit did.
+================================================================
+
+--- SESSION START on BASE 6339e2d ---
+(no BACKLOG_RECONCILE line - the close record is retired silently)
+marker present after session start? no
+
+--- SESSION START on THIS CHANGE 1ba4356 ---
+(no BACKLOG_RECONCILE line - the close record is retired silently)
+marker present after session start? no
+
