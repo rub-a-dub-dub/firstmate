@@ -620,17 +620,19 @@ github_checks_not_green() {
 # count a run for it (see the header). Comments are stripped first, and only the
 # trigger block is scanned: from a line whose key is on:, or one of the "on": /
 # 'on': spellings that work around YAML 1.1 parsing bare on as true, to the
-# next unindented line. Within that block the word counts only where it is
-# shaped like a trigger AND sits at the block's own immediate child indentation
-# (taken from its first non-blank child line) - the inline
-# "on: [push, pull_request]" list, a nested "pull_request:" key, or a
-# "- pull_request" sequence entry. An event name is a direct child of on: and
-# nothing else, so requiring that depth is what separates a real trigger from a
-# same-named key nested deeper, such as a workflow_dispatch input called
-# pull_request, which declares no PR CI at all. A commented-out trigger, a
-# comment elsewhere in the file, a path filter naming a pull_request.yml file,
-# and a job step that merely mentions the word are likewise never mistaken for
-# a trigger declaration. This is a text heuristic, not a YAML parser.
+# next unindented line that is not itself a sequence entry, since a block
+# sequence is legally written at its own parent key's indentation. Within
+# that block the word counts only where it is shaped like a trigger AND sits
+# at the block's own immediate child indentation (taken from its first
+# non-blank child line) - the inline "on: [push, pull_request]" list, a
+# nested "pull_request:" key, or a "- pull_request" sequence entry. An event
+# name is a direct child of on: and nothing else, so requiring that depth is
+# what separates a real trigger from a same-named key nested deeper, such as
+# a workflow_dispatch input called pull_request, which declares no PR CI at
+# all. A commented-out trigger, a comment elsewhere in the file, a path
+# filter naming a pull_request.yml file, and a job step that merely mentions
+# the word are likewise never mistaken for a trigger declaration. This is a
+# text heuristic, not a YAML parser.
 github_workflow_declares_pull_request() {
   printf '%s\n' "$1" | awk '
     function indent_of(s) { match(s, /^[[:space:]]*/); return RLENGTH }
@@ -645,7 +647,7 @@ github_workflow_declares_pull_request() {
     }
     !in_on { next }
     line ~ /^[[:space:]]*$/ { next }
-    line ~ /^[^[:space:]]/ { in_on = 0; next }
+    line ~ /^[^[:space:]]/ && line !~ /^-([[:space:]]|$)/ { in_on = 0; next }
     {
       here = indent_of(line)
       if (child < 0) child = here

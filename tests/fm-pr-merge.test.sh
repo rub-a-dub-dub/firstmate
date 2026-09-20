@@ -2902,6 +2902,41 @@ test_single_quoted_on_key_arms_the_dropped_event_gate() {
   pass "fm-pr-merge recognises the 'on': trigger-key spelling"
 }
 
+# A block sequence is legally written at its parent key's own indentation, so
+# "on:" followed by zero-indented "- push" / "- pull_request" entries is a real
+# pull_request trigger that GitHub Actions runs on every pull request. Its
+# stale, zero-run head is therefore a suspected dropped event, exactly as the
+# indented spelling of the same list is.
+test_zero_indented_sequence_trigger_arms_the_dropped_event_gate() {
+  local case_dir rc head
+  head=6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c
+  case_dir=$(make_case github-zero-indented-sequence-trigger)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir" 'name: CI
+on:
+- push
+- pull_request
+jobs: {}
+'
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/112 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "zero-indented-sequence-trigger: a stale zero-run head must refuse"
+  assert_grep 'suspected dropped CI event' "$case_dir/stderr" \
+    "zero-indented-sequence-trigger: the suspected-drop reason was not reported"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "zero-indented-sequence-trigger: gh pr merge ran on a suspected dropped CI event"
+  pass "fm-pr-merge recognises a zero-indented sequence of triggers under on:"
+}
+
 # The ordinary case: PR CI is configured and a pull_request-event run already
 # exists at the current head. The dropped-event gate must stay out of the way
 # and let the existing green rollup govern the merge.
@@ -3566,6 +3601,7 @@ test_pull_request_target_only_workflow_does_not_arm_the_dropped_event_gate
 test_commented_out_trigger_does_not_arm_the_dropped_event_gate
 test_nested_input_named_pull_request_does_not_arm_the_dropped_event_gate
 test_single_quoted_on_key_arms_the_dropped_event_gate
+test_zero_indented_sequence_trigger_arms_the_dropped_event_gate
 test_pr_ci_configured_with_a_run_present_merges_normally
 test_dropped_ci_event_within_grace_window_is_not_actionable
 test_dropped_ci_event_past_grace_window_refuses_as_suspected_drop
