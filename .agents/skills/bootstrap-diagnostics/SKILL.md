@@ -52,6 +52,8 @@ When any diagnostic needs captain attention, report the plain consequence and re
   Verify process reaping, the local-copy return, and endpoint closure, then reconcile any surviving resource.
 - `BOOTSTRAP_INFO: kept the captain call for <id> open with its deliverable recorded after interrupted cleanup; its endpoint or local copy may remain and should be reconciled` - replay retained the captain-held item, but physical cleanup was interrupted.
   Verify process reaping, the local-copy return, and endpoint closure without closing or lifting the captain's call, then reconcile any surviving resource.
+- `BOOTSTRAP_INFO: retired the pending close for <id> after interrupted cleanup; its backlog row had already left this backlog, so no close was left to land, and its endpoint or local copy may remain and should be reconciled` - the row was already gone, so replay retired the record without landing any close, but the durable transition says physical cleanup was interrupted.
+  Verify process reaping, the local-copy return, and endpoint closure, then reconcile any surviving resource; do not re-close the row, and never read its absence as evidence that the physical cleanup finished.
 - `BACKLOG_RECONCILE: <id>: recorded backlog close could not be replayed: <reason>` - this session start found a pending-close record carrying a close or retention transition but could not land it.
   A valid teardown record proves the transition was authorized and recorded, but physical cleanup may be partial: verify process reaping, the local-copy return, and endpoint closure before assuming those resources are gone.
   A validation error means the record cannot be trusted, so do not assume cleanup completed or follow any path or argument stored in it.

@@ -11,9 +11,13 @@
 # completion links (the PR, the report path, a local-main note) live only in the
 # record being removed, the intended transition is recorded in
 # state/<id>.backlog-close first, so a process killed between the halves leaves
-# the next session start enough to finish it; a landed close removes that record.
-# A close that fails is fatal and loud, preserves its pending-close record, and
-# is retried by the next session start. The transition is skipped on a
+# the next session start enough to finish it; a landed close removes that record,
+# and so does a row that has already left this backlog, which the close accepts
+# and reports as an absence rather than as a landing
+# (bin/fm-backlog-transition-lib.sh owns that acceptance and its signal).
+# A close that fails for any other reason is fatal and loud, preserves its
+# pending-close record, and is retried by the next session start.
+# The transition is skipped on a
 # config/backlog-backend=manual home and in a markdown home that keeps no
 # data/backlog.md; those cases print the manual follow-up. A configured
 # non-markdown adapter remains active without a markdown file; any active
