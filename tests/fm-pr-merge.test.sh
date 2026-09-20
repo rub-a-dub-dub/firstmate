@@ -26,11 +26,6 @@ MR_URL="$MR_PROJECT_URL/-/merge_requests/7"
 MR_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 MR_STALE_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 
-# The pull request's last-update time every case starts with. The gate measures
-# its grace window from this, so a case that exercises the window pins both
-# ends: this value and FM_PR_MERGE_NOW_OVERRIDE.
-FM_TEST_PR_UPDATED_AT_DEFAULT=2026-01-01T00:00:00Z
-
 JQ_BIN=$(command -v jq) || fail "these tests read glab's JSON with the real jq, which was not found"
 REAL_MV=$(command -v mv) || fail "these tests need mv to simulate a failed poll publish"
 
@@ -57,7 +52,14 @@ make_case() {
     'base=main' > "$case_dir/github-outcome"
   : > "$case_dir/github-rules"
   : > "$case_dir/gh.log"
-  printf '%s\n' "$FM_TEST_PR_UPDATED_AT_DEFAULT" > "$case_dir/github-pr-updated-at"
+  # Empty by default: an empty workflow listing reads as "no PR CI" (see
+  # github_repo_has_pr_ci_workflow), so every case that never calls
+  # set_pr_ci_workflow/set_push_only_workflow/set_workflows_404 keeps
+  # today's merge behavior unaffected by the dropped-CI-event gate.
+  : > "$case_dir/github-workflows-listing"
+  : > "$case_dir/github-workflow-content-b64"
+  : > "$case_dir/github-pr-run-count"
+  : > "$case_dir/github-commit-date"
   # No worktree/project on disk; fm-pr-check.sh tolerates a worktree it cannot
   # stat and simply skips the pr_head lookup via `gh` in that case, so give it
   # one that resolves for cases that want pr_head recorded.
@@ -71,7 +73,7 @@ write_github_live_json() {
   local case_dir=$1 head=$2
   printf '%s\n' "$head" > "$case_dir/github-head"
   cat > "$case_dir/github-view.json" <<JSON
-{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"main","updatedAt":"$(cat "$case_dir/github-pr-updated-at")","statusCheckRollup":[{"__typename":"CheckRun","name":"ci","status":"COMPLETED","conclusion":"SUCCESS"}]}
+{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"main","statusCheckRollup":[{"__typename":"CheckRun","name":"ci","status":"COMPLETED","conclusion":"SUCCESS"}]}
 JSON
 }
 
@@ -79,7 +81,7 @@ write_github_red_json() {
   local case_dir=$1 head=$2 name=$3
   printf '%s\n' "$head" > "$case_dir/github-head"
   cat > "$case_dir/github-view.json" <<JSON
-{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"main","updatedAt":"$(cat "$case_dir/github-pr-updated-at")","statusCheckRollup":[{"__typename":"CheckRun","name":"$name","status":"COMPLETED","conclusion":"FAILURE"}]}
+{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"main","statusCheckRollup":[{"__typename":"CheckRun","name":"$name","status":"COMPLETED","conclusion":"FAILURE"}]}
 JSON
 }
 
@@ -114,7 +116,7 @@ write_github_rollup_json() {
   done
   printf '%s\n' "$head" > "$case_dir/github-head"
   cat > "$case_dir/github-view.json" <<JSON
-{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"main","updatedAt":"$(cat "$case_dir/github-pr-updated-at")","statusCheckRollup":[$rollup]}
+{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"main","statusCheckRollup":[$rollup]}
 JSON
 }
 
@@ -195,6 +197,34 @@ case "${1:-} ${2:-}" in
     cat "$FM_TEST_GH_OUTCOME"
     exit 0
     ;;
+  api\ repos/*/contents/.github/workflows)
+    if [ -f "${FM_TEST_GH_WORKFLOWS_404:-}" ]; then
+      echo 'gh: Not Found (HTTP 404)' >&2
+      exit 1
+    fi
+    cat "$FM_TEST_GH_WORKFLOWS_LISTING"
+    exit 0
+    ;;
+  api\ repos/*/contents/.github/workflows/*)
+    cat "$FM_TEST_GH_WORKFLOW_CONTENT_B64"
+    exit 0
+    ;;
+  api\ repos/*/actions/runs\?*)
+    # The PR 34 SHA state: a manual workflow_dispatch diagnostic run sits at
+    # the head, so an unfiltered query reports one run while the
+    # pull_request-filtered one reports the case's configured count. A reader
+    # that drops &event=pull_request therefore reads the diagnostic run as
+    # proof the checks arrived.
+    case "$*" in
+      *event=pull_request*) cat "$FM_TEST_GH_PR_RUN_COUNT" ;;
+      *) printf '1\n' ;;
+    esac
+    exit 0
+    ;;
+  api\ repos/*/commits/*)
+    cat "$FM_TEST_GH_COMMIT_DATE"
+    exit 0
+    ;;
   api\ *)
     if [ -f "${FM_TEST_GH_RULES_FAIL_BODY:-}" ]; then
       cat "$FM_TEST_GH_RULES_FAIL_BODY" >&2
@@ -245,16 +275,50 @@ SH
   chmod +x "$case_dir/fakebin/gh-axi"
 }
 
-# The pull request's own last-update time, which is what the empty-rollup rule
-# measures its grace window from. Patches any view JSON already written for
-# this case, so it can be called in any order.
-set_pr_updated_at() {
+# Arm this case's repository as having a pull_request-triggering workflow, so
+# github_repo_has_pr_ci_workflow reads FM_PR_GITHUB_PR_CI=yes. A caller may
+# pass its own workflow YAML text (e.g. to exercise the array or nested-block
+# trigger spellings); the default declares pull_request in the ordinary
+# nested-block style.
+set_pr_ci_workflow() {
+  local case_dir=$1
+  local content=${2:-'on:
+  pull_request:
+  push:
+'}
+  printf 'ci.yml\n' > "$case_dir/github-workflows-listing"
+  printf '%s' "$content" | base64 > "$case_dir/github-workflow-content-b64"
+}
+
+# A workflow file exists but declares no pull_request(_target) trigger (e.g.
+# push- or schedule-only), so github_repo_has_pr_ci_workflow still reads "no"
+# despite .github/workflows being non-empty.
+set_push_only_workflow() {
+  local case_dir=$1
+  printf 'ci.yml\n' > "$case_dir/github-workflows-listing"
+  printf 'on:\n  push:\n' | base64 > "$case_dir/github-workflow-content-b64"
+}
+
+# The repository has no .github/workflows directory at all (a 404 on the
+# listing), the other proof (besides an empty listing) that a repository
+# genuinely has no PR CI.
+set_workflows_404() {
+  local case_dir=$1
+  : > "$case_dir/github-workflows-404"
+}
+
+# The count of pull_request-event Actions runs at the PR's current head SHA,
+# as github_check_dropped_ci_event reads it via the API's own ?event= filter.
+set_pr_run_count() {
+  local case_dir=$1 count=$2
+  printf '%s\n' "$count" > "$case_dir/github-pr-run-count"
+}
+
+# The head commit's committer date, as github_check_dropped_ci_event reads it
+# to judge the grace window against FM_PR_MERGE_NOW_OVERRIDE.
+set_commit_date() {
   local case_dir=$1 date=$2
-  printf '%s\n' "$date" > "$case_dir/github-pr-updated-at"
-  [ -f "$case_dir/github-view.json" ] || return 0
-  sed "s|\"updatedAt\":\"[^\"]*\"|\"updatedAt\":\"$date\"|" \
-    "$case_dir/github-view.json" > "$case_dir/github-view.json.next"
-  mv "$case_dir/github-view.json.next" "$case_dir/github-view.json"
+  printf '%s\n' "$date" > "$case_dir/github-commit-date"
 }
 
 add_failing_poll_publish_mv() {
@@ -397,6 +461,11 @@ run_pr_merge() {
   FM_TEST_GH_LOG="$case_dir/gh.log" \
   FM_TEST_GH_OUTCOME="$case_dir/github-outcome" \
   FM_TEST_GH_RULES="$case_dir/github-rules" \
+  FM_TEST_GH_WORKFLOWS_404="$case_dir/github-workflows-404" \
+  FM_TEST_GH_WORKFLOWS_LISTING="$case_dir/github-workflows-listing" \
+  FM_TEST_GH_WORKFLOW_CONTENT_B64="$case_dir/github-workflow-content-b64" \
+  FM_TEST_GH_PR_RUN_COUNT="$case_dir/github-pr-run-count" \
+  FM_TEST_GH_COMMIT_DATE="$case_dir/github-commit-date" \
   FM_TEST_GH_VIEW_JSON="$case_dir/github-view.json" \
   FM_TEST_GH_HEAD="$case_dir/github-head" \
   FM_TEST_GH_MERGE_RC_FILE="$case_dir/github-merge-rc" \
@@ -2620,210 +2689,242 @@ test_undated_runs_never_supersede() {
   pass "fm-pr-merge clears a failure only on a proven later pass of the same check"
 }
 
-# A pull request whose check rollup is EMPTY and whose last update is still
-# inside the delivery grace window merges exactly as it always has. That is the
-# state of every pull request in the moments after a push, so refusing here
-# would false-alarm on all of them, and a merge gate that false-alarms gets
-# turned off. Past the window the next test governs, and it refuses regardless
-# of whether the repository configures PR CI at all - no-CI repositories are
-# deliberately not exempt, because that exemption needed a workflow-file read
-# this rule does not make.
-test_empty_rollup_within_the_grace_window_merges_normally() {
+# A repository with no .github/workflows directory at all (a 404 on the
+# listing) genuinely has no PR CI, and must keep merging exactly as it did
+# before this gate existed, even though the same listing call now runs on
+# every GitHub merge.
+test_no_workflows_directory_merges_unaffected() {
   local case_dir rc head
   head=1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a
-  case_dir=$(make_case github-empty-rollup-fresh)
+  case_dir=$(make_case github-no-workflows-dir)
   mkdir -p "$case_dir/wt"
   add_gh_mocks "$case_dir" "$head"
-  write_github_rollup_json "$case_dir" "$head"
-  set_pr_updated_at "$case_dir" 2025-12-31T23:59:00Z # 60s before "now"
+  set_workflows_404 "$case_dir"
 
-  FM_PR_MERGE_NOW_OVERRIDE=1767225600 run_pr_merge "$case_dir" task-x1 \
-    https://github.com/example/repo/pull/101 \
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/101 \
     > "$case_dir/stdout" 2> "$case_dir/stderr" \
-    || fail "empty-rollup-fresh: a freshly updated empty rollup must still merge"$'\n'"$(cat "$case_dir/stderr")"
+    || fail "no-workflows-dir: a repo with no workflows directory must still merge"
   assert_logged_gh_merge "$case_dir" 101 example/repo --squash
-  pass "fm-pr-merge still merges an empty check rollup inside the grace window"
+  pass "fm-pr-merge merges normally when the repository has no .github/workflows directory"
 }
 
-# The incident this rule exists for. An empty rollup past the grace window is
-# never green: this repository's own ci.yml declared, for its entire history, a
-# valid pull_request trigger whose only filter is the base branch these pull
-# requests already target, while GitHub delivered zero pull_request-triggered
-# runs to it, so pull requests merged with no checks at all and the PR "Checks"
-# summary read exactly like a repository with no CI configured. Any rule that
-# asked the workflow file whether CI ought to exist would have been satisfied by
-# precisely the absence it exists to catch, so this one asks only the rollup.
-test_empty_rollup_past_the_grace_window_is_never_green() {
+# A workflow exists but declares no pull_request(_target) trigger (push-only
+# here). The repository still has no PR CI in this rule's sense, so a stale,
+# zero-run head with no recent commit must not be refused.
+test_push_only_workflow_does_not_arm_the_dropped_event_gate() {
   local case_dir rc head
   head=2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a
-  case_dir=$(make_case github-empty-rollup-stale)
+  case_dir=$(make_case github-push-only-workflow)
   mkdir -p "$case_dir/wt"
   add_gh_mocks "$case_dir" "$head"
-  write_github_rollup_json "$case_dir" "$head"
-  set_pr_updated_at "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  set_push_only_workflow "$case_dir"
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2026-01-01T00:00:00Z
+
+  FM_PR_MERGE_NOW_OVERRIDE=1767225600 run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/102 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "push-only-workflow: a push-only workflow must not arm the dropped-event gate"
+  assert_logged_gh_merge "$case_dir" 102 example/repo --squash
+  pass "fm-pr-merge ignores a workflow with no pull_request trigger"
+}
+
+# Comment text is not a trigger declaration. This repository's only workflow
+# runs on push, has its pull_request trigger commented out inside the on:
+# block, mentions the word in a top-level comment after that block, and names
+# a pull_request.yml file in a path filter. It has no PR CI, so its stale,
+# zero-run head must keep merging exactly as it does today.
+test_commented_out_trigger_does_not_arm_the_dropped_event_gate() {
+  local case_dir rc head
+  head=7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a
+  case_dir=$(make_case github-commented-out-trigger)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir" 'on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/pull_request.yml"]
+  # pull_request: # disabled, too noisy
+
+# We deliberately do not run on pull_request here.
+jobs:
+  build:
+    steps:
+      - run: echo pull_request
+'
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+
+  FM_PR_MERGE_NOW_OVERRIDE=1767225600 run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/107 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "commented-out-trigger: a commented-out trigger must not arm the dropped-event gate"$'\n'"$(cat "$case_dir/stderr")"
+  assert_logged_gh_merge "$case_dir" 107 example/repo --squash
+  pass "fm-pr-merge never reads comment text as a pull_request trigger declaration"
+}
+
+# 'on': is the other YAML 1.1 quoting workaround for the on-parses-as-true
+# problem, so a workflow spelling its key that way does have PR CI and its
+# stale, zero-run head is a suspected dropped event like any other.
+test_single_quoted_on_key_arms_the_dropped_event_gate() {
+  local case_dir rc head
+  head=8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a
+  case_dir=$(make_case github-single-quoted-on-key)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir" "'on':
+  pull_request:
+    branches: [main]
+"
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
 
   set +e
   FM_PR_MERGE_NOW_OVERRIDE=1767225600 run_pr_merge "$case_dir" task-x1 \
-    https://github.com/example/repo/pull/102 \
+    https://github.com/example/repo/pull/108 \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
-  expect_code 1 "$rc" "empty-rollup-stale: a stale empty rollup must refuse"
-  assert_grep 'no check has reported for head' "$case_dir/stderr" \
-    "empty-rollup-stale: the empty-rollup reason was not reported"
+  expect_code 1 "$rc" "single-quoted-on-key: a stale zero-run head must refuse"
+  assert_grep 'suspected dropped CI event' "$case_dir/stderr" \
+    "single-quoted-on-key: the suspected-drop reason was not reported"
   assert_no_grep 'pr merge' "$case_dir/gh.log" \
-    "empty-rollup-stale: gh pr merge ran on a stale empty check rollup"
-
-  # --allow-red waives a named red check; there is no check here to name, and
-  # the remedy is to find out why nothing reported, never a merge-time override.
-  set +e
-  FM_PR_MERGE_NOW_OVERRIDE=1767225600 run_pr_merge "$case_dir" task-x1 \
-    https://github.com/example/repo/pull/102 --allow-red ci \
-    > "$case_dir/stdout-allow-red" 2> "$case_dir/stderr-allow-red"
-  rc=$?
-  set -e
-  expect_code 1 "$rc" "empty-rollup-stale: --allow-red must not waive a stale empty rollup"
-  assert_grep 'no check has reported for head' "$case_dir/stderr-allow-red" \
-    "empty-rollup-stale: --allow-red refused for some other reason than the empty rollup"
-  assert_no_grep 'pr merge' "$case_dir/gh.log" \
-    "empty-rollup-stale: gh pr merge ran under --allow-red on a stale empty rollup"
-  pass "fm-pr-merge never treats a stale empty check rollup as green, even with --allow-red"
+    "single-quoted-on-key: gh pr merge ran on a suspected dropped CI event"
+  pass "fm-pr-merge recognises the 'on': trigger-key spelling"
 }
 
-# The rule touches only the EMPTY rollup. A rollup that actually reported is
-# judged by github_checks_not_green alone, at any age, so a long-idle pull
-# request whose checks are green still merges.
-test_reported_rollup_past_the_grace_window_still_merges() {
+# The ordinary case: PR CI is configured and a pull_request-event run already
+# exists at the current head. The dropped-event gate must stay out of the way
+# and let the existing green rollup govern the merge.
+test_pr_ci_configured_with_a_run_present_merges_normally() {
   local case_dir rc head
   head=3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a
-  case_dir=$(make_case github-green-rollup-stale)
+  case_dir=$(make_case github-pr-ci-run-present)
   mkdir -p "$case_dir/wt"
   add_gh_mocks "$case_dir" "$head"
-  write_github_rollup_json "$case_dir" "$head" \
-    "$(check_run ci COMPLETED SUCCESS 2025-12-01T00:00:00Z)"
-  set_pr_updated_at "$case_dir" 2025-12-01T00:00:00Z # a month before "now"
+  set_pr_ci_workflow "$case_dir"
+  set_pr_run_count "$case_dir" 1
 
-  FM_PR_MERGE_NOW_OVERRIDE=1767225600 run_pr_merge "$case_dir" task-x1 \
-    https://github.com/example/repo/pull/103 \
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/103 \
     > "$case_dir/stdout" 2> "$case_dir/stderr" \
-    || fail "green-rollup-stale: a green rollup must merge at any age"$'\n'"$(cat "$case_dir/stderr")"
+    || fail "pr-ci-run-present: a present pull_request run must merge on the ordinary rollup"
   assert_logged_gh_merge "$case_dir" 103 example/repo --squash
-  pass "fm-pr-merge leaves a rollup that reported alone however old the pull request is"
+  pass "fm-pr-merge merges normally once a pull_request-event run exists at the head"
 }
 
-# The age of an empty rollup IS the verdict, so an age that cannot be read must
-# refuse rather than pass for want of it. Two ways that happens, both of which
-# would otherwise merge a checkless pull request of any age in silence: a gh
-# response carrying no updatedAt at all (jq's // "" still emits the field, so
-# the seven-field guard above does not catch it), and an unusable clock.
-test_unreadable_empty_rollup_age_refuses_rather_than_passing() {
-  local case_dir rc head
+# Zero pull_request-event runs at the head, but the head commit is younger
+# than the grace window: not arrived yet, not actionable, and never reported
+# as a suspected drop.
+test_dropped_ci_event_within_grace_window_is_not_actionable() {
+  local case_dir rc head now
   head=4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a
-  case_dir=$(make_case github-empty-rollup-ageless)
+  now=1767225600 # 2026-01-01T00:00:00Z
+  case_dir=$(make_case github-ci-grace-window)
   mkdir -p "$case_dir/wt"
   add_gh_mocks "$case_dir" "$head"
-  write_github_rollup_json "$case_dir" "$head"
-  sed 's|,"updatedAt":"[^"]*"||' "$case_dir/github-view.json" \
-    > "$case_dir/github-view.json.next"
-  mv "$case_dir/github-view.json.next" "$case_dir/github-view.json"
-  assert_no_grep updatedAt "$case_dir/github-view.json" \
-    "empty-rollup-ageless: the fixture still carries an updatedAt"
+  set_pr_ci_workflow "$case_dir"
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:57:00Z # 180s before "now"
 
   set +e
-  FM_PR_MERGE_NOW_OVERRIDE=1767225600 run_pr_merge "$case_dir" task-x1 \
+  FM_PR_MERGE_NOW_OVERRIDE=$now run_pr_merge "$case_dir" task-x1 \
     https://github.com/example/repo/pull/104 \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
-  expect_code 1 "$rc" "empty-rollup-ageless: an unreadable rollup age must refuse"
-  assert_grep 'could not tell how old' "$case_dir/stderr" \
-    "empty-rollup-ageless: the unreadable age was not reported"
+  expect_code 1 "$rc" "ci-grace-window: not-yet-arrived CI must not merge"
+  assert_grep 'younger than the delivery grace window' "$case_dir/stderr" \
+    "ci-grace-window: the grace-window reason was not reported"
+  assert_no_grep 'suspected dropped' "$case_dir/stderr" \
+    "ci-grace-window: a fresh head must never be reported as a suspected drop"
   assert_no_grep 'pr merge' "$case_dir/gh.log" \
-    "empty-rollup-ageless: gh pr merge ran on a rollup whose age could not be read"
+    "ci-grace-window: gh pr merge ran before CI could have arrived"
+  pass "fm-pr-merge treats a fresh zero-run head as not-yet-arrived, not a drop"
+}
 
-  # An unusable clock is the same verdict: a stray non-numeric override must not
-  # quietly switch off a refusal the tests above prove is unwaivable.
-  case_dir=$(make_case github-empty-rollup-clockless)
+# Zero pull_request-event runs at the head, and the head commit is older than
+# the grace window: this is the near-miss the detection rule exists to catch
+# - a genuinely green-looking rollup (empty statusCheckRollup) must never be
+# merged.
+test_dropped_ci_event_past_grace_window_refuses_as_suspected_drop() {
+  local case_dir rc head now
+  head=5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+  now=1767225600 # 2026-01-01T00:00:00Z
+  case_dir=$(make_case github-ci-suspected-drop)
   mkdir -p "$case_dir/wt"
   add_gh_mocks "$case_dir" "$head"
-  write_github_rollup_json "$case_dir" "$head"
-  set_pr_updated_at "$case_dir" 2025-12-31T23:00:00Z
+  set_pr_ci_workflow "$case_dir"
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
 
   set +e
-  FM_PR_MERGE_NOW_OVERRIDE=not-a-timestamp run_pr_merge "$case_dir" task-x1 \
+  FM_PR_MERGE_NOW_OVERRIDE=$now run_pr_merge "$case_dir" task-x1 \
     https://github.com/example/repo/pull/105 \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
-  expect_code 1 "$rc" "empty-rollup-clockless: an unusable clock must refuse"
-  assert_grep 'could not tell how old' "$case_dir/stderr" \
-    "empty-rollup-clockless: the unusable clock was not reported"
+  expect_code 1 "$rc" "ci-suspected-drop: a stale zero-run head must refuse"
+  assert_grep 'suspected dropped CI event' "$case_dir/stderr" \
+    "ci-suspected-drop: the suspected-drop reason was not reported"
   assert_no_grep 'pr merge' "$case_dir/gh.log" \
-    "empty-rollup-clockless: gh pr merge ran with no usable clock"
-  pass "fm-pr-merge refuses an empty check rollup whose age it cannot establish"
-}
+    "ci-suspected-drop: gh pr merge ran on a suspected dropped CI event"
 
-# A conflicting pull request legitimately shows an empty rollup: GitHub creates
-# no pull_request run while it cannot compute a merge commit. It is already
-# refused by the mergeable and DIRTY conditions, which carry the remedy that
-# actually applies, so the empty-rollup rule must stay silent rather than send
-# the operator after a dropped CI event that never happened.
-test_conflicting_pull_request_is_not_reported_as_a_dropped_event() {
-  local case_dir rc head
-  head=5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
-  case_dir=$(make_case github-conflict-empty-rollup)
-  mkdir -p "$case_dir/wt"
-  add_gh_mocks "$case_dir" "$head"
-  cat > "$case_dir/github-view.json" <<JSON
-{"state":"OPEN","isDraft":false,"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY","headRefOid":"$head","baseRefName":"main","updatedAt":"2025-12-31T23:00:00Z","statusCheckRollup":[]}
-JSON
-
+  # --allow-red never waives this: the remedy is re-dispatch or rebase
+  # (report Section 3), never a merge-time override.
   set +e
-  FM_PR_MERGE_NOW_OVERRIDE=1767225600 run_pr_merge "$case_dir" task-x1 \
-    https://github.com/example/repo/pull/106 \
-    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/105 \
+    --allow-red ci \
+    > "$case_dir/stdout-allow-red" 2> "$case_dir/stderr-allow-red"
   rc=$?
   set -e
-  expect_code 1 "$rc" "conflict-empty-rollup: a conflicting pull request must refuse"
-  assert_grep 'mergeStateStatus is DIRTY' "$case_dir/stderr" \
-    "conflict-empty-rollup: the conflict was not named"
-  assert_no_grep 'no check has reported' "$case_dir/stderr" \
-    "conflict-empty-rollup: a conflict was also reported as a suspected dropped CI event"
+  expect_code 1 "$rc" "ci-suspected-drop: --allow-red must not waive a suspected dropped event"
   assert_no_grep 'pr merge' "$case_dir/gh.log" \
-    "conflict-empty-rollup: gh pr merge ran on a conflicting pull request"
-  pass "fm-pr-merge reports a conflict as a conflict, not as a suspected dropped CI event"
+    "ci-suspected-drop: gh pr merge ran under --allow-red on a suspected dropped event"
+  pass "fm-pr-merge never treats a suspected dropped CI event as green, even with --allow-red"
 }
 
-# A draft pull request is the other state that legitimately shows an empty
-# rollup: a repository can skip CI on drafts, and GitHub reports a draft as
-# mergeable with mergeStateStatus DRAFT rather than DIRTY, so it slips past the
-# conflict carve-out. It is already refused for being a draft, which is the
-# remedy that applies, and this rule runs first - so it must stay silent rather
-# than lead the operator's output with a dropped CI event that never happened.
-test_draft_pull_request_is_not_reported_as_a_dropped_event() {
+# A transient failure to list or read workflow files must never become a new
+# merge refusal that a healthy repository didn't already have to clear -
+# only a positively confirmed pull_request trigger arms the dropped-event
+# gate, and an unreadable listing does not confirm one.
+test_unreadable_workflow_listing_does_not_block_a_green_merge() {
   local case_dir rc head
   head=6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a
-  case_dir=$(make_case github-draft-empty-rollup)
+  case_dir=$(make_case github-unreadable-workflow-listing)
   mkdir -p "$case_dir/wt"
   add_gh_mocks "$case_dir" "$head"
-  cat > "$case_dir/github-view.json" <<JSON
-{"state":"OPEN","isDraft":true,"mergeable":"MERGEABLE","mergeStateStatus":"DRAFT","headRefOid":"$head","baseRefName":"main","updatedAt":"2025-12-31T23:00:00Z","statusCheckRollup":[]}
-JSON
+  printf 'error: rate limited\n' > "$case_dir/github-workflows-fail-body"
+  cat > "$case_dir/fakebin/gh" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$case_dir/gh.log"
+case "\${1:-} \${2:-}" in
+  "pr view")
+    case " \$* " in
+      *statusCheckRollup*) cat "$case_dir/github-view.json"; exit 0 ;;
+      *headRefOid*) cat "$case_dir/github-head"; exit 0 ;;
+    esac
+    ;;
+  "pr merge")
+    printf 'merged:\n  number: %s\n  status: ok\n' "\${3:-}"
+    exit 0
+    ;;
+  "api graphql") cat "$case_dir/github-outcome"; exit 0 ;;
+  api\\ repos/*/contents/.github/workflows)
+    cat "$case_dir/github-workflows-fail-body" >&2
+    exit 1
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/gh"
 
-  set +e
-  FM_PR_MERGE_NOW_OVERRIDE=1767225600 run_pr_merge "$case_dir" task-x1 \
-    https://github.com/example/repo/pull/107 \
-    > "$case_dir/stdout" 2> "$case_dir/stderr"
-  rc=$?
-  set -e
-  expect_code 1 "$rc" "draft-empty-rollup: a draft pull request must refuse"
-  assert_grep 'the pull request is a draft' "$case_dir/stderr" \
-    "draft-empty-rollup: the draft was not named"
-  assert_no_grep 'no check has reported' "$case_dir/stderr" \
-    "draft-empty-rollup: a draft was also reported as a suspected dropped CI event"
-  assert_no_grep 'pr merge' "$case_dir/gh.log" \
-    "draft-empty-rollup: gh pr merge ran on a draft pull request"
-  pass "fm-pr-merge reports a draft as a draft, not as a suspected dropped CI event"
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/106 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "unreadable-workflow-listing: an unreadable listing must not block an otherwise green merge"
+  assert_logged_gh_merge "$case_dir" 106 example/repo --squash
+  assert_grep 'dropped-CI-event check is disarmed' "$case_dir/stderr" \
+    "unreadable-workflow-listing: a disarmed gate must say so rather than pass in silence"
+  pass "fm-pr-merge does not refuse a merge merely because the workflow listing could not be read"
 }
 
 # A superseded failure changes nothing about the waiver: --allow-red still covers
@@ -3319,12 +3420,14 @@ test_late_finishing_old_cancellation_is_superseded
 test_unfinished_rerun_keeps_a_check_red
 test_supersession_never_crosses_check_names
 test_undated_runs_never_supersede
-test_empty_rollup_within_the_grace_window_merges_normally
-test_empty_rollup_past_the_grace_window_is_never_green
-test_reported_rollup_past_the_grace_window_still_merges
-test_unreadable_empty_rollup_age_refuses_rather_than_passing
-test_conflicting_pull_request_is_not_reported_as_a_dropped_event
-test_draft_pull_request_is_not_reported_as_a_dropped_event
+test_no_workflows_directory_merges_unaffected
+test_push_only_workflow_does_not_arm_the_dropped_event_gate
+test_commented_out_trigger_does_not_arm_the_dropped_event_gate
+test_single_quoted_on_key_arms_the_dropped_event_gate
+test_pr_ci_configured_with_a_run_present_merges_normally
+test_dropped_ci_event_within_grace_window_is_not_actionable
+test_dropped_ci_event_past_grace_window_refuses_as_suspected_drop
+test_unreadable_workflow_listing_does_not_block_a_green_merge
 test_allow_red_still_waives_only_the_current_failure
 test_allow_red_is_refused_while_away
 test_allow_red_requires_one_separate_name
