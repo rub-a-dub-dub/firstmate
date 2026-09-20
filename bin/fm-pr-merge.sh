@@ -22,9 +22,9 @@
 # exactly as it has always behaved, because refusing every pull request for the
 # first minutes after every push is a false alarm, and a merge gate that
 # false-alarms gets turned off. A rollup that reported anything at all is
-# untouched by this rule at any age, and a pull request that is not open and
-# mergeable-clean is not judged by it at all, because a conflict already refuses
-# below with the remedy that applies.
+# untouched by this rule at any age, and a pull request that is not open, not a
+# draft and mergeable-clean is not judged by it at all, because a conflict or a
+# draft already refuses below with the remedy that applies.
 #
 # This asks no workflow file whether the repository ought to have CI. That
 # distinction was tried and proved unreliable: this repository's own ci.yml
@@ -678,11 +678,13 @@ FIELDS
   # turned off. A rollup that reported anything at all is untouched here at
   # any age; github_checks_not_green alone judges it.
   #
-  # Only an open, mergeable-clean pull request is judged here. A conflicting one
-  # legitimately shows an empty rollup, because GitHub creates no pull_request
-  # run while it cannot compute a merge commit, and the mergeable and DIRTY
-  # refusals below already name that with the remedy that applies; a
-  # suspected-dropped-event line on top of them would point somewhere else.
+  # Only an open, non-draft, mergeable-clean pull request is judged here. A
+  # conflicting one legitimately shows an empty rollup, because GitHub creates no
+  # pull_request run while it cannot compute a merge commit, and so does a draft
+  # in a repository that skips CI on drafts. Both already refuse below - on
+  # mergeable/DIRTY and on draft - with the remedy that applies, and this block
+  # runs first, so a suspected-dropped-event line would lead the operator's
+  # output with the one explanation that is not the reason.
   #
   # Two limits of this rule are accepted rather than hidden. It judges whether
   # the rollup is EMPTY, not whether a pull_request event was specifically
@@ -699,7 +701,7 @@ FIELDS
   # this one live read carries a true push timestamp to replace it with.
   case "$state" in
     [oO][pP][eE][nN])
-      if [ "$mergeable" = MERGEABLE ] && [ "$merge_state" != DIRTY ] \
+      if [ "$draft" = false ] && [ "$mergeable" = MERGEABLE ] && [ "$merge_state" != DIRTY ] \
         && [ "$(printf '%s' "$json" | jq -r '.statusCheckRollup | length' 2>/dev/null)" = 0 ]; then
         now_epoch=${FM_PR_MERGE_NOW_OVERRIDE:-$(date -u +%s)}
         case "$now_epoch" in

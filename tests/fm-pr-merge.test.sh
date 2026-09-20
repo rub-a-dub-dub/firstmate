@@ -2683,6 +2683,8 @@ test_empty_rollup_past_the_grace_window_is_never_green() {
   rc=$?
   set -e
   expect_code 1 "$rc" "empty-rollup-stale: --allow-red must not waive a stale empty rollup"
+  assert_grep 'no check has reported for head' "$case_dir/stderr-allow-red" \
+    "empty-rollup-stale: --allow-red refused for some other reason than the empty rollup"
   assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "empty-rollup-stale: gh pr merge ran under --allow-red on a stale empty rollup"
   pass "fm-pr-merge never treats a stale empty check rollup as green, even with --allow-red"
@@ -2790,6 +2792,38 @@ JSON
   assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "conflict-empty-rollup: gh pr merge ran on a conflicting pull request"
   pass "fm-pr-merge reports a conflict as a conflict, not as a suspected dropped CI event"
+}
+
+# A draft pull request is the other state that legitimately shows an empty
+# rollup: a repository can skip CI on drafts, and GitHub reports a draft as
+# mergeable with mergeStateStatus DRAFT rather than DIRTY, so it slips past the
+# conflict carve-out. It is already refused for being a draft, which is the
+# remedy that applies, and this rule runs first - so it must stay silent rather
+# than lead the operator's output with a dropped CI event that never happened.
+test_draft_pull_request_is_not_reported_as_a_dropped_event() {
+  local case_dir rc head
+  head=6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a
+  case_dir=$(make_case github-draft-empty-rollup)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  cat > "$case_dir/github-view.json" <<JSON
+{"state":"OPEN","isDraft":true,"mergeable":"MERGEABLE","mergeStateStatus":"DRAFT","headRefOid":"$head","baseRefName":"main","updatedAt":"2025-12-31T23:00:00Z","statusCheckRollup":[]}
+JSON
+
+  set +e
+  FM_PR_MERGE_NOW_OVERRIDE=1767225600 run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/107 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "draft-empty-rollup: a draft pull request must refuse"
+  assert_grep 'the pull request is a draft' "$case_dir/stderr" \
+    "draft-empty-rollup: the draft was not named"
+  assert_no_grep 'no check has reported' "$case_dir/stderr" \
+    "draft-empty-rollup: a draft was also reported as a suspected dropped CI event"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "draft-empty-rollup: gh pr merge ran on a draft pull request"
+  pass "fm-pr-merge reports a draft as a draft, not as a suspected dropped CI event"
 }
 
 # A superseded failure changes nothing about the waiver: --allow-red still covers
@@ -3290,6 +3324,7 @@ test_empty_rollup_past_the_grace_window_is_never_green
 test_reported_rollup_past_the_grace_window_still_merges
 test_unreadable_empty_rollup_age_refuses_rather_than_passing
 test_conflicting_pull_request_is_not_reported_as_a_dropped_event
+test_draft_pull_request_is_not_reported_as_a_dropped_event
 test_allow_red_still_waives_only_the_current_failure
 test_allow_red_is_refused_while_away
 test_allow_red_requires_one_separate_name
