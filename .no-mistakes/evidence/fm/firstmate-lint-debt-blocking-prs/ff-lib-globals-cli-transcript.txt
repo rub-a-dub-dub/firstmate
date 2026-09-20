@@ -1,0 +1,46 @@
+==============================================================
+ bin/fm-ff-lib.sh declares the protocol constant it exempts
+==============================================================
+$ . bin/fm-ff-lib.sh; echo "$REMOTE_UPDATE_FAILED_STATUS / $FF_RUN_VERIFIED / $FF_UPDATE_FAILED"
+3 / yes / 0
+
+==============================================================
+ FF_RUN_VERIFIED + FF_UPDATE_FAILED: read by bin/fm-update.sh
+==============================================================
+$ FM_ROOT_OVERRIDE=<sandbox>/main FM_HOME=<sandbox>/home bin/fm-update.sh
+firstmate: already current
+origin-verified: yes
+reread-firstmate: no
+restart-secondmates: none
+nudge-secondmates: none
+$ echo $?   # <- this exit status IS FF_UPDATE_FAILED (fm-update.sh: exit "$FF_UPDATE_FAILED")
+0
+
+==============================================================
+ REMOTE_UPDATE_FAILED_STATUS: read by fm-remote-secondmate-control.sh
+==============================================================
+--- case 1: this host's own fork-sync classifier fired ---
+$ FM_HOME=<sandbox>/sm1 FM_ROOT_OVERRIDE=<sandbox>/coderoot bin/fm-remote-secondmate-control.sh update sm1
+fork sync: FAILED protected fork branch
+error: remote code root update failed
+$ echo $?   # <- must be REMOTE_UPDATE_FAILED_STATUS (3), the distinct fleet-wide status
+3
+
+--- case 2: an ordinary skip, NOT the classifier ---
+$ FM_HOME=<sandbox>/sm1 FM_ROOT_OVERRIDE=<sandbox>/coderoot bin/fm-remote-secondmate-control.sh update sm1
+firstmate: skipped: dirty working tree
+error: remote code root did not complete a safe origin update
+$ echo $?   # <- must stay the generic 1, which the parent sweep reads as a skip
+1
+
+==============================================================
+ FF_RUN_VERIFIED varies: an unreachable origin flips it to 'no'
+==============================================================
+$ FM_ROOT_OVERRIDE=<sandbox>/main FM_HOME=<sandbox>/home bin/fm-update.sh
+firstmate: skipped: fetch failed
+origin-verified: no
+reread-firstmate: no
+restart-secondmates: none
+nudge-secondmates: none
+$ echo $?   # <- still FF_UPDATE_FAILED; an unreachable origin is a skip, not a failure
+0
