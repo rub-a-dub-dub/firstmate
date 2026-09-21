@@ -579,11 +579,24 @@ fm_backlog_row_probe() {  # <data-dir> <id>
 # archived row as `- [x] <id> - <title> ...`, the same line shape it renders
 # in the live backlog's Done section before pruning, just relocated under a
 # `## Archived <date>` heading. Grep for that line rather than trying to
-# parse the archive as a task file. A `not_found` result - no match, or no
-# archive file at all - means the archive has nothing either; this is a
-# closed-safe default: a read failure or format surprise also falls to
-# `not_found`, which routes the caller to escalation, never to a false
-# "answered".
+# parse the archive as a task file.
+#
+# A hit is attributed to the calling retention by id alone. The archived line
+# records no spawn generation, and the pending-close record carries no
+# timestamp to compare against the `## Archived <date>` heading above the
+# match, so nothing here distinguishes one incarnation of a reused id from
+# another. This probe therefore assumes a backlog id is never reused once an
+# earlier incarnation of it has been archived: in a home that does reuse one,
+# the older incarnation's archived line makes a genuinely unanswered call read
+# as `answered`, and its recorded deliverable is dropped rather than retired
+# into a reconcile record. Bounding that would mean stamping the record and
+# parsing the archive's date headings, which is a wider schema and format
+# dependency than this lookup owns.
+#
+# A `not_found` result - no match, or no archive file at all - means the
+# archive has nothing either; this is a closed-safe default: a read failure or
+# format surprise also falls to `not_found`, which routes the caller to
+# escalation, never to a false "answered".
 fm_backlog_archive_row_probe() {  # <data-dir> <id>
   local data authorized_data=$1 id=$2 archive escaped_id pattern
   FM_BACKLOG_ARCHIVE_ROW_RESULT=error
