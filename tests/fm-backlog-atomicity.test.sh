@@ -2273,6 +2273,34 @@ test_recovery_reconcile_record_reports_when_backlog_transitions_are_skipped() {
   pass "a reconcile record is re-reported even when this home's backlog transitions are skipped"
 }
 
+# Defect: a home whose only backlog state was a surviving reconcile record had
+# its gate kind promoted to ship, which ran the full backend resolution. When
+# that resolution errored the session start died before reconciliation ran at
+# all, so the unacknowledged deliverable went unreported - the exact silence
+# the durable record exists to prevent.
+test_recovery_reconcile_record_reports_when_the_backend_cannot_be_resolved() {
+  local case_dir id pr reconcile_marker out
+  id=atomic-heal-retain-unresolved-backend-b23
+  pr=https://github.com/example/repo/pull/19
+  case_dir=$(make_home heal-retain-unresolved-backend)
+  reconcile_marker="$(home_of "$case_dir")/state/$id.backlog-reconcile"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-retain-unresolved-backend\nmode=retain\narg=--pr\narg=%s\n' \
+    "$id" "$(home_of "$case_dir")/data" "$pr" > "$reconcile_marker"
+  rm -f "$(home_of "$case_dir")/.tasks.toml"
+  ln -s missing-backend.toml "$(home_of "$case_dir")/.tasks.toml"
+
+  out=$(run_bootstrap "$case_dir") || true
+  assert_not_contains "$out" "bootstrap cannot access configured backlog data directory" \
+    "an unresolvable backend killed session start for a home whose only backlog state is a reconcile record"
+  assert_present "$reconcile_marker" \
+    "an unresolvable backend retired a reconcile record nobody acknowledged"
+  assert_contains "$out" "BACKLOG_RECONCILE: $id:" \
+    "a home with an unresolvable backend went silent about the reconcile record it still holds"
+  assert_contains "$out" "PR $pr" \
+    "the re-reported reconcile line lost the deliverable it was carrying"
+  pass "a reconcile record is re-reported even when this home's backlog backend cannot be resolved"
+}
+
 test_recovery_preserves_a_close_when_the_backlog_cannot_be_read() {
   local case_dir id out
   id=atomic-heal-read-error-b10
@@ -3284,6 +3312,7 @@ test_recovery_reconcile_record_survives_being_unread
 test_recovery_reconcile_report_renders_a_note_deliverable_readably
 test_recovery_refuses_to_overwrite_an_unacknowledged_reconcile_record
 test_recovery_reconcile_record_reports_when_backlog_transitions_are_skipped
+test_recovery_reconcile_record_reports_when_the_backend_cannot_be_resolved
 test_recovery_preserves_a_close_when_the_backlog_cannot_be_read
 test_recovery_retry_preserves_incomplete_cleanup_warning
 test_recovery_finishes_a_close_for_the_same_meta_incarnation

@@ -1421,24 +1421,6 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ] && local_phase; then
       BOOTSTRAP_BACKLOG_GATE_KIND=ship
       break
     done
-    # A retain-unresolved reconcile record is retired off the .backlog-close
-    # glob above without being deleted (fm_backlog_reconcile_marker_write), so
-    # a home carrying nothing else still has ship work: its surviving
-    # reconcile record. Without this, the very act of retiring the marker on
-    # its first replay would make this gate skip reconciliation on every
-    # later session start, and backlog_record_reconcile's own
-    # state/*.backlog-reconcile sweep would never run again.
-    if [ "$BOOTSTRAP_BACKLOG_GATE_KIND" = secondmate ]; then
-      for BOOTSTRAP_BACKLOG_MARKER in "$STATE"/*.backlog-reconcile; do
-        [ -e "$BOOTSTRAP_BACKLOG_MARKER" ] || [ -L "$BOOTSTRAP_BACKLOG_MARKER" ] || continue
-        if ! fm_backlog_record_present "$BOOTSTRAP_BACKLOG_MARKER" "reconcile record" "$STATE"; then
-          echo "error: bootstrap refused unsafe reconcile record ($FM_BACKLOG_TRANSITION_ERROR)" >&2
-          exit 1
-        fi
-        BOOTSTRAP_BACKLOG_GATE_KIND=ship
-        break
-      done
-    fi
     if [ "$BOOTSTRAP_BACKLOG_GATE_KIND" = secondmate ]; then
       for BOOTSTRAP_BACKLOG_META in "$STATE"/*.meta; do
         [ -e "$BOOTSTRAP_BACKLOG_META" ] || [ -L "$BOOTSTRAP_BACKLOG_META" ] || continue
