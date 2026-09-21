@@ -47,7 +47,16 @@
 # replay would reject. The validator pins the data path to this home's configured
 # root before any recovery mutation, then re-runs exactly that close.
 # `tasks-axi done` on an already-closed task backfills links
-# without moving the close date, so replay is idempotent. Spawn needs no marker:
+# without moving the close date, so replay is idempotent. A row retention has
+# already archived out of the backlog reads back identically to one that never
+# existed, and that absence is the outcome the close was trying to reach, so
+# the close itself and replay both retire the record rather than failing a
+# cleanup that reached its goal or retrying forever against a row that can
+# never come back. Neither pretends a close landed: the transition reports the
+# absence through FM_BACKLOG_CLOSE_ROW_ABSENT and replay through its own
+# `absent` result, so each caller can say what actually happened. Only a
+# genuine lookup failure (an unreadable backlog, a misconfigured backend, the
+# wrong home) is preserved for a later retry. Spawn needs no marker:
 # it publishes the meta first, so a crash
 # leaves the meta itself as the evidence that the row is owed a start.
 # A captain-held row uses the same record with a `mode=retain` line: replay then
@@ -69,9 +78,17 @@ FM_BACKLOG_ROW_ERROR=
 # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
 FM_BACKLOG_ROW_HOLD_KIND=
 # Set by fm_backlog_close_marker_replay: closed | closed_incomplete | retained |
-# retained_incomplete | answered | stale | noop.
+# retained_incomplete | answered | absent | absent_incomplete | stale | noop.
+# `absent` is a row that has left this backlog; `stale` is a record a newer
+# incarnation superseded, which still owes its own close. The `_incomplete`
+# twins carry the same outcome for a cleanup that never finished removing the
+# endpoint or local copy.
 # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
 FM_BACKLOG_CLOSE_REPLAY_RESULT=
+# Set by fm_backlog_close_transition: 1 when the row had already left the
+# backlog, so the close it was asked for was accepted without one landing.
+# shellcheck disable=SC2034 # Output global, read by the sourcing caller.
+FM_BACKLOG_CLOSE_ROW_ABSENT=0
 
 # Bounded execution is fm-timeout-lib.sh's alone; source it rather than
 # re-deriving a deadline here. It is stateless, so the memoisation reason this
@@ -858,10 +875,19 @@ fm_backlog_dispatch_rollback() {
 }
 
 fm_backlog_close_transition() {
-  local meta=$1 marker=$2 data=$3 id=$4 state=$5
+  local meta=$1 marker=$2 data=$3 id=$4 state=$5 close_error
   shift 5
+  FM_BACKLOG_CLOSE_ROW_ABSENT=0
   [ -z "$meta" ] || fm_backlog_record_remove "$meta" "task record" "$state" || return 1
-  fm_backlog_done "$data" "$id" "$@" || return 1
+  if ! fm_backlog_done "$data" "$id" "$@"; then
+    close_error=$FM_BACKLOG_TRANSITION_ERROR
+    if fm_backlog_row_probe "$data" "$id" \
+       || [ "$FM_BACKLOG_ROW_RESULT" != not_found ]; then
+      FM_BACKLOG_TRANSITION_ERROR=$close_error
+      return 1
+    fi
+    FM_BACKLOG_CLOSE_ROW_ABSENT=1
+  fi
   fm_backlog_record_remove "$marker" "pending-close record" "$state"
 }
 
@@ -1142,6 +1168,19 @@ fm_backlog_close_marker_clear() {  # <state-dir> <id>
   fm_backlog_close_marker_remove "$marker" "$1"
 }
 
+# A close transition that reached a row already gone from the backlog retires
+# the record without one landing, so label the replay by what it reached rather
+# than by the transition having returned 0.
+fm_backlog_close_replay_result() {  # <cleanup-incomplete>
+  local outcome=closed
+  [ "$FM_BACKLOG_CLOSE_ROW_ABSENT" != 1 ] || outcome=absent
+  if [ "$1" = 1 ]; then
+    FM_BACKLOG_CLOSE_REPLAY_RESULT=${outcome}_incomplete
+  else
+    FM_BACKLOG_CLOSE_REPLAY_RESULT=$outcome
+  fi
+}
+
 # Replay one recorded close or retention. Returns 0 when the row is closed (or
 # retained), the marker is stale, or an answer already closed a retained row,
 # and 1 when marker validation or recovery fails. Validation completes before
@@ -1212,18 +1251,18 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
       fi
       if fm_backlog_atomic_transition close '' "$marker" "$data" "$id" "$state" \
           "${args[@]+"${args[@]}"}"; then
-        if [ "$cleanup_incomplete" = 1 ]; then
-          FM_BACKLOG_CLOSE_REPLAY_RESULT=closed_incomplete
-        else
-          FM_BACKLOG_CLOSE_REPLAY_RESULT=closed
-        fi
+        fm_backlog_close_replay_result "$cleanup_incomplete"
         return 0
       fi
       return 1
       ;;
     '')
       fm_backlog_close_marker_remove "$marker" "$state" || return 1
-      FM_BACKLOG_CLOSE_REPLAY_RESULT=stale
+      if [ "$cleanup_incomplete" = 1 ]; then
+        FM_BACKLOG_CLOSE_REPLAY_RESULT=absent_incomplete
+      else
+        FM_BACKLOG_CLOSE_REPLAY_RESULT=absent
+      fi
       return 0
       ;;
   esac
@@ -1235,10 +1274,8 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
       else
         FM_BACKLOG_CLOSE_REPLAY_RESULT=retained
       fi
-    elif [ "$cleanup_incomplete" = 1 ]; then
-      FM_BACKLOG_CLOSE_REPLAY_RESULT=closed_incomplete
     else
-      FM_BACKLOG_CLOSE_REPLAY_RESULT=closed
+      fm_backlog_close_replay_result "$cleanup_incomplete"
     fi
     return 0
   fi

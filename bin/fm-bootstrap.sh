@@ -92,12 +92,16 @@
 #          (bin/fm-backlog-transition-lib.sh), so this sweep exists for the
 #          crash window inside those scripts and for drift a home was already
 #          carrying: it finishes the authoritative close or captain-call
-#          retention an interrupted cleanup recorded, and marks In flight any
-#          item this home already owns a worker for. The worker-record sweep
+#          retention an interrupted cleanup recorded, retires that record
+#          without landing anything when its row has already left this backlog
+#          (bin/fm-backlog-transition-lib.sh owns why that absence is
+#          accepted), and marks In flight any item this home already owns a
+#          worker for. The worker-record sweep
 #          never starts a captain-held or closed item, and reconciliation never
 #          reads or writes another home; the fleet snapshot's classifier and
 #          bin/fm-secondmate-reconcile.sh's nudge stay as backstops. Replayed
-#          transitions and restored In-flight rows print BOOTSTRAP_INFO facts.
+#          transitions, retired records, and restored In-flight rows print
+#          BOOTSTRAP_INFO facts.
 #          The `code-root <file>` variant is a detect-only local check that runs
 #          even in a read-only session; detect_code_root_backlog_fork owns what
 #          it reports.
@@ -1265,6 +1269,15 @@ backlog_record_reconcile() {
           ;;
         answered)
           echo "BOOTSTRAP_INFO: finished the interrupted cleanup for $label; the captain had already answered its call"
+          ;;
+        absent)
+          echo "BOOTSTRAP_INFO: retired the pending close for $label; its backlog row had already left this backlog, so no close was left to land"
+          ;;
+        absent_incomplete)
+          echo "BOOTSTRAP_INFO: retired the pending close for $label after interrupted cleanup; its backlog row had already left this backlog, so no close was left to land, and its endpoint or local copy may remain and should be reconciled"
+          ;;
+        stale)
+          echo "BOOTSTRAP_INFO: discarded a pending close for $label recorded by a superseded incarnation; the incarnation now on record still owes its own close"
           ;;
       esac
     else
