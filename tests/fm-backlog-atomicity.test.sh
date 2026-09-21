@@ -2182,6 +2182,38 @@ test_recovery_reconcile_record_survives_being_unread() {
   pass "a genuinely unresolved retain's reconcile report survives being unread until explicitly acknowledged"
 }
 
+# Defect: the deliverable a reconcile record carries is the whole payload the
+# record exists to preserve, but the two readers of the persisted record passed
+# the validated args straight to fm_backlog_retain_deliverable, so a --note
+# deliverable reached the captain in its on-disk serialization (`local%20main`)
+# rather than the spelling every other surface uses.
+test_recovery_reconcile_report_renders_a_note_deliverable_readably() {
+  local case_dir id marker reconcile_marker out
+  id=atomic-heal-retain-unresolved-note-b20
+  case_dir=$(make_home heal-retain-unresolved-note)
+  add_item "$case_dir" "$id"
+  tasks-axi hold "$id" --reason "captain decision pending" --kind captain \
+    --file "$(backlog_of "$case_dir")" >/dev/null
+  tasks-axi rm "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  [ -z "$(row_state "$case_dir" "$id")" ] \
+    || fail "the fixture's removed row is still visible to tasks-axi show"
+  marker="$(home_of "$case_dir")/state/$id.backlog-close"
+  reconcile_marker="$(home_of "$case_dir")/state/$id.backlog-reconcile"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-retain-unresolved-note\nmode=retain\narg=--note\narg=local%%20main\n' \
+    "$id" "$(home_of "$case_dir")/data" > "$marker"
+
+  out=$(run_bootstrap "$case_dir")
+  assert_present "$reconcile_marker" \
+    "a genuinely unresolved retain carrying a note deliverable was not retired into a reconcile record"
+  assert_contains "$out" "BACKLOG_RECONCILE: $id:" \
+    "a note-carrying reconcile record went unreported"
+  assert_contains "$out" "local main" \
+    "the reconcile report did not name the note deliverable in the spelling every other surface uses"
+  assert_not_contains "$out" "local%20main" \
+    "the reconcile report showed the note deliverable in its on-disk serialization"
+  pass "a reconcile report names a note deliverable in the spelling the captain reads everywhere else"
+}
+
 test_recovery_preserves_a_close_when_the_backlog_cannot_be_read() {
   local case_dir id out
   id=atomic-heal-read-error-b10
@@ -3190,6 +3222,7 @@ test_recovery_backfills_a_recorded_link_on_an_already_done_item
 test_recovery_reports_incomplete_cleanup_for_an_answered_retain
 test_recovery_recognizes_a_retain_row_answered_then_archived
 test_recovery_reconcile_record_survives_being_unread
+test_recovery_reconcile_report_renders_a_note_deliverable_readably
 test_recovery_preserves_a_close_when_the_backlog_cannot_be_read
 test_recovery_retry_preserves_incomplete_cleanup_warning
 test_recovery_finishes_a_close_for_the_same_meta_incarnation

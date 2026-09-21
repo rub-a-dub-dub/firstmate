@@ -1004,6 +1004,11 @@ fm_backlog_close_marker_path() {  # <state-dir> <id>
   printf '%s/%s.backlog-close\n' "$1" "$2"
 }
 
+# FM_BACKLOG_CLOSE_VALIDATED_ARGS carries the recorded arguments in the decoded
+# in-memory spelling every consumer works in, not the on-disk serialization
+# fm_backlog_close_marker_stage writes: the one note value the schema accepts is
+# recorded as `local%20main` and exposed here as `local main`. Re-staging a
+# validated record through fm_backlog_close_marker_stage re-applies the encoding.
 fm_backlog_close_marker_validate() {  # <marker-path> <authorized-data-dir> <expected-id> <state-dir>
   local marker=$1 authorized_data data_resolved expected_id=$3 state=$4
   local id='' data='' marker_spawn_gen='' cleanup_incomplete=0 mode=close line raw_bytes arg_value
@@ -1168,6 +1173,9 @@ fm_backlog_close_marker_validate() {  # <marker-path> <authorized-data-dir> <exp
       ;;
     *) FM_BACKLOG_TRANSITION_ERROR="invalid pending-close arguments in $marker"; return 1 ;;
   esac
+  if [ "${args[0]-}" = --note ]; then
+    args[1]="local main"
+  fi
   FM_BACKLOG_CLOSE_VALIDATED_ID=$id
   FM_BACKLOG_CLOSE_VALIDATED_DATA=$data_resolved
   FM_BACKLOG_CLOSE_VALIDATED_SPAWN_GEN=$marker_spawn_gen
@@ -1318,9 +1326,6 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
   mode=$FM_BACKLOG_CLOSE_VALIDATED_MODE
   [ "$mode" = close ] || mode_flags=(--retain)
   args=("${FM_BACKLOG_CLOSE_VALIDATED_ARGS[@]+"${FM_BACKLOG_CLOSE_VALIDATED_ARGS[@]}"}")
-  if [ "${args[0]-}" = --note ]; then
-    args[1]="local main"
-  fi
   meta="$state/$id.meta"
   if [ -e "$meta" ] || [ -L "$meta" ]; then
     if ! fm_backlog_record_present "$meta" "task record" "$state"; then
