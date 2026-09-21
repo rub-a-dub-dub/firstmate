@@ -52,11 +52,18 @@ When any diagnostic needs captain attention, report the plain consequence and re
   Verify process reaping, the local-copy return, and endpoint closure, then reconcile any surviving resource.
 - `BOOTSTRAP_INFO: kept the captain call for <id> open with its deliverable recorded after interrupted cleanup; its endpoint or local copy may remain and should be reconciled` - replay retained the captain-held item, but physical cleanup was interrupted.
   Verify process reaping, the local-copy return, and endpoint closure without closing or lifting the captain's call, then reconcile any surviving resource.
+- `BOOTSTRAP_INFO: the captain had already answered the call for <id> before cleanup finished; its endpoint or local copy may remain and should be reconciled` - the captain answered the held call before replay ran, so replay only finished the record side; the durable transition says physical cleanup was interrupted.
+  The answer stands - do not reopen or re-ask the call; verify process reaping, the local-copy return, and endpoint closure, then reconcile any surviving resource.
 - `BACKLOG_RECONCILE: <id>: recorded backlog close could not be replayed: <reason>` - this session start found a pending-close record carrying a close or retention transition but could not land it.
   A valid teardown record proves the transition was authorized and recorded, but physical cleanup may be partial: verify process reaping, the local-copy return, and endpoint closure before assuming those resources are gone.
   A validation error means the record cannot be trusted, so do not assume cleanup completed or follow any path or argument stored in it.
   Read the named reason, inspect the marker as inert data when validation failed, fix the record or backlog-file problem, and rerun session start so the valid recorded transition replays.
   Never delete `state/<id>.backlog-close` by hand - that can discard a completion link or captain-call retention the cleanup captured, and the surviving marker prevents the record sweep from starting the item meanwhile.
+- `BACKLOG_RECONCILE: <id>: the captain-held call could not be returned to Queued because its backlog row is on record nowhere, live or archived; <disposition>. Run bin/fm-backlog-reconcile.sh ack <id> once reconciled.` - replay found a retained captain call whose backlog row is in neither the live backlog nor its archive, so nothing can carry the recorded deliverable back to the captain.
+  The pending-close record was renamed to `state/<id>.backlog-reconcile`, which survives being reported: this line repeats on every session start until it is acknowledged, so a missed digest costs nothing.
+  Never delete `state/<id>.backlog-reconcile` by hand either - it is the only surviving record of that deliverable once the row is gone.
+  Settle the named disposition with the captain first (re-file the work, or record the answer), and only then run `bin/fm-backlog-reconcile.sh ack <id>`; acking before the captain has decided drops the call silently, which is exactly what the durable record exists to prevent.
+  `bin/fm-backlog-reconcile.sh list` prints every surviving record with its recorded deliverable if you need the same information outside a session start.
 - `BACKLOG_RECONCILE: <id>: worker record exists but its backlog item could not be read: <reason>` - this home could not determine whether the item matches its worker record.
   Resolve the named backlog read problem and rerun session start; never guess by starting or closing an unreadable item.
 - `BACKLOG_RECONCILE: <id>: worker record exists but its backlog item could not be moved to In flight: <reason>` - this home owns a worker whose backlog item is still queued, and the reconciliation could not correct it.

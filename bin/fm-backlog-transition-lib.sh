@@ -1283,6 +1283,10 @@ fm_backlog_reconcile_marker_write() {  # <state-dir> <marker-path> <id>
 fm_backlog_reconcile_marker_ack() {  # <state-dir> <id>
   local marker
   marker=$(fm_backlog_reconcile_marker_path "$1" "$2")
+  if [ ! -e "$marker" ] && [ ! -L "$marker" ]; then
+    FM_BACKLOG_TRANSITION_ERROR="no reconcile record exists at $marker"
+    return 1
+  fi
   fm_backlog_close_marker_remove "$marker" "$1"
 }
 

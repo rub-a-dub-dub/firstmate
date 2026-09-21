@@ -2132,7 +2132,7 @@ test_recovery_recognizes_a_retain_row_answered_then_archived() {
 # deliverable forever. The record must survive being unread and only clear on
 # an explicit acknowledgement.
 test_recovery_reconcile_record_survives_being_unread() {
-  local case_dir id marker pr out out2 out3 reconcile_marker ack
+  local case_dir id marker pr out out2 out3 reconcile_marker ack mistyped
   id=atomic-heal-retain-unresolved-b19
   pr=https://github.com/example/repo/pull/16
   case_dir=$(make_home heal-retain-unresolved)
@@ -2164,6 +2164,14 @@ test_recovery_reconcile_record_survives_being_unread() {
     "a second, unacknowledged session start silently dropped the reconcile report - it is not supposed to be single-shot"
   assert_contains "$out2" "PR $pr" \
     "the re-reported reconcile line lost the deliverable it was carrying"
+
+  if mistyped=$(run_reconcile "$case_dir" ack "$id-mistyped"); then
+    fail "acknowledging an id with no reconcile record reported success: $mistyped"
+  fi
+  assert_not_contains "$mistyped" "acked:" \
+    "a mistyped acknowledgement confirmed retiring a reconcile record that does not exist"
+  assert_present "$reconcile_marker" \
+    "a mistyped acknowledgement disturbed the real reconcile record"
 
   ack=$(run_reconcile "$case_dir" ack "$id") || fail "could not acknowledge the reconcile record for $id: $ack"
   assert_absent "$reconcile_marker" "acknowledging the reconcile record did not remove it"
