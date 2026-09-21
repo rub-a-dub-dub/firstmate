@@ -1,0 +1,11 @@
+Regression proof for the three new tests in tests/fm-backlog-atomicity.test.sh.
+Same three tests, run against base bin/ sources and then against the branch's.
+
+--- base sources (fc20562): first new test fails ---
+not ok - an absent row's retention retirement gave no actionable retain-flavored report (missing: 'BACKLOG_RECONCILE: atomic-heal-retain-absent-b13: the captain-held call could not be returned to Queued')
+--- output ---
+
+--- branch sources (74e2aaa): all three pass ---
+ok - recovery retires a pending retention whose row already left the backlog, naming its deliverable on an actionable line
+ok - recovery reports a retention that recorded no deliverable without asking for one
+ok - recovery warns about surviving resources when an absent row's retention was interrupted mid-cleanup

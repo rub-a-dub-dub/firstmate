@@ -1,0 +1,77 @@
+Operator-visible session-start output for a captain-held retention whose backlog row
+has already left the backlog.
+
+Scenario: bin/fm-teardown.sh wrote state/<id>.backlog-close with mode=retain (returning
+a captain-held row to Queued) and was killed; the row then left this home's backlog.
+The next `bin/fm-bootstrap.sh` session start replays the marker. Four shapes are driven:
+with / without a recorded deliverable, and with / without a surviving task record
+(the latter is what makes the cleanup "incomplete").
+
+##############################################################################
+# BEFORE - base commit fc20562
+# The retention is retired silently. The captain is never told the call was
+# dropped, and nothing will retry it.
+##############################################################################
+
+=== A. retention recorded a PR, cleanup had finished ===
+$ bin/fm-bootstrap.sh   # first session start after the interrupted teardown
+(no BACKLOG_RECONCILE line printed)
+--- marker after replay: retired
+$ bin/fm-bootstrap.sh   # second session start (nothing left to replay)
+(no BACKLOG_RECONCILE line printed)
+
+=== B. retention recorded no deliverable, cleanup had finished ===
+$ bin/fm-bootstrap.sh   # first session start after the interrupted teardown
+(no BACKLOG_RECONCILE line printed)
+--- marker after replay: retired
+$ bin/fm-bootstrap.sh   # second session start (nothing left to replay)
+(no BACKLOG_RECONCILE line printed)
+
+=== C. retention recorded a PR, cleanup was interrupted ===
+$ bin/fm-bootstrap.sh   # first session start after the interrupted teardown
+(no BACKLOG_RECONCILE line printed)
+--- marker after replay: retired
+$ bin/fm-bootstrap.sh   # second session start (nothing left to replay)
+(no BACKLOG_RECONCILE line printed)
+
+=== D. retention recorded no deliverable, cleanup was interrupted ===
+$ bin/fm-bootstrap.sh   # first session start after the interrupted teardown
+(no BACKLOG_RECONCILE line printed)
+--- marker after replay: retired
+$ bin/fm-bootstrap.sh   # second session start (nothing left to replay)
+(no BACKLOG_RECONCILE line printed)
+
+##############################################################################
+# AFTER - target commit 74e2aaa
+# Each retirement now names itself honestly on a BACKLOG_RECONCILE line, carries
+# the deliverable it just discarded (or says plainly that there was none), and
+# adds the surviving-resource warning when the cleanup was interrupted.
+##############################################################################
+
+=== A. retention recorded a PR, cleanup had finished ===
+$ bin/fm-bootstrap.sh   # first session start after the interrupted teardown
+BACKLOG_RECONCILE: ev-retain-pr: the captain-held call could not be returned to Queued after an interrupted cleanup because its backlog row no longer exists; its recorded deliverable (PR https://github.com/example/repo/pull/11) should be reconciled with the captain
+--- marker after replay: retired
+$ bin/fm-bootstrap.sh   # second session start (nothing left to replay)
+(no BACKLOG_RECONCILE line printed)
+
+=== B. retention recorded no deliverable, cleanup had finished ===
+$ bin/fm-bootstrap.sh   # first session start after the interrupted teardown
+BACKLOG_RECONCILE: ev-retain-bare: the captain-held call could not be returned to Queued after an interrupted cleanup because its backlog row no longer exists; it recorded no deliverable, so the call's disposition must be settled with the captain
+--- marker after replay: retired
+$ bin/fm-bootstrap.sh   # second session start (nothing left to replay)
+(no BACKLOG_RECONCILE line printed)
+
+=== C. retention recorded a PR, cleanup was interrupted ===
+$ bin/fm-bootstrap.sh   # first session start after the interrupted teardown
+BACKLOG_RECONCILE: ev-retain-pr-incomplete: the captain-held call could not be returned to Queued after an interrupted cleanup because its backlog row no longer exists; its endpoint or local copy may also remain, and its recorded deliverable (PR https://github.com/example/repo/pull/12) should be reconciled with the captain
+--- marker after replay: retired
+$ bin/fm-bootstrap.sh   # second session start (nothing left to replay)
+(no BACKLOG_RECONCILE line printed)
+
+=== D. retention recorded no deliverable, cleanup was interrupted ===
+$ bin/fm-bootstrap.sh   # first session start after the interrupted teardown
+BACKLOG_RECONCILE: ev-retain-bare-incomplete: the captain-held call could not be returned to Queued after an interrupted cleanup because its backlog row no longer exists; its endpoint or local copy may also remain, and it recorded no deliverable, so the call's disposition must be settled with the captain
+--- marker after replay: retired
+$ bin/fm-bootstrap.sh   # second session start (nothing left to replay)
+(no BACKLOG_RECONCILE line printed)
