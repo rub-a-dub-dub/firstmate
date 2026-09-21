@@ -65,8 +65,8 @@
 # Telling them apart means checking the archive (fm_backlog_archive_row_probe)
 # before concluding absence; a hit there is routed through the identical
 # `answered`/`answered_incomplete` handling a live Done row gets. A genuine
-# miss retires the marker under `retain_unresolved`/`retain_unresolved_incomplete`
-# and is never silently reported once and forgotten: see
+# miss retires the marker under `retain_unresolved` and is never silently
+# reported once and forgotten: see
 # fm_backlog_reconcile_marker_write and bin/fm-bootstrap.sh's
 # `state/*.backlog-reconcile` sweep, which re-reports it every session start
 # until an explicit `bin/fm-backlog-reconcile.sh ack` retires it. Data/design
@@ -92,15 +92,9 @@ FM_BACKLOG_ARCHIVE_ROW_RESULT=
 FM_BACKLOG_ARCHIVE_ROW_ERROR=
 # Set by fm_backlog_close_marker_replay: closed | closed_incomplete | retained |
 # retained_incomplete | answered | answered_incomplete | retain_unresolved |
-# retain_unresolved_incomplete | stale | noop.
+# stale | noop.
 # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
 FM_BACKLOG_CLOSE_REPLAY_RESULT=
-# Set by fm_backlog_close_marker_replay with a retain_unresolved(_incomplete)
-# result: the deliverable text the retired record carried (fm_backlog_retain_deliverable),
-# empty when it recorded none.
-# shellcheck disable=SC2034 # Output global, read by the sourcing caller.
-FM_BACKLOG_CLOSE_REPLAY_DELIVERABLE=
-
 # Bounded execution is fm-timeout-lib.sh's alone; source it rather than
 # re-deriving a deadline here. It is stateless, so the memoisation reason this
 # library does not source fm-tasks-axi-lib.sh does not apply.
@@ -1281,6 +1275,10 @@ fm_backlog_reconcile_marker_path() {  # <state-dir> <id>
 fm_backlog_reconcile_marker_write() {  # <state-dir> <marker-path> <id>
   local state=$1 marker=$2 id=$3 target
   target=$(fm_backlog_reconcile_marker_path "$state" "$id")
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    FM_BACKLOG_TRANSITION_ERROR="an unacknowledged reconcile record for $id already exists at $target, and retiring this one would overwrite the deliverable it carries; settle that record with the captain and run bin/fm-backlog-reconcile.sh ack $id, after which this transition replays"
+    return 1
+  fi
   fm_backlog_atomic_transition publish "$marker" "$target" \
     "retain-unresolved reconcile record" "$state"
 }
@@ -1310,7 +1308,6 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
   local id data marker_spawn_gen meta meta_spawn_gen row_state cleanup_incomplete mode
   local args=() mode_flags=()
   FM_BACKLOG_CLOSE_REPLAY_RESULT=noop
-  FM_BACKLOG_CLOSE_REPLAY_DELIVERABLE=
   fm_backlog_directory_present "$state" "state directory" || return 1
   [ -e "$marker" ] || [ -L "$marker" ] || return 0
   marker_name=${marker##*/}
@@ -1408,14 +1405,8 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
         # Genuinely unresolved: nothing closed this call anywhere. Retire the
         # marker into a durable reconcile record instead of deleting it, so
         # the deliverable it carried survives being read only once (or never).
-        FM_BACKLOG_CLOSE_REPLAY_DELIVERABLE=$(fm_backlog_retain_deliverable \
-          "${args[@]+"${args[@]}"}")
         fm_backlog_reconcile_marker_write "$state" "$marker" "$id" || return 1
-        if [ "$cleanup_incomplete" = 1 ]; then
-          FM_BACKLOG_CLOSE_REPLAY_RESULT=retain_unresolved_incomplete
-        else
-          FM_BACKLOG_CLOSE_REPLAY_RESULT=retain_unresolved
-        fi
+        FM_BACKLOG_CLOSE_REPLAY_RESULT=retain_unresolved
         return 0
       fi
       fm_backlog_close_marker_remove "$marker" "$state" || return 1

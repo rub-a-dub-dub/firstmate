@@ -63,7 +63,6 @@ When any diagnostic needs captain attention, report the plain consequence and re
   The pending-close record was renamed to `state/<id>.backlog-reconcile`, which survives being reported: this line repeats on every session start until it is acknowledged, so a missed digest costs nothing.
   Never delete `state/<id>.backlog-reconcile` by hand either - it is the only surviving record of that deliverable once the row is gone.
   Settle the named disposition with the captain first (re-file the work, or record the answer), and only then run `bin/fm-backlog-reconcile.sh ack <id>`; acking before the captain has decided drops the call silently, which is exactly what the durable record exists to prevent.
-  `bin/fm-backlog-reconcile.sh list` prints every surviving record with its recorded deliverable if you need the same information outside a session start.
 - `BACKLOG_RECONCILE: <id>: worker record exists but its backlog item could not be read: <reason>` - this home could not determine whether the item matches its worker record.
   Resolve the named backlog read problem and rerun session start; never guess by starting or closing an unreadable item.
 - `BACKLOG_RECONCILE: <id>: worker record exists but its backlog item could not be moved to In flight: <reason>` - this home owns a worker whose backlog item is still queued, and the reconciliation could not correct it.

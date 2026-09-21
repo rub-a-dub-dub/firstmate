@@ -2214,6 +2214,65 @@ test_recovery_reconcile_report_renders_a_note_deliverable_readably() {
   pass "a reconcile report names a note deliverable in the spelling the captain reads everywhere else"
 }
 
+# Defect: retiring a second unresolved retain for the same id published over
+# the surviving record with `mv -f`, destroying an unacknowledged deliverable -
+# the exact loss the durable record exists to prevent, and a second retirement
+# path beside the ack that is supposed to be the only one.
+test_recovery_refuses_to_overwrite_an_unacknowledged_reconcile_record() {
+  local case_dir id first second marker reconcile_marker out
+  id=atomic-heal-retain-unresolved-twice-b21
+  first=https://github.com/example/repo/pull/16
+  second=https://github.com/example/repo/pull/17
+  case_dir=$(make_home heal-retain-unresolved-twice)
+  add_item "$case_dir" "$id"
+  tasks-axi hold "$id" --reason "captain decision pending" --kind captain \
+    --file "$(backlog_of "$case_dir")" >/dev/null
+  tasks-axi rm "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  marker="$(home_of "$case_dir")/state/$id.backlog-close"
+  reconcile_marker="$(home_of "$case_dir")/state/$id.backlog-reconcile"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-retain-unresolved-first\nmode=retain\narg=--pr\narg=%s\n' \
+    "$id" "$(home_of "$case_dir")/data" "$first" > "$reconcile_marker"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-retain-unresolved-second\nmode=retain\narg=--pr\narg=%s\n' \
+    "$id" "$(home_of "$case_dir")/data" "$second" > "$marker"
+
+  out=$(run_bootstrap "$case_dir")
+  assert_present "$reconcile_marker" \
+    "a second unresolved retain destroyed the unacknowledged reconcile record it landed on"
+  assert_contains "$out" "PR $first" \
+    "the deliverable the surviving reconcile record carried was lost to the second retirement"
+  assert_not_contains "$out" "$second" \
+    "the second retain overwrote the unacknowledged record instead of being refused"
+  assert_present "$marker" \
+    "the refused pending close was dropped instead of left to retry once the record is acked"
+  assert_contains "$out" "could not be replayed" \
+    "the refused retirement was not reported at all"
+  pass "a second unresolved retain never overwrites an unacknowledged reconcile record"
+}
+
+# Defect: the reconcile sweep sat below the backlog-transition gate, so a home
+# that stopped keeping a markdown backlog (or switched to manual editing) went
+# silent about records it still held - the same missed-report harm reached by a
+# different route, since reading a record needs nothing from the backlog.
+test_recovery_reconcile_record_reports_when_backlog_transitions_are_skipped() {
+  local case_dir id pr reconcile_marker out
+  id=atomic-heal-retain-unresolved-gated-b22
+  pr=https://github.com/example/repo/pull/18
+  case_dir=$(make_home heal-retain-unresolved-gated)
+  reconcile_marker="$(home_of "$case_dir")/state/$id.backlog-reconcile"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-retain-unresolved-gated\nmode=retain\narg=--pr\narg=%s\n' \
+    "$id" "$(home_of "$case_dir")/data" "$pr" > "$reconcile_marker"
+  rm -f "$(backlog_of "$case_dir")"
+
+  out=$(run_bootstrap "$case_dir")
+  assert_present "$reconcile_marker" \
+    "a skipped backlog transition retired a reconcile record nobody acknowledged"
+  assert_contains "$out" "BACKLOG_RECONCILE: $id:" \
+    "a home whose backlog transitions are skipped went silent about a reconcile record it still holds"
+  assert_contains "$out" "PR $pr" \
+    "the re-reported reconcile line lost the deliverable it was carrying"
+  pass "a reconcile record is re-reported even when this home's backlog transitions are skipped"
+}
+
 test_recovery_preserves_a_close_when_the_backlog_cannot_be_read() {
   local case_dir id out
   id=atomic-heal-read-error-b10
@@ -3223,6 +3282,8 @@ test_recovery_reports_incomplete_cleanup_for_an_answered_retain
 test_recovery_recognizes_a_retain_row_answered_then_archived
 test_recovery_reconcile_record_survives_being_unread
 test_recovery_reconcile_report_renders_a_note_deliverable_readably
+test_recovery_refuses_to_overwrite_an_unacknowledged_reconcile_record
+test_recovery_reconcile_record_reports_when_backlog_transitions_are_skipped
 test_recovery_preserves_a_close_when_the_backlog_cannot_be_read
 test_recovery_retry_preserves_incomplete_cleanup_warning
 test_recovery_finishes_a_close_for_the_same_meta_incarnation

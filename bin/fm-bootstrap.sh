@@ -1202,6 +1202,36 @@ crew_dispatch_validate() {
   fi
 }
 
+# Re-report every retain-unresolved reconcile record on EVERY session start,
+# not once: fm_backlog_reconcile_marker_write retires these off the
+# .backlog-close glob without deleting them precisely so a missed digest costs
+# nothing but a repeat of the next one. Only an explicit
+# `bin/fm-backlog-reconcile.sh ack <id>` ever clears one. Reading a record needs
+# nothing from the backlog, so this reports for as long as the record exists,
+# including on a home whose backlog transitions the gate below skips.
+backlog_reconcile_record_report() {
+  local marker label deliverable disposition
+  for marker in "$STATE"/*.backlog-reconcile; do
+    [ -e "$marker" ] || [ -L "$marker" ] || continue
+    label=$(basename "$marker" .backlog-reconcile)
+    if ! fm_backlog_close_marker_validate "$marker" "$DATA" "$label" "$STATE"; then
+      echo "BACKLOG_RECONCILE: $label: recorded reconcile record could not be read: $FM_BACKLOG_TRANSITION_ERROR"
+      continue
+    fi
+    deliverable=$(fm_backlog_retain_deliverable \
+      "${FM_BACKLOG_CLOSE_VALIDATED_ARGS[@]+"${FM_BACKLOG_CLOSE_VALIDATED_ARGS[@]}"}")
+    if [ -n "$deliverable" ]; then
+      disposition="its recorded deliverable ($deliverable) should be reconciled with the captain"
+    else
+      disposition="it recorded no deliverable, so the call's disposition must be settled with the captain"
+    fi
+    if [ "$FM_BACKLOG_CLOSE_VALIDATED_CLEANUP_INCOMPLETE" = 1 ]; then
+      disposition="its endpoint or local copy may also remain, and $disposition"
+    fi
+    echo "BACKLOG_RECONCILE: $label: the captain-held call could not be returned to Queued because its backlog row is on record nowhere, live or archived; $disposition. Run bin/fm-backlog-reconcile.sh ack $label once reconciled."
+  done
+}
+
 # Same-home record reconciliation. Every ordinary dispatch and completion now
 # moves the backlog row inside the script that moves the task's record
 # (bin/fm-backlog-transition-lib.sh), so remaining recovery cases include a
@@ -1212,7 +1242,6 @@ crew_dispatch_validate() {
 # backstops for what this cannot see. Never reads or writes another home.
 backlog_record_reconcile() {
   local marker meta control_lock meta_lock id row label has_record=0 gate_status
-  local deliverable disposition
   # A fresh home with no state directory has no physical task records to pair.
   # Keep bootstrap diagnostics working without creating state just for a no-op.
   [ -e "$STATE" ] || [ -L "$STATE" ] || return 0
@@ -1228,6 +1257,7 @@ backlog_record_reconcile() {
       echo "error: backlog reconciliation cannot access configured data directory $DATA ($FM_BACKLOG_TRANSITION_ERROR)" >&2
       return 2
     fi
+    backlog_reconcile_record_report
     return 0
   fi
   # Keep the wake/lock library's source-time state-directory creation inside
@@ -1270,10 +1300,10 @@ backlog_record_reconcile() {
         answered_incomplete)
           echo "BOOTSTRAP_INFO: the captain had already answered the call for $label before cleanup finished; its endpoint or local copy may remain and should be reconciled"
           ;;
-        retain_unresolved | retain_unresolved_incomplete)
-          # Reported by the state/*.backlog-reconcile sweep below, which runs
-          # this same session start (the rename already landed) and every
-          # session start after it, not just this one.
+        retain_unresolved)
+          # Reported by backlog_reconcile_record_report below, which runs this
+          # same session start (the rename already landed) and every session
+          # start after it, not just this one.
           ;;
       esac
     else
@@ -1283,30 +1313,7 @@ backlog_record_reconcile() {
     fm_lock_release "$control_lock"
   done
 
-  # Re-report every retain-unresolved reconcile record on EVERY session start,
-  # not once: fm_backlog_reconcile_marker_write retires these off the
-  # .backlog-close glob above without deleting them precisely so a missed
-  # digest costs nothing but a repeat of the next one. Only an explicit
-  # `bin/fm-backlog-reconcile.sh ack <id>` ever clears one.
-  for marker in "$STATE"/*.backlog-reconcile; do
-    [ -e "$marker" ] || [ -L "$marker" ] || continue
-    label=$(basename "$marker" .backlog-reconcile)
-    if ! fm_backlog_close_marker_validate "$marker" "$DATA" "$label" "$STATE"; then
-      echo "BACKLOG_RECONCILE: $label: recorded reconcile record could not be read: $FM_BACKLOG_TRANSITION_ERROR"
-      continue
-    fi
-    deliverable=$(fm_backlog_retain_deliverable \
-      "${FM_BACKLOG_CLOSE_VALIDATED_ARGS[@]+"${FM_BACKLOG_CLOSE_VALIDATED_ARGS[@]}"}")
-    if [ -n "$deliverable" ]; then
-      disposition="its recorded deliverable ($deliverable) should be reconciled with the captain"
-    else
-      disposition="it recorded no deliverable, so the call's disposition must be settled with the captain"
-    fi
-    if [ "$FM_BACKLOG_CLOSE_VALIDATED_CLEANUP_INCOMPLETE" = 1 ]; then
-      disposition="its endpoint or local copy may also remain, and $disposition"
-    fi
-    echo "BACKLOG_RECONCILE: $label: the captain-held call could not be returned to Queued because its backlog row is on record nowhere, live or archived; $disposition. Run bin/fm-backlog-reconcile.sh ack $label once reconciled."
-  done
+  backlog_reconcile_record_report
 
   # A home that owns no records has nothing to pair, so it never pays for a
   # backlog read. A pending close remains authoritative even when replay failed:

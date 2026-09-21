@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# List and retire retain-unresolved reconcile records: durable
+# Retire retain-unresolved reconcile records: durable
 # state/<id>.backlog-reconcile files bin/fm-backlog-transition-lib.sh's
 # fm_backlog_reconcile_marker_write creates when a captain-held retain
 # marker's row is absent from both the live backlog and its archive, so
@@ -11,20 +11,17 @@
 # record.
 #
 # Usage:
-#   fm-backlog-reconcile.sh list
 #   fm-backlog-reconcile.sh ack <id>
 #
-# `list` prints one line per surviving record with its recorded deliverable,
-# read-only. `ack <id>` removes the record for <id> - the explicit "I
-# reconciled this with the captain" act; there is no automatic retirement
-# path, on purpose (an unresolved captain call must not be silently dropped).
+# `ack <id>` removes the record for <id> - the explicit "I reconciled this with
+# the captain" act; there is no automatic retirement path, on purpose (an
+# unresolved captain call must not be silently dropped).
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
-DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 
 # shellcheck source=bin/fm-backlog-transition-lib.sh
 # shellcheck disable=SC1091
@@ -36,23 +33,6 @@ usage() {
     /^#/ { sub(/^# ?/, ""); print; next }
     { exit }
   ' "$0" >&2
-}
-
-command_list() {
-  local marker label deliverable
-  fm_backlog_directory_present "$STATE" "state directory" \
-    || { echo "error: $FM_BACKLOG_TRANSITION_ERROR" >&2; exit 1; }
-  for marker in "$STATE"/*.backlog-reconcile; do
-    [ -e "$marker" ] || [ -L "$marker" ] || continue
-    label=$(basename "$marker" .backlog-reconcile)
-    if ! fm_backlog_close_marker_validate "$marker" "$DATA" "$label" "$STATE"; then
-      printf 'unreadable: %s (%s)\n' "$label" "$FM_BACKLOG_TRANSITION_ERROR"
-      continue
-    fi
-    deliverable=$(fm_backlog_retain_deliverable \
-      "${FM_BACKLOG_CLOSE_VALIDATED_ARGS[@]+"${FM_BACKLOG_CLOSE_VALIDATED_ARGS[@]}"}")
-    printf 'reconcile: %s\tdeliverable=%s\n' "$label" "${deliverable:-(none)}"
-  done
 }
 
 command_ack() {
@@ -74,7 +54,6 @@ command_ack() {
 }
 
 case "${1:-}" in
-  list) command_list ;;
   ack) shift; command_ack "$@" ;;
   -h|--help) usage; exit 0 ;;
   *) usage; exit 2 ;;
