@@ -1092,7 +1092,7 @@ github_check_dropped_ci_event() {
 # Sets FM_PR_MERGE_HEAD to the verified head on success.
 github_verify_mergeable() {
   local json fields line red name covered
-  local total=0 named=0 refusals=''
+  local total=0 named=0 refusals='' waived_notice=''
   local state='' draft='' mergeable='' merge_state='' live_head='' base=''
   local created='' merge_ref=''
 
@@ -1177,7 +1177,7 @@ FIELDS
         grace)
           if [ "$WAIVE_NO_CI_EVIDENCE" = true ]; then
             FM_PR_NO_CI_EVIDENCE_WAIVED=true
-            echo "notice: --waive-no-ci-evidence accepted head $live_head with no pull_request-triggered check reported yet, younger than the grace window; recorded as attended-ci-waived merge authority" >&2
+            waived_notice="notice: --waive-no-ci-evidence accepted head $live_head with no pull_request-triggered check reported yet, younger than the grace window; this merge will be recorded as attended-ci-waived merge authority once the forge accepts it"
           else
             refusals="$refusals  - no pull_request-triggered check has reported for head $live_head yet, and its delivery is younger than the grace window; re-check shortly, or once attended and certain, merge again with --waive-no-ci-evidence $URL (refused while away; recorded as attended-ci-waived merge authority)
 "
@@ -1186,7 +1186,7 @@ FIELDS
         dropped)
           if [ "$WAIVE_NO_CI_EVIDENCE" = true ]; then
             FM_PR_NO_CI_EVIDENCE_WAIVED=true
-            echo "notice: --waive-no-ci-evidence accepted head $live_head as a suspected dropped CI event; recorded as attended-ci-waived merge authority" >&2
+            waived_notice="notice: --waive-no-ci-evidence accepted head $live_head as a suspected dropped CI event; this merge will be recorded as attended-ci-waived merge authority once the forge accepts it"
           else
             refusals="$refusals  - no pull_request-triggered check has reported for head $live_head, and its delivery is already past the grace window: wait and retry this merge first, because a run still on its way looks identical here once the delivery has aged out of the window, and treat it as a suspected dropped CI event only if a retry still finds none. Neither is ever treated as green. Once attended and certain, merge again with --waive-no-ci-evidence $URL (refused while away; recorded as attended-ci-waived merge authority)
 "
@@ -1237,6 +1237,7 @@ EOF
     [ -z "$uncovered" ] || printf 'error: these checks are not green: %s\n' "$uncovered" >&2
     return 1
   fi
+  [ -z "$waived_notice" ] || printf '%s\n' "$waived_notice" >&2
   printf 'verified: %s is open and mergeable, with every required check green at head %s\n' \
     "$URL" "$live_head" >&2
   FM_PR_MERGE_HEAD=$live_head

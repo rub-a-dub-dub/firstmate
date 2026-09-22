@@ -4497,6 +4497,12 @@ test_waive_no_ci_evidence_never_covers_a_red_check() {
   mkdir -p "$case_dir/wt"
   add_gh_mocks "$case_dir" "$head"
   write_github_red_json "$case_dir" "$head" lint
+  # Arm the no-evidence verdict too, so this case proves both that the waiver
+  # does not reach the red check and that a refused merge claims no record.
+  set_pr_ci_workflow "$case_dir"
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
   url=https://github.com/example/repo/pull/126
 
   set +e
@@ -4509,6 +4515,8 @@ test_waive_no_ci_evidence_never_covers_a_red_check() {
     "waive-ci-not-red: the red check refusal was not reported"
   assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "waive-ci-not-red: gh pr merge ran with a red check still refusing"
+  assert_no_grep 'attended-ci-waived' "$case_dir/stderr" \
+    "waive-ci-not-red: a refused merge claimed an attended-ci-waived authority record"
   pass "fm-pr-merge's --waive-no-ci-evidence never waives a red or missing named check"
 }
 
