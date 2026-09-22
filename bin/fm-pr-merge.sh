@@ -1099,7 +1099,7 @@ github_verify_mergeable() {
   local state='' draft='' mergeable='' merge_state='' live_head='' base=''
   local created='' merge_ref=''
 
-  if ! json=$(gh pr view "$URL" --json state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,createdAt,potentialMergeCommitOid,statusCheckRollup 2>/dev/null) \
+  if ! json=$(gh pr view "$URL" --json state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,createdAt,potentialMergeCommit,statusCheckRollup 2>/dev/null) \
     || [ -z "$json" ]; then
     echo "error: could not read the GitHub pull request state before merging" >&2
     return 1
@@ -1113,7 +1113,7 @@ github_verify_mergeable() {
         "head=" + ((.headRefOid // "") | tostring),
         "base=" + ((.baseRefName // "") | tostring),
         "created=" + ((.createdAt // "") | tostring),
-        "merge_ref=" + ((.potentialMergeCommitOid // "") | tostring)
+        "merge_ref=" + ((.potentialMergeCommit.oid // "") | tostring)
       else
         error("pull request payload is not an object")
       end' 2>/dev/null); then

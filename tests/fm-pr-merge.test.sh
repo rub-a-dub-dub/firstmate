@@ -17,6 +17,22 @@ PR_MERGE="$ROOT/bin/fm-pr-merge.sh"
 TMP_ROOT=$(fm_test_tmproot fm-pr-merge-tests)
 BASE_PATH=$PATH
 
+# The --json field names the real gh accepts, taken from the CLI itself so the
+# mocked `gh pr view` can refuse a field GitHub does not have exactly as the
+# real one does. gh validates the field list locally before issuing any
+# request, so asking it for a bogus field prints the whole accepted list and
+# exits non-zero without network or authentication - the one oracle here that
+# is not just these tests agreeing with the script they exercise. Left empty
+# when gh is absent, which skips the check rather than failing a suite that
+# mocks every other gh call anyway.
+GH_PR_VIEW_FIELDS="$TMP_ROOT/gh-pr-view-fields"
+: > "$GH_PR_VIEW_FIELDS"
+if command -v gh >/dev/null 2>&1; then
+  gh pr view 1 --json fm-test-no-such-field 2>&1 >/dev/null \
+    | awk '/^Available fields:/ { listing = 1; next }
+           listing && /^  [A-Za-z]/ { print $1 }' > "$GH_PR_VIEW_FIELDS"
+fi
+
 # The GitLab fixture. A placeholder host that resolves nowhere, and a namespace
 # deeper than one group, because a GitLab project has no owner/repository pair.
 MR_HOST=gitlab.example
@@ -88,7 +104,7 @@ write_github_live_json() {
   local case_dir=$1 head=$2 base=${3:-main}
   printf '%s\n' "$head" > "$case_dir/github-head"
   cat > "$case_dir/github-view.json" <<JSON
-{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"$base","createdAt":"$FM_TEST_PR_CREATED","potentialMergeCommitOid":"$FM_TEST_MERGE_REF","statusCheckRollup":[{"__typename":"CheckRun","name":"ci","status":"COMPLETED","conclusion":"SUCCESS"}]}
+{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"$base","createdAt":"$FM_TEST_PR_CREATED","potentialMergeCommit":{"oid":"$FM_TEST_MERGE_REF"},"statusCheckRollup":[{"__typename":"CheckRun","name":"ci","status":"COMPLETED","conclusion":"SUCCESS"}]}
 JSON
 }
 
@@ -96,7 +112,7 @@ write_github_red_json() {
   local case_dir=$1 head=$2 name=$3
   printf '%s\n' "$head" > "$case_dir/github-head"
   cat > "$case_dir/github-view.json" <<JSON
-{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"main","createdAt":"$FM_TEST_PR_CREATED","potentialMergeCommitOid":"$FM_TEST_MERGE_REF","statusCheckRollup":[{"__typename":"CheckRun","name":"$name","status":"COMPLETED","conclusion":"FAILURE"}]}
+{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"main","createdAt":"$FM_TEST_PR_CREATED","potentialMergeCommit":{"oid":"$FM_TEST_MERGE_REF"},"statusCheckRollup":[{"__typename":"CheckRun","name":"$name","status":"COMPLETED","conclusion":"FAILURE"}]}
 JSON
 }
 
@@ -131,7 +147,7 @@ write_github_rollup_json() {
   done
   printf '%s\n' "$head" > "$case_dir/github-head"
   cat > "$case_dir/github-view.json" <<JSON
-{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"main","createdAt":"$FM_TEST_PR_CREATED","potentialMergeCommitOid":"$FM_TEST_MERGE_REF","statusCheckRollup":[$rollup]}
+{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"main","createdAt":"$FM_TEST_PR_CREATED","potentialMergeCommit":{"oid":"$FM_TEST_MERGE_REF"},"statusCheckRollup":[$rollup]}
 JSON
 }
 
@@ -164,6 +180,19 @@ SH
 printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
 case "${1:-} ${2:-}" in
   "pr view")
+    if [ -s "${FM_TEST_GH_PR_VIEW_FIELDS:-}" ]; then
+      prev=
+      for arg in "$@"; do
+        if [ "$prev" = --json ]; then
+          for field in $(printf '%s' "$arg" | tr ',' ' '); do
+            grep -qxF "$field" "$FM_TEST_GH_PR_VIEW_FIELDS" && continue
+            printf 'Unknown JSON field: "%s"\n' "$field" >&2
+            exit 1
+          done
+        fi
+        prev=$arg
+      done
+    fi
     case " $* " in
       *statusCheckRollup*)
         cat "$FM_TEST_GH_VIEW_JSON"
@@ -340,12 +369,13 @@ set_pr_created() {
 }
 
 # The merge ref the live view reports, which is the only ref fm-pr-merge.sh
-# reads workflow text at. An empty value is GitHub reporting none, the shape a
-# pull request whose test merge has not been computed shows.
-# Args: case_dir sha
+# reads workflow text at. GitHub reports it as a potentialMergeCommit object,
+# or null for a pull request whose test merge has not been computed, which an
+# empty argument here reproduces. Args: case_dir sha
 set_merge_ref() {
   local case_dir=$1 ref=$2
-  "$JQ_BIN" --arg r "$ref" '.potentialMergeCommitOid = $r' \
+  "$JQ_BIN" --arg r "$ref" \
+    '.potentialMergeCommit = (if $r == "" then null else {oid: $r} end)' \
     "$case_dir/github-view.json" > "$case_dir/github-view.json.tmp"
   mv "$case_dir/github-view.json.tmp" "$case_dir/github-view.json"
 }
@@ -595,6 +625,7 @@ run_pr_merge() {
   FM_STATE_OVERRIDE="$case_dir/state" \
   FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" \
   FM_TEST_GH_LOG="$case_dir/gh.log" \
+  FM_TEST_GH_PR_VIEW_FIELDS="$GH_PR_VIEW_FIELDS" \
   FM_TEST_GH_OUTCOME="$case_dir/github-outcome" \
   FM_TEST_GH_RULES="$case_dir/github-rules" \
   FM_TEST_GH_WORKFLOWS_404="$case_dir/github-workflows-404" \
