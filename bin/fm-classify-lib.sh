@@ -1777,12 +1777,24 @@ $1
 EOF
 }
 
+# Deliberately narrower than _fm_decision_fold_line's own retirement arm: the
+# fold retires the shared "default" bucket on a plain done OR paused line (the
+# OPEN DECISIONS captain-facing display), but this origins map only drops on
+# resolve/held/done. status_span_first_actionable_record (the watcher's
+# separate actionable-event classifier) reads origins, not the fold, to decide
+# whether a blocked:/needs-decision: line is still live; if paused pruned an
+# origin here too, a worker that appended blocked: then paused: (the away-mode
+# shape of being stuck) would vanish from the watcher's view the moment the
+# paused line landed, because paused is not itself captain-relevant
+# (status_is_captain_relevant) and so is never shown as the event that
+# replaced it - see tests/fm-watch-triage.test.sh's "hidden behind a current
+# wait" case. Excluding paused here keeps that worker visible to the watcher
+# while OPEN DECISIONS still retires the row.
 _fm_status_open_decision_origins() {  # <status-file>
   local f=$1 line open='' after key verb note number=0 origins=''
-  local resolve held pause
+  local resolve held
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
-  pause=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
   while IFS= read -r line || [ -n "$line" ]; do
     number=$((number + 1))
     after=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held")
@@ -1802,7 +1814,7 @@ _fm_status_open_decision_origins() {  # <status-file>
           esac
         fi
         ;;
-      "$resolve"|"$held"|done|"$pause")
+      "$resolve"|"$held"|done)
         _fm_open_set_has "$after" "$key" || origins=$(_fm_decision_origin_drop "$origins" "$key")
         ;;
     esac
