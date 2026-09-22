@@ -1,0 +1,51 @@
+############################################################
+# Status logs the captain's fleet actually has on disk
+############################################################
+--- state/firstmate-detect-dropped-ci-event.status
+blocked: no-mistakes axi run refuses to push the rebased branch to its internal gate mirror
+working: moved the work to a fresh branch
+done: PR 12 green at 14/14
+paused: captain-held
+--- state/firstmate-unreplayable-backlog-close.status
+blocked: escape-the-branch remedy did not work either
+working: moved the work to a v2 branch, opened PR 8
+paused: captain-held
+--- state/release-credential-wait.status
+blocked: waiting on the release credential
+--- state/ship-public-api.status
+needs-decision [key=api-shape]: pick REST or RPC
+done: shipped an unrelated stream
+--- state/spend-unattended-op-read-hangs.status
+needs-decision: skills directory looks stale - regenerate or read through it?
+resolved [key=skills-directory-stale]: firstmate answered in chat
+done: pull request green
+
+############################################################
+# BEFORE (base 2e9903c) - wake drain OPEN DECISIONS
+############################################################
+
+############################################################
+# AFTER (fix) - wake drain OPEN DECISIONS
+############################################################
+OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+release-credential-wait [key=default] blocked: waiting on the release credential
+ship-public-api [key=api-shape] needs-decision: pick REST or RPC
+OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+
+############################################################
+# AFTER - the footer's own command, run for real against the
+# one genuinely open unkeyed row
+############################################################
+$ bin/fm-send.sh release-credential-wait --resolve-key default 'credentials rotated, carry on'
+(exit 0)
+
+--- state/release-credential-wait.status after the answer
+blocked: waiting on the release credential
+resolved [key=default]: answered: credentials rotated, carry on
+
+--- wake drain OPEN DECISIONS after the answer
+OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+ship-public-api [key=api-shape] needs-decision: pick REST or RPC
+OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+
+workdir: /tmp/fm-drain-evidence.qgll1Y

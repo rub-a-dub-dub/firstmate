@@ -1,0 +1,18 @@
+### Regression pin: the same test file, run against the BASE library and the FIXED library
+
+$ cd <base 2e9903c tree> && bash tests/fm-classify-decision-key.test.sh
+ok - a stated [key=X] opens X whether it precedes or follows the verb colon
+ok - a keyless needs-decision still opens and closes the default key
+not ok - a later working/done/paused sequence retires the unkeyed blocked line: full fold mismatch: got 'default	blocked	no-mistakes axi run refuses to push the rebased branch' want ''
+
+$ cd <fixed tree> && bash tests/fm-classify-decision-key.test.sh
+ok - a stated [key=X] opens X whether it precedes or follows the verb colon
+ok - a keyless needs-decision still opens and closes the default key
+ok - an unkeyed blocked line retires once a later done or paused line follows it
+ok - an unkeyed needs-decision retires via a later done line even when an unrelated key was resolved, and a keyed needs-decision in the same log still folds as open
+ok - a correlation-marked terminal line leaves the default bucket for its owning library to close explicitly
+ok - a keyed done/failed/paused report never retires the unkeyed default bucket, while a plain one still does
+ok - a plain terminal line retires a non-first unkeyed row without touching the keyed decisions around it
+ok - a plain failed line leaves the captain's unkeyed blocker open, while a plain done retires it
+ok - a retired unkeyed decision stops being reported as a live captain event by the span reader
+ok - a resolution closes its decision regardless of either line's key position
