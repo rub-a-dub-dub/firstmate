@@ -406,9 +406,9 @@ EOF
   printf '%s' "$out" | jq -e '
     .backlog.records[] | select(.id == "captain-run")
     | .blocked_by_ids == ["worker", "missing"]
-      and .unresolved_blocker_ids == ["missing"]
-      and .captain_actionable == false
-  ' >/dev/null || fail "a missing blocker was incorrectly treated as resolved: $out"
+      and .unresolved_blocker_ids == []
+      and .captain_actionable == true
+  ' >/dev/null || fail "a blocker id with no backlog row (already torn down) was not treated as resolved: $out"
   pass "backlog normalization preserves strict roles and resolves every blocker compatibly"
 }
 

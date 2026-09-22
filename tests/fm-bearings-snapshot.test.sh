@@ -360,6 +360,7 @@ write_domain_alpha_fixture() {  # <parent-home> <secondmate-home>
 
 ## Queued
 - [ ] legal-release - Release approval blocked-by: external-legal - external legal dependency (repo: sample) (kind: ship)
+- [ ] external-legal - External legal review (repo: sample) (kind: ship) (since 2026-07-13)
 
 ## Done
 EOF
@@ -803,6 +804,7 @@ test_parent_evidence_reconciles_by_verb_and_key() {
 
 ## Queued
 - [ ] legal-release - Legal release blocked-by: external-legal - legal review (repo: sample) (kind: ship)
+- [ ] external-legal - External legal review (repo: sample) (kind: ship) (since 2026-07-11)
 
 ## Done
 EOF
@@ -811,6 +813,7 @@ EOF
 
 ## Queued
 - [ ] vendor-release - Vendor release blocked-by: external-vendor - vendor review (repo: sample) (kind: ship)
+- [ ] external-vendor - External vendor review (repo: sample) (kind: ship) (since 2026-07-11)
 
 ## Done
 EOF
@@ -1228,6 +1231,7 @@ test_undated_hold_phrasing_and_aging_projection() {
   NOT REQUIRED - the remote decision is moot.
 - [ ] mate-aged - Remote aged call (repo: firstmate) (kind: captain) (since 2026-06-01) (hold: choose a remote route) (hold-kind: captain)
   Captain hold set: 2026-06-01T00:00:00Z
+- [ ] missing-remote-blocker - Real still-open remote blocker (repo: firstmate) (kind: ship)
 
 ## Done
 EOF
@@ -1237,6 +1241,7 @@ EOF
 ## Queued
 - [ ] parked-hold - Parked style call (repo: firstmate) (kind: ship) (since 2026-07-10) (hold: not urgent) (hold-kind: captain)
 - [ ] blocked-parked - Blocked parked call blocked-by: missing-blocker (repo: firstmate) (kind: captain) (hold: parked) (hold-kind: captain)
+- [ ] missing-blocker - Real still-open blocker (repo: firstmate) (kind: ship)
 - [ ] future-parked - Parked style call for later (repo: firstmate) (kind: captain) (hold: parked) (hold-kind: captain) (hold-until: 2026-08-01)
 - [ ] due-parked - Parked style call now due (repo: firstmate) (kind: captain) (hold: parked) (hold-kind: captain) (hold-until: 2026-07-11)
 - [ ] due-superseded - Superseded call now due (repo: firstmate) (kind: captain) (hold: SUPERSEDED) (hold-kind: captain) (hold-until: 2026-07-11)
@@ -1358,6 +1363,7 @@ test_blocked_deferred_hold_has_concrete_disclosure() {
 
 ## Queued
 - [ ] only-blocked-parked - Blocked parked call blocked-by: missing-blocker (repo: firstmate) (kind: captain) (hold: parked) (hold-kind: captain) (hold-until: 2026-07-11)
+- [ ] missing-blocker - Real still-open blocker (repo: firstmate) (kind: ship)
 
 ## Done
 EOF
@@ -1388,6 +1394,7 @@ test_revealed_deferred_holds_show_their_deferral_reason() {
 - [ ] reveal-aged - Aged undated call (repo: firstmate) (kind: captain) (since 2026-06-01) (hold: choose a route) (hold-kind: captain)
   Captain hold set: 2026-06-01T00:00:00Z
 - [ ] reveal-live - 123456789012345678901234567890123456789012345678901234567890 (repo: firstmate) (kind: captain) (hold: choose A) (hold-kind: captain)
+- [ ] missing-blocker-1234567890123456789012345678901234567890 - Real still-open blocker (repo: firstmate) (kind: ship)
 
 ## Done
 EOF
@@ -2317,6 +2324,8 @@ test_working_captain_holds_keep_their_bucket_surfaces() {
   Captain hold set: 2026-06-01T00:00:00Z
 
 ## Queued
+- [ ] blocker-alpha-123456789012345678901234567890 - Real still-open blocker alpha (repo: sample) (kind: ship)
+- [ ] blocker-beta-123456789012345678901234567890 - Real still-open blocker beta (repo: sample) (kind: ship)
 
 ## Done
 EOF
@@ -2830,9 +2839,9 @@ EOF
   mv "$ha/data/backlog.next" "$ha/data/backlog.md"
   json=$(run "$home" "$fakebin" --json)
   printf '%s' "$json" | jq -e '
-    (.decisions_open | any(.id == "home-assistant/captain-run") | not)
-      and (.gates | any(.id == "captain-run" and .owner == "home-assistant" and .blocked_by == "missing"))
-  ' >/dev/null || fail "a missing Home Assistant blocker was treated as Done: $json"
+    ([.decisions_open[] | select(.id == "home-assistant/captain-run")] | length) == 1
+      and (.gates | any(.id == "captain-run" and .owner == "home-assistant") | not)
+  ' >/dev/null || fail "a blocker id with no backlog row (already torn down) was not treated as resolved: $json"
 
   sed 's/(kind: program)/(kind: mystery)/' "$hibit/data/backlog.md" > "$hibit/data/backlog.next"
   mv "$hibit/data/backlog.next" "$hibit/data/backlog.md"
