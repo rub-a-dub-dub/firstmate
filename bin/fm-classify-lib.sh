@@ -353,6 +353,17 @@ _fm_classify_line_has_corr_token() {  # <status-line>
   esac
 }
 
+# Does this line qualify to retire the shared "default" bucket? True only for a
+# PLAIN unkeyed line - one that resolves to the shared bucket and carries no
+# correlation token. The two readers of a status stream both need this verdict:
+# _fm_decision_fold_line (the OPEN DECISIONS display) and
+# _fm_status_open_decision_origins (the watcher's actionable-event map), which
+# must not disagree about which lines close a captain-facing row. Callers own
+# the verb set they apply it to, and their own open-set checks.
+_fm_decision_line_retires_default() {  # <decision-key> <status-line>
+  [ "$1" = default ] && ! _fm_classify_line_has_corr_token "$2"
+}
+
 status_line_verb() {  # <status-line> -> leading verb word
   local v=${1%%:*} out='' word
   v=${v%%\[*}
@@ -537,7 +548,7 @@ _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb
       # above) and only for a PLAIN terminal/paused line - one with no
       # correlation token - never a stated key, which stays governed by the
       # resolve/held case above regardless of what else follows it.
-      if [ "$key" = default ] && ! _fm_classify_line_has_corr_token "$line"; then
+      if _fm_decision_line_retires_default "$key" "$line"; then
         case "$open" in
           default$'\t'*|*$'\n'default$'\t'*)
             open=$(_fm_decision_drop "$open" default)
@@ -1780,7 +1791,10 @@ EOF
 # Deliberately narrower than _fm_decision_fold_line's own retirement arm: the
 # fold retires the shared "default" bucket on a plain done OR paused line (the
 # OPEN DECISIONS captain-facing display), but this origins map only drops on
-# resolve/held/done. status_span_first_actionable_record (the watcher's
+# resolve/held and on a done line that _fm_decision_line_retires_default
+# accepts - so a correlation-marked done, which the fold refuses to let retire
+# the bucket, never prunes an origin here either.
+# status_span_first_actionable_record (the watcher's
 # separate actionable-event classifier) reads origins, not the fold, to decide
 # whether a blocked:/needs-decision: line is still live; if paused pruned an
 # origin here too, a worker that appended blocked: then paused: (the away-mode
@@ -1814,8 +1828,14 @@ _fm_status_open_decision_origins() {  # <status-file>
           esac
         fi
         ;;
-      "$resolve"|"$held"|done)
+      "$resolve"|"$held")
         _fm_open_set_has "$after" "$key" || origins=$(_fm_decision_origin_drop "$origins" "$key")
+        ;;
+      done)
+        if _fm_decision_line_retires_default "$key" "$line" \
+          && ! _fm_open_set_has "$after" "$key"; then
+          origins=$(_fm_decision_origin_drop "$origins" "$key")
+        fi
         ;;
     esac
     open=$after
