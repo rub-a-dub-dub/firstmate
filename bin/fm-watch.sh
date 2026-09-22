@@ -32,7 +32,22 @@
 #                          human the wait is on. Only when neither absorb class
 #                          applies does the log's last line decide:
 #                          terminal (captain-relevant) or non-terminal (no verb),
-#                          both surfaced at once. A provably-working stale past the
+#                          both surfaced at once. Reaching the wedge threshold does
+#                          NOT escalate on pane-idle time alone when a LIVE
+#                          no-mistakes run is reporting recent activity
+#                          (crew_run_activity_recent in fm-classify-lib.sh,
+#                          sourced from fm-crew-state.sh's own `activity:
+#                          recent` verdict): the run's own authoritative
+#                          recency is re-verified every time the threshold is
+#                          reached and outranks pane quiet outright, since a
+#                          quiet pane is correct behaviour while the pipeline's
+#                          fix agent works in a separate process. This is
+#                          reserved for a task with a LIVE, attributable run to
+#                          consult; a task with no run, a coarse or unreadable
+#                          read, a timed-out state read, or a run whose
+#                          activity has gone quiet all fall straight through to
+#                          the ordinary pane-based wedge timer below, unchanged.
+#                          A provably-working stale past the
 #                          wedge threshold also surfaces, with an "escalation N"
 #                          count in the reason; at FM_WEDGE_DEMAND_INSPECT_COUNT
 #                          consecutive escalations on the SAME pane, the reason
@@ -921,9 +936,9 @@ clear_write_tracking() {  # <window-key>
 # both places a hash can be absorbed this way: the plain non-terminal path,
 # and the stale_is_terminal-overridden path (a captain-relevant status-log
 # line that an active run/busy pane outranked).
-# The worktree write probe runs ONLY here, inside the at-threshold branch that is
-# about to escalate: at most one bounded walk per window per STALE_ESCALATE_SECS,
-# never per poll.
+# The worktree write probe, and the authoritative-run recheck below, both run
+# ONLY here, inside the at-threshold branch that is about to escalate: at most
+# one bounded read per window per STALE_ESCALATE_SECS, never per poll.
 wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file> <task>
   local win=$1 since_file=$2 label=$3 escalation_file=$4 task=$5 since age n reason
   since=$(cat "$since_file" 2>/dev/null || true)
@@ -938,6 +953,22 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
     *)
       age=$(( $(date +%s) - since ))
       if [ "$age" -ge "$STALE_ESCALATE_SECS" ]; then
+        # A LIVE no-mistakes run reporting recent activity (fm-classify-lib.sh's
+        # crew_run_activity_recent, backed by bin/fm-crew-state.sh's own
+        # `activity: recent` verdict) outranks pane-idle time outright: the
+        # pane is quiet because waiting quietly is correct while the pipeline's
+        # own fix agent works in a separate process, not because anything is
+        # wedged. Re-verified against the authoritative source every time this
+        # threshold is reached, so a run that later goes quiet or ends still
+        # escalates on the very next crossing - this never rots into a silent
+        # absorb. A task with no run to consult, a coarse or unreadable read,
+        # or a timed-out state read all return "no evidence" here and fall
+        # through to the pane-based checks exactly as before.
+        if crew_run_activity_recent "$task"; then
+          date +%s > "$since_file"
+          triage_log "absorbed $label (live no-mistakes run reports recent activity, idle ${age}s): $win"
+          return 0
+        fi
         if crew_worktree_written_since "$task" "$STATE" "$since_file"; then
           wedge_defer_writing "$win" "$since_file" "$label" "$age"
           return 0

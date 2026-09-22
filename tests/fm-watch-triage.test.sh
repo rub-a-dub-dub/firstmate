@@ -410,6 +410,36 @@ test_crew_is_provably_working_classifier() {
   pass "crew_is_provably_working: only working+run-step/pane is provable; idle/finished/parked/failed/unknown surface"
 }
 
+# crew_run_activity_recent: the narrower predicate the wedge timer consults
+# before trusting pane-idle time (AGENTS.md/2026-09-20). It answers yes ONLY
+# for a live run-step verdict that also carries fm-crew-state.sh's own
+# `activity: recent` marker (nm_run_activity_is_recent there); pane evidence,
+# a coarse or marker-less run-step verdict, a run whose activity has gone
+# quiet, and every non-working state all answer no, so the caller falls back
+# to the ordinary pane-based wedge timer exactly as before.
+test_crew_run_activity_recent_classifier() {
+  local dir fakebin
+  dir=$(make_case run-activity-recent); fakebin="$dir/fakebin"
+  export FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh"
+  export FM_FAKE_CREW_STATE
+  FM_FAKE_CREW_STATE='state: working · source: run-step · validating (fixing) · activity: recent'
+  crew_run_activity_recent a || fail "a live run reporting recent activity was not recognized"
+  FM_FAKE_CREW_STATE='state: working · source: run-step · validating (fixing) · activity: quiet'
+  ! crew_run_activity_recent a || fail "a live run whose activity went quiet was treated as recent"
+  FM_FAKE_CREW_STATE='state: working · source: run-step · ci running'
+  ! crew_run_activity_recent a || fail "a run-step verdict with no activity marker was treated as recent"
+  FM_FAKE_CREW_STATE='state: working · source: run-step · validating (background run)'
+  ! crew_run_activity_recent a || fail "a coarse run-step verdict was treated as recent"
+  FM_FAKE_CREW_STATE='state: working · source: pane · harness busy'
+  ! crew_run_activity_recent a || fail "pane evidence alone was treated as a recent live run"
+  FM_FAKE_CREW_STATE='state: unknown · source: none · worktree gone'
+  ! crew_run_activity_recent a || fail "an unattributed crew was treated as a recent live run"
+  FM_FAKE_CREW_STATE='state: working · source: run-step · validating (fixing) · activity: recent'
+  ! crew_run_activity_recent "" || fail "empty id treated as a recent live run"
+  unset FM_FAKE_CREW_STATE
+  pass "crew_run_activity_recent: only a live run-step verdict carrying its own activity: recent marker answers yes"
+}
+
 # status_is_paused: the shared pause verb test both consumers read (so neither
 # hardcodes the literal). Matches only the verb before the first colon, so a reason
 # that merely mentions "paused" does not false-match, and a genuine blocker stays a
@@ -1928,6 +1958,109 @@ test_nonterminal_stale_provably_working_absorbed_then_escalated() {
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the wedge escalation failed"
   grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "wedge escalation was not queued"
   pass "provably-working non-terminal stale is absorbed on first sight, then wedge-escalated past the threshold"
+}
+
+# --- a LIVE no-mistakes run's own recent activity outranks pane-idle time ------
+# The 2026-09-20 false-positive: a healthy fix round parks the pane while the
+# pipeline's own agent works in a separate process, and waiting quietly is
+# correct behaviour. Unlike the plain provably-working case above (classified
+# once, then escalated purely on elapsed pane-idle time regardless of whether
+# the run is still going), a run whose recorded status carries
+# fm-crew-state.sh's own `activity: recent` marker must keep suppressing the
+# escalation for as long as that marker holds, re-verified every time the
+# threshold is crossed rather than escalating on a stale first-sight verdict.
+
+test_wedge_escalation_suppressed_by_recent_run_activity() {
+  local dir state fakebin out capture_file window key pane_hash sig pid
+  dir=$(make_case nonterminal-stale-recent-activity); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"
+  window="test:fm-activepane"
+  printf 'idle building output' > "$capture_file"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/activepane.meta"
+  printf 'working: still compiling\n' > "$state/activepane.status"
+  sig=$(seen_sig "$state/activepane.status"); printf '%s' "$sig" > "$state/.seen-activepane_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle building output")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (fixing) · activity: recent'
+
+  # Phase A: first sighting absorbs, exactly as an ordinary provably-working stale.
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "watcher exited for a fresh provably-working non-terminal stale (should absorb): $(cat "$out")"
+  fi
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional phase-A watcher stop"
+
+  # Phase B: backdate the idle timer well past the threshold. Unlike
+  # test_nonterminal_stale_provably_working_absorbed_then_escalated, the run's
+  # own recent-activity evidence must keep this pane silent instead of
+  # escalating on pane-idle time alone.
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_absorbed "$state" "$pid" "absorbed non-terminal stale (live no-mistakes run reports recent activity" \
+    || { reap "$pid"; fail "a live run reporting recent activity did not suppress the wedge escalation: $(cat "$out")"; }
+  [ ! -s "$out" ] || fail "a recent-activity absorb printed a wake reason: $(cat "$out")"
+  [ ! -s "$state/.wake-queue" ] || fail "a recent-activity absorb enqueued a durable wake record"
+  [ -s "$state/.stale-since-$key" ] || fail "stale-since timer was removed instead of reset"
+  reap "$pid"
+  unset FM_FAKE_CREW_STATE
+  pass "a live no-mistakes run reporting recent activity suppresses the wedge escalation on an unchanged quiet pane"
+}
+
+# The other direction: a recorded run that is still nominally running/fixing but
+# whose OWN last_activity has gone quiet must not be vouched for - a dead run
+# cannot excuse a quiet pane, and doing so would convert this exact false
+# positive into a missed real wedge.
+test_wedge_escalation_not_suppressed_by_quiet_run_activity() {
+  local dir state fakebin out drain_out capture_file window key pane_hash sig pid
+  dir=$(make_case nonterminal-stale-quiet-activity); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
+  window="test:fm-quietrun"
+  printf 'idle building output' > "$capture_file"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/quietrun.meta"
+  printf 'working: still compiling\n' > "$state/quietrun.status"
+  sig=$(seen_sig "$state/quietrun.status"); printf '%s' "$sig" > "$state/.seen-quietrun_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle building output")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  # The recorded run is nominally still "fixing", but the pipeline's own
+  # last_activity has gone quiet.
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (fixing) · activity: quiet'
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "watcher exited for a fresh provably-working non-terminal stale (should absorb): $(cat "$out")"
+  fi
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional phase-A watcher stop"
+
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher did not escalate a quiet-activity run past the threshold"
+  grep -F "stale: $window" "$out" >/dev/null || fail "escalation did not print a stale wake"
+  grep -F "possible wedge" "$out" >/dev/null || fail "a run whose last_activity went quiet did not still escalate as a possible wedge"
+  [ ! -e "$state/.stale-since-$key" ] || fail "stale-since timer was not cleared after escalation"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the wedge escalation failed"
+  grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "wedge escalation was not queued"
+  unset FM_FAKE_CREW_STATE
+  pass "a live run whose last_activity has gone quiet still wedge-escalates past the threshold"
 }
 
 # --- non-terminal stale, crew NOT provably working: surfaced immediately ------
@@ -4860,6 +4993,7 @@ test_malformed_seen_signature_reads_the_whole_log
 test_stale_is_terminal_classifier
 test_classifier_primitives
 test_crew_is_provably_working_classifier
+test_crew_run_activity_recent_classifier
 test_status_is_paused_classifier
 test_crew_absorb_class_classifier
 test_declared_pause_under_trailing_note_does_not_wake_every_poll
@@ -4909,6 +5043,8 @@ test_permission_recovery_surfaces_preserved_status
 test_terminal_stale_surfaced
 test_stale_terminal_status_overridden_by_active_run
 test_nonterminal_stale_provably_working_absorbed_then_escalated
+test_wedge_escalation_suppressed_by_recent_run_activity
+test_wedge_escalation_not_suppressed_by_quiet_run_activity
 test_wedge_escalation_marks_demand_deep_inspection_after_threshold
 test_wedge_escalation_resets_when_pane_becomes_active
 test_busy_pane_below_turn_age_bound_is_absorbed

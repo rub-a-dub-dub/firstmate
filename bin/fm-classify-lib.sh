@@ -1915,6 +1915,33 @@ crew_is_provably_working() {  # <id>
   [ "$(crew_absorb_class "$1")" = working ]
 }
 
+# 0 if crew <id> has a LIVE no-mistakes run whose active step is reporting
+# RECENT activity (bin/fm-crew-state.sh's own `activity: recent` verdict on its
+# `state: working` / `source: run-step` line - see that script's header for
+# exactly when it is set). This is narrower than crew_is_provably_working: it
+# never answers yes from pane evidence, only from the run's own authoritative
+# last_activity, so it is the one predicate the wedge timer may trust to keep
+# absorbing a long-quiet pane for as long as a fix round is genuinely still
+# logging (AGENTS.md/2026-09-20: a healthy validating pane is silent by
+# design, and blindly escalating on pane-idle time alone against that silence
+# is a false-positive wedge).
+# 1 (no evidence - the caller must fall back to the ordinary pane-based wedge
+# timer exactly as before) for every other case: no attributable run, a coarse
+# ledger-only read with no steps table, a run whose active step has gone
+# quiet, or a state read that failed, returned nothing, or timed out. Absence
+# of evidence must never be read as recency, because a dead run cannot vouch
+# for a quiet pane - that would turn this exact false positive into a missed
+# real wedge, the worse error.
+crew_run_activity_recent() {  # <id>
+  local id=$1 line
+  [ -n "$id" ] || return 1
+  line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
+  case "$line" in
+    "state: working"*"source: run-step"*"activity: recent"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Directories excluded from the worktree write probe below, and the depth it walks.
 # The excluded set is everything a supervisor read or a package manager can write
 # without the crew doing any work - .git first, so firstmate's own read-only git

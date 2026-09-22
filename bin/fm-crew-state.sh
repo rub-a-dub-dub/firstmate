@@ -17,6 +17,15 @@
 #
 #   state: <working|parked|done|blocked|paused|failed|unknown> · source: <run-step|pane|status-log|remote-endpoint|none> · <detail>
 #
+# For a full (non-coarse) run-step read whose active status is running/fixing,
+# <detail> also carries the pipeline's own `activity: recent|quiet` verdict
+# (nm_run_activity_is_recent, sourced from the run's active_steps[] table) -
+# the single fact bin/fm-classify-lib.sh's crew_run_activity_recent consults so
+# the watcher's wedge timer can judge a long-quiet pane by the run's own
+# recency instead of pane idle time alone. Absent for every other case (no
+# run, a coarse ledger-only read, or a non-running/fixing status), which
+# callers must treat as no recency evidence, never as "recent".
+#
 # Logic, in order:
 #   1. Resolve worktree + backend target + kind from state/<id>.meta. A meta
 #      recording remote_host= is a remote secondmate: its worktree and endpoint
@@ -748,7 +757,18 @@ if [ "$HAVE_RUN" = 1 ]; then
     else
       case "$status" in
         ci)             RUN_STATE=working; RUN_DETAIL="ci running" ;;
-        running|fixing) RUN_STATE=working; RUN_DETAIL="validating ($status)" ;;
+        running|fixing)
+          RUN_STATE=working; RUN_DETAIL="validating ($status)"
+          # Surface the pipeline's own recency verdict for the wedge timer
+          # (bin/fm-watch.sh's crew_run_activity_recent, bin/fm-classify-lib.sh):
+          # a quiet pane is not a wedge while the run itself is still logging,
+          # but a run that stopped logging must not vouch for it forever.
+          if nm_run_activity_is_recent; then
+            RUN_DETAIL="$RUN_DETAIL${SEP}activity: recent"
+          else
+            RUN_DETAIL="$RUN_DETAIL${SEP}activity: quiet"
+          fi
+          ;;
         completed)      RUN_STATE="done"; RUN_DETAIL="run completed" ;;
         failed)
           if nm_reclassify_failed_run_as_held_green; then :; else
