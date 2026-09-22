@@ -2545,7 +2545,9 @@ EOF
 # A gate named in a live captain hold's body text must survive the bound even
 # when its filed date ties with every other row in the cluster, and even when the
 # naming sentence sits past the hold body's display-excerpt cutoff. A gate whose
-# id is merely a prefix of the named one is NOT referenced and must not be kept.
+# id is merely a prefix of the named one, or whose id is an ordinary word the hold
+# prose happens to use, is NOT referenced and must not be kept; a single-word id a
+# hold names structurally through blocked-by is.
 test_gate_named_in_a_live_captain_hold_survives_the_bound() {
   local home fakebin json
   home=$(make_home hold-named-gate)
@@ -2558,7 +2560,11 @@ test_gate_named_in_a_live_captain_hold_survives_the_bound() {
 - [ ] gate-b - Gate B (repo: firstmate) (kind: ship) (since 2026-07-11)
 - [ ] gate-c - Gate C (repo: firstmate) (kind: ship) (since 2026-07-11)
 - [ ] signing - Rotate the release signing key (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] enabling - Rewrite the enabling guide (repo: firstmate) (kind: ship) (since 2026-07-11)
 - [ ] signing-fix - Fix the unattended commit signing (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] docs - Rewrite the runner docs (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] ship-docs - Ship the rewritten guide blocked-by: docs (repo: firstmate) (kind: captain) (since 2026-07-11) (hold: waiting on the rewrite) (hold-kind: captain)
+  Captain hold set: 2026-07-11T00:00:00Z
 - [ ] enable-schedule - Enable the nightly job (repo: firstmate) (kind: captain) (since 2026-07-11) (hold: waiting on the fix) (hold-kind: captain)
   Captain hold set: 2026-07-11T00:00:00Z
   The captain spent the evening tracing why the unattended runner refuses to commit anything at all, walked the runner log twice, compared it against last week's clean run, and wrote the whole trail down here so the next session does not have to rediscover any of it from scratch again.
@@ -2570,15 +2576,19 @@ EOF
   json=$(FM_BEARINGS_GATES=3 run "$home" "$fakebin" --json)
   printf '%s' "$json" | jq -e '
     (.gates | any(.id == "signing-fix"))
+      and (.gates | any(.id == "docs"))
       and (.gates | any(.id == "gate-a"))
       and (.gates | any(.id == "gate-b"))
       and (.gates | any(.id == "gate-c"))
       and (.gates | any(.id == "signing") | not)
-      and (.gates | length) == 4
+      and (.gates | any(.id == "enabling") | not)
+      and (.gates | length) == 5
       and (.decisions_open | any(.id == "enable-schedule"))
-      and ([.omitted[].surface] | index("gates showing 4 of 5") != null)
+      and ([.omitted[].surface] | index("gates showing 5 of 8") != null)
       and ([.omitted[].surface]
-           | index("gates retained past the truncation bound, referenced by a live captain hold: signing-fix") != null)
+           | any(startswith("gates retained past the truncation bound, referenced by a captain hold: ")
+                 and contains("signing-fix") and contains("docs")
+                 and (contains("enabling") | not)))
   ' >/dev/null || fail "a gate named in a live captain hold vanished behind the bound: $json"
   pass "a gate named in a live captain hold survives the bound"
 }
@@ -2617,9 +2627,85 @@ EOF
       and (.decisions_open | any(.id == "hold-text-mate/mate-enable"))
       and ([.omitted[].surface] | index("gates showing 3 of 4") != null)
       and ([.omitted[].surface]
-           | index("gates retained past the truncation bound, referenced by a live captain hold: mate-signing-fix") != null)
+           | index("gates retained past the truncation bound, referenced by a captain hold: hold-text-mate/mate-signing-fix") != null)
   ' >/dev/null || fail "a secondmate live captain hold lost its gate past the ledger queued bound: $json"
   pass "a secondmate live captain hold pins its gate past the queued bound"
+}
+
+# Gate ids are unique within a home, not across the fleet, so a hold naming its own
+# home's gate must not reach into another home and pin the same-named row there.
+# The disclosure has to stay unambiguous about which home's row was retained.
+test_a_captain_hold_never_pins_another_homes_same_named_gate() {
+  local home mate fakebin json
+  home=$(make_home cross-home-pin)
+  : > "$home/data/secondmates.md"
+  mate="$TMP_ROOT/cross-home-pin-home"
+  make_valid_secondmate_home mate-a "$mate"
+  append_secondmate_registry "$home" mate-a "$mate"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+- [ ] main-gate-a - Main gate A (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] main-gate-b - Main gate B (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] release-notes - Write the main release notes (repo: firstmate) (kind: ship) (since 2026-07-11)
+
+## Done
+EOF
+  cat > "$mate/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+- [ ] release-notes - Write the mate release notes (repo: sample) (kind: ship) (since 2026-07-11)
+- [ ] mate-publish - Publish the mate build (repo: sample) (kind: captain) (since 2026-07-11) (hold: waiting on release-notes) (hold-kind: captain)
+  Captain hold set: 2026-07-11T00:00:00Z
+
+## Done
+EOF
+  fakebin=$(make_fakebin "$home")
+  json=$(FM_BEARINGS_GATES=2 run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    (.gates | any(.id == "release-notes" and .owner == "mate-a"))
+      and (.gates | any(.id == "release-notes" and .owner == "(main)") | not)
+      and ([.gates[].id] | contains(["main-gate-a", "main-gate-b"]))
+      and (.gates | length) == 3
+      and ([.omitted[].surface] | index("gates showing 3 of 4") != null)
+      and ([.omitted[].surface]
+           | index("gates retained past the truncation bound, referenced by a captain hold: mate-a/release-notes") != null)
+  ' >/dev/null || fail "a captain hold pinned a same-named gate outside its own home: $json"
+  pass "a captain hold never pins another home's same-named gate"
+}
+
+# Retention is driven by hold text, so without its own cap the gates array could
+# grow past FM_BEARINGS_GATES by however many rows a hold body happens to name.
+test_gate_retention_is_capped_and_discloses_the_cap() {
+  local home fakebin json
+  home=$(make_home pinned-gate-cap)
+  : > "$home/data/secondmates.md"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+- [ ] top-gate - Newest filed gate (repo: firstmate) (kind: ship) (since 2026-07-12)
+- [ ] pin-a - Pinned gate A (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] pin-b - Pinned gate B (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] pin-c - Pinned gate C (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] hold-on-three - Wait for all three (repo: firstmate) (kind: captain) (since 2026-07-11) (hold: waiting on pin-a, pin-b and pin-c) (hold-kind: captain)
+  Captain hold set: 2026-07-11T00:00:00Z
+
+## Done
+EOF
+  fakebin=$(make_fakebin "$home")
+  json=$(FM_BEARINGS_GATES=1 FM_BEARINGS_GATES_PINNED=2 run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    (.gates | length) == 3
+      and (.gates | any(.id == "top-gate"))
+      and ([.gates[].id] | contains(["pin-a", "pin-b"]))
+      and (.gates | any(.id == "pin-c") | not)
+      and ([.omitted[].surface] | index("gates showing 3 of 4") != null)
+      and ([.omitted[].surface] | index("gates retained past the bound capped at 2; 1 more omitted") != null)
+  ' >/dev/null || fail "captain-hold gate retention was not capped and disclosed: $json"
+  pass "gate retention past the bound is capped and disclosed"
 }
 
 # A captain scanning Underway must be able to tell WHICH task a row is, and the
@@ -3495,6 +3581,8 @@ test_nameless_legacy_summary_uses_its_durable_identifier
 test_newest_filed_gates_are_selected_before_snapshot_bounds
 test_gate_named_in_a_live_captain_hold_survives_the_bound
 test_secondmate_hold_pins_its_gate_past_the_queued_bound
+test_a_captain_hold_never_pins_another_homes_same_named_gate
+test_gate_retention_is_capped_and_discloses_the_cap
 test_underway_and_gate_rows_carry_the_durable_name_and_filed_date
 test_mixed_secondmate_roles_partial_state_and_captain_readiness
 test_main_captain_readiness_matches_secondmate_projection
