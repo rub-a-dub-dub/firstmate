@@ -266,14 +266,21 @@ fm_pr_file_identity() {
   printf '%s:%s\n' "$device" "$inode"
 }
 
+# A pipeline's status is its last command's, so the awk below succeeds even
+# when the hash command could not read the file. Every caller treats a
+# non-zero return as "cannot hash" and fails closed, so the absent hash is
+# reported as the failure it is rather than handed back as an empty string.
 fm_pr_sha256() {
+  local hash
   if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+    hash=$(shasum -a 256 "$1" 2>/dev/null | awk '{print $1}')
   elif command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" 2>/dev/null | awk '{print $1}'
+    hash=$(sha256sum "$1" 2>/dev/null | awk '{print $1}')
   else
     return 1
   fi
+  [ -n "$hash" ] || return 1
+  printf '%s\n' "$hash"
 }
 
 # A durable identity comparison between a recorded device:inode/content-hash

@@ -2634,6 +2634,25 @@ test_armed_poll_refuses_sidecar_content_change_the_parser_admits() {
   pass "a sidecar content change the parser admits still refuses the armed poll and names the content mismatch"
 }
 
+test_identity_reports_an_unhashable_file_as_unreadable() {
+  local dir target identity
+  dir=$(make_case unhashable-not-content)
+  # A directory stats cleanly, so the identity read succeeds and only the hash
+  # can fail - the same shape as a file unlinked between the two reads.
+  target="$dir/stats-but-cannot-be-hashed"
+  mkdir -p "$target" || fail "could not create the unhashable fixture"
+  identity=$(fm_pr_file_identity "$target") \
+    || fail "the unhashable fixture did not stat cleanly, so it tests nothing"
+  ! fm_pr_sha256 "$target" \
+    || fail "hashing an unhashable path reported success"
+  ! fm_pr_identity_matches "$target" "$identity" \
+    0000000000000000000000000000000000000000000000000000000000000000 \
+    || fail "an unhashable path was silently authorized"
+  [ "$FM_PR_IDENTITY_MISMATCH" = unreadable ] \
+    || fail "an unhashable path was reported as $FM_PR_IDENTITY_MISMATCH rather than unreadable"
+  pass "a file that stats but cannot be hashed is reported as unreadable, not as tampering"
+}
+
 # fm_pr_poll_artifacts_valid's structural checks (cmp against the check
 # template, and comparing the sidecar's parsed fields against the
 # registration) catch most content forgeries before an identity is ever
@@ -2758,5 +2777,6 @@ test_teardown_removes_poll_artifacts
 test_registration_identity_tolerates_device_only_drift
 test_registration_identity_refuses_inode_swap_with_identical_content
 test_armed_poll_refuses_sidecar_content_change_the_parser_admits
+test_identity_reports_an_unhashable_file_as_unreadable
 test_retirement_check_identity_refuses_content_change
 test_retirement_recovery_tolerates_device_only_drift
