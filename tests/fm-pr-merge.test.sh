@@ -3145,7 +3145,8 @@ test_dropped_ci_event_past_grace_window_refuses_as_suspected_drop() {
     "ci-suspected-drop: gh pr merge ran on a suspected dropped CI event"
 
   # --allow-red never waives this: the remedy is re-dispatch or rebase
-  # (report Section 3), never a merge-time override.
+  # (report Section 3), or the separate attended --waive-no-ci-evidence
+  # escape covered below, never this per-check override.
   set +e
   run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/105 \
     --allow-red ci \
