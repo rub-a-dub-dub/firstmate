@@ -235,6 +235,19 @@ test_status_span_survives_a_later_routine_append() {
     > "$state/blocked.status"
   status_span_has_actionable "$state/blocked.status" 0 \
     || fail "a blocked: event hidden behind a current wait was classified routine"
+  # A secondmate's correlation-marked delivery report is not this worker's own
+  # terminal state, and OPEN DECISIONS refuses to let it retire the shared
+  # unkeyed bucket. The watcher must refuse it too, or the blocker vanishes
+  # from both readers at once.
+  printf 'done [corr=0123456789abcdef]: reviewed the diff (via-helper)\n' \
+    >> "$state/blocked.status"
+  status_span_has_actionable "$state/blocked.status" 0 \
+    || fail "a blocked: event was retired by a correlation-marked done: line"
+  event=$(status_span_first_actionable "$state/blocked.status" 0)
+  case "$event" in
+    *"blocked: cannot reach the release host"*) ;;
+    *) fail "the span reported '$event' instead of the blocker a corr-marked done: cannot retire" ;;
+  esac
   pass "an actionable event is not hidden by later routine appends, and is named as itself"
 }
 

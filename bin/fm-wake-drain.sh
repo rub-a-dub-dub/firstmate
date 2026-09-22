@@ -454,9 +454,12 @@ print_open_decisions_section() {
 
   while IFS=$(printf '\t') read -r task key verb note; do
     [ -n "$task" ] || continue
-    line="$task"
-    [ "$key" = default ] || line="$line [key=$key]"
-    line="$line $verb: $note"
+    # Always show the key, "default" included: the footer below names the
+    # exact --resolve-key value to use, and an unkeyed row's key IS "default"
+    # (fm-send.sh accepts it like any other stated key) - hiding it here left
+    # the footer naming a command no reader could actually fill in for that
+    # row.
+    line="$task [key=$key] $verb: $note"
     # The shared cut counts the item's own characters; the trailing newline this
     # section's global budget also pays for is this caller's, so the per-item
     # allowance passed down is one short of the cap.

@@ -239,6 +239,29 @@ status_paused_until() {  # <status-line> -> epoch on stdout
 # worker self-closes only a blocker that cleared without an answer (bin/fm-brief.sh
 # rule 6), so closure never depends on a busy worker's discipline.
 #
+# The one exception is the shared "default" bucket itself (see the key grammar
+# below): an UNKEYED needs-decision/blocked names no specific captain decision to
+# answer, so the only key a captain reading OPEN DECISIONS can close it with is
+# that shared bucket itself (`--resolve-key default`, which the drain now
+# prints on the row) rather than one naming the decision - it used to fold as
+# open forever with no other route out, even long after the crew moved past it
+# (a `done:` or `paused:` line is exactly that crew moving on). A STATED key
+# stays governed by the rule above unconditionally: it names a real captain
+# decision, and only its own resolved/captain-held line ever closes it. Only
+# the unkeyed "default" bucket is retired by a later plain done/paused line on
+# the same task, and "plain" is read off that retiring line too: it must itself
+# be unkeyed, because a keyed done/paused line is a report about the decision
+# its OWN key names (the scripted `done [key=child-outcome-...]`,
+# `done [key=child-pr-<id>]` and `done [key=merged-<id>]` lines the
+# child-outcome, PR-readiness and merge publishers append straight into a
+# secondmate's parent channel are exactly that) and says nothing about the
+# separate unkeyed bucket. "Plain" also
+# excludes any line carrying a correlation token (bracketed "[corr=...]" or the
+# bare `corr=<16 hex>` word bin/fm-pending-reply-lib.sh writes), because that
+# token marks a secondmate's own protocol delivery report, not an ordinary
+# declared state, and that library still owns closing its own escalations
+# explicitly under this same bucket (fm_pending_reply_close_escalation).
+#
 # Decision key grammar (backward-compatible with the existing "<verb>: <note>"
 # format): an OPTIONAL "[key=<slug>]" token names the decision. Its documented
 # position sits between the verb and the colon, and a complete token at the
@@ -255,8 +278,9 @@ status_paused_until() {  # <status-line> -> epoch on stdout
 # so a summary merely MENTIONING "[key=x]" cannot open or close that decision.
 # A line with no token in either position uses the key "default", preserving
 # the historical one-open-decision-per-task behavior (a bare "resolved:" closes
-# "default"). A stated key whose slug fails the charset below is rejected (the
-# folds skip the line), never rewritten to "default".
+# "default", and so now does a later plain done/paused line - see above).
+# A stated key whose slug fails the charset below is rejected (the folds skip
+# the line), never rewritten to "default".
 # The parsers are pure reads of a single line. Status metadata may contain any
 # number of "[name=value]" tags before the colon, in any order, so verb parsing
 # ends at the first tag rather than special-casing "[key=...]".
@@ -310,6 +334,34 @@ _fm_classify_is_corr_token() {  # <word>
       ;;
   esac
   return 1
+}
+
+# 0 when a status line carries a "corr=" token - bracketed ("[corr=...]") or
+# the bare word above - anywhere before its first colon. Used only by the
+# default-bucket retirement rule in _fm_decision_fold_line: a correlation
+# token marks a secondmate's own protocol delivery report
+# (bin/fm-pending-reply-lib.sh), never an ordinary crew state declaration, so
+# that line must not retire the shared "default" bucket out from under that
+# library's own explicit close. Deliberately a loose substring check on the
+# same segment status_line_verb already fast-paths on (its "*corr=*" guard
+# above) rather than a full token re-parse: this predicate only needs to know
+# a correlation marker is present, never its exact shape.
+_fm_classify_line_has_corr_token() {  # <status-line>
+  case "${1%%:*}" in
+    *corr=*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Does this line qualify to retire the shared "default" bucket? True only for a
+# PLAIN unkeyed line - one that resolves to the shared bucket and carries no
+# correlation token. The two readers of a status stream both need this verdict:
+# _fm_decision_fold_line (the OPEN DECISIONS display) and
+# _fm_status_open_decision_origins (the watcher's actionable-event map), which
+# must not disagree about which lines close a captain-facing row. Callers own
+# the verb set they apply it to, and their own open-set checks.
+_fm_decision_line_retires_default() {  # <decision-key> <status-line>
+  [ "$1" = default ] && ! _fm_classify_line_has_corr_token "$2"
 }
 
 status_line_verb() {  # <status-line> -> leading verb word
@@ -491,6 +543,20 @@ _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb
       open=$(_fm_decision_drop "$open" "$key")
       [ -n "$open" ] && open="${open}"$'\n'
       ;;
+    done|"${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}")
+      # Retire only the shared "default" bucket (see the key-grammar comment
+      # above) and only for a PLAIN terminal/paused line - one with no
+      # correlation token - never a stated key, which stays governed by the
+      # resolve/held case above regardless of what else follows it.
+      if _fm_decision_line_retires_default "$key" "$line"; then
+        case "$open" in
+          default$'\t'*|*$'\n'default$'\t'*)
+            open=$(_fm_decision_drop "$open" default)
+            [ -n "$open" ] && open="${open}"$'\n'
+            ;;
+        esac
+      fi
+      ;;
   esac
   printf '%s' "$open"
 }
@@ -624,8 +690,12 @@ EOF
 # (needs-decision or blocked) while the key is still open, the closing verb
 # (resolved, or the captain-held durable-transfer verb) once it is closed, and
 # nothing at all when no line in the stream ever stated a transition for it.
+# For the shared "default" key alone the closing verb may also be a plain
+# `done` or the configured paused verb, because a plain unkeyed line of either
+# retires that bucket - see the unkeyed-bucket exception in the key-grammar
+# block above.
 #
-# The distinction between the two closing verbs is the whole point: a
+# The distinction between the two explicit closing verbs is the whole point: a
 # `captain-held` close is the VERIFIED handoff to a durable captain-held task
 # (fm-captain-hold.sh complete writes it only after verifying that task), so the
 # structured row staying open afterwards is correct. A `resolved` close claims
@@ -706,8 +776,11 @@ EOF
 # is open. Cost is bounded by NEW appends since the last drain, not by the
 # status file's total lifetime size.
 #
-# Correctness invariant (unchanged from the whole-file fold): an open decision
-# is dropped ONLY by an explicit resolved/captain-held line for its exact key,
+# Correctness invariant (identical to the whole-file fold, which this shares
+# through _fm_decision_fold_line): a KEYED open decision is dropped ONLY by an
+# explicit resolved/captain-held line for its exact key, and the shared unkeyed
+# "default" bucket only by one of those or by a later plain done/paused line
+# (the key-grammar block above owns that exception);
 # never by cursor advancement, age, or being buried under later appends - the
 # persisted open-set carries every still-open key forward across calls
 # regardless of how much new unrelated log content has since been folded in.
@@ -761,7 +834,13 @@ _fm_open_decisions_cursor_path() {  # <status-file>
 # Version 4 was already spent on the bracketed-tag parser change above, and a
 # cursor persisted under that reading predates this one, so it must still be
 # discarded and rebuilt from byte 0 under the new reading.
-FM_OPEN_DECISIONS_FOLD_VERSION=5
+# 6: a plain (no correlation token) done/paused line now also retires
+# the shared "default" bucket, so a status log whose unkeyed blocked/
+# needs-decision line is already followed by one of those in its history
+# folds differently under this version than under 5 - a cursor persisted
+# under the old reading must be discarded and rebuilt from byte 0 so it picks
+# up the retirement instead of carrying the stale open record forward forever.
+FM_OPEN_DECISIONS_FOLD_VERSION=6
 
 # Portable device:inode identity for the rotation/recreation check below.
 _fm_open_decisions_file_ident() {  # <file> -> strongest available identity
@@ -1713,6 +1792,22 @@ $1
 EOF
 }
 
+# Deliberately narrower than _fm_decision_fold_line's own retirement arm: the
+# fold retires the shared "default" bucket on a plain done OR paused line (the
+# OPEN DECISIONS captain-facing display), but this origins map only drops on
+# resolve/held and on a done line that _fm_decision_line_retires_default
+# accepts - so a correlation-marked done, which the fold refuses to let retire
+# the bucket, never prunes an origin here either.
+# status_span_first_actionable_record (the watcher's
+# separate actionable-event classifier) reads origins, not the fold, to decide
+# whether a blocked:/needs-decision: line is still live; if paused pruned an
+# origin here too, a worker that appended blocked: then paused: (the away-mode
+# shape of being stuck) would vanish from the watcher's view the moment the
+# paused line landed, because paused is not itself captain-relevant
+# (status_is_captain_relevant) and so is never shown as the event that
+# replaced it - see tests/fm-watch-triage.test.sh's "hidden behind a current
+# wait" case. Excluding paused here keeps that worker visible to the watcher
+# while OPEN DECISIONS still retires the row.
 _fm_status_open_decision_origins() {  # <status-file>
   local f=$1 line open='' after key verb note number=0 origins=''
   local resolve held
@@ -1739,6 +1834,12 @@ _fm_status_open_decision_origins() {  # <status-file>
         ;;
       "$resolve"|"$held")
         _fm_open_set_has "$after" "$key" || origins=$(_fm_decision_origin_drop "$origins" "$key")
+        ;;
+      done)
+        if _fm_decision_line_retires_default "$key" "$line" \
+          && ! _fm_open_set_has "$after" "$key"; then
+          origins=$(_fm_decision_origin_drop "$origins" "$key")
+        fi
         ;;
     esac
     open=$after

@@ -81,6 +81,154 @@ test_bare_keyless_line_still_folds_to_default() {
   pass "a keyless needs-decision still opens and closes the default key"
 }
 
+test_unkeyed_blocked_retires_after_a_later_terminal_or_paused_line() {
+  local dir
+  dir=$(case_dir unkeyed-blocked-retires)
+  printf 'blocked: no-mistakes axi run refuses to push the rebased branch\n' > "$dir/t.status"
+  assert_fold "$dir/t.status" \
+    "$(printf 'default\tblocked\tno-mistakes axi run refuses to push the rebased branch\n')" \
+    "unkeyed blocked opens the default bucket"
+
+  # The blocker cleared hours earlier (moved to a fresh branch); the task then
+  # kept reporting normally - exactly instance 1 in the captain's report.
+  printf 'working: moved the work to a fresh branch\ndone: PR checks green at 14/14\npaused: captain-held\n' \
+    >> "$dir/t.status"
+  assert_fold "$dir/t.status" "" \
+    "a later working/done/paused sequence retires the unkeyed blocked line"
+  pass "an unkeyed blocked line retires once a later done or paused line follows it"
+}
+
+test_unkeyed_needs_decision_retires_via_done_despite_a_mismatched_keyed_resolution() {
+  local dir
+  dir=$(case_dir unkeyed-needs-decision-retires)
+  printf 'needs-decision: how should the worker proceed\n' > "$dir/t.status"
+  printf 'needs-decision [key=route]: pick the deployment route\n' >> "$dir/t.status"
+  assert_fold "$dir/t.status" \
+    "$(printf 'default\tneeds-decision\thow should the worker proceed\nroute\tneeds-decision\tpick the deployment route\n')" \
+    "both the unkeyed and the keyed decision open"
+
+  # Firstmate answered in chat; the worker's own resolved line names a
+  # DIFFERENT stated key, so it never matches the unkeyed "default" bucket -
+  # exactly the third instance in the captain's report, which widened the
+  # defect beyond blocked: lines to needs-decision: too.
+  printf 'resolved [key=skills-directory-stale]: unrelated answer\n' >> "$dir/t.status"
+  printf 'done: shipped\n' >> "$dir/t.status"
+  assert_fold "$dir/t.status" "$(printf 'route\tneeds-decision\tpick the deployment route\n')" \
+    "the unkeyed decision retires via the done line while the keyed one stays open"
+  pass "an unkeyed needs-decision retires via a later done line even when an unrelated key was resolved, and a keyed needs-decision in the same log still folds as open"
+}
+
+test_correlated_terminal_line_does_not_retire_the_default_bucket() {
+  local dir
+  dir=$(case_dir corr-protects-default)
+  # bin/fm-pending-reply-lib.sh still owns closing a legacy unkeyed escalation
+  # explicitly (it matches the exact open note before appending its own
+  # resolved [key=default] line), so an ordinary correlation-marked delivery
+  # report must not retire that bucket out from under it.
+  printf 'blocked: pending-reply-missed: task=hibit pending-reply-id=abc request=legacy close\n' \
+    > "$dir/t.status"
+  printf 'done corr=0123456789abcdef: delayed legacy reply\n' >> "$dir/t.status"
+  assert_fold "$dir/t.status" \
+    "$(printf 'default\tblocked\tpending-reply-missed: task=hibit pending-reply-id=abc request=legacy close\n')" \
+    "a done line carrying a correlation token must not retire the default bucket"
+  pass "a correlation-marked terminal line leaves the default bucket for its owning library to close explicitly"
+}
+
+test_keyed_terminal_line_does_not_retire_the_default_bucket() {
+  local dir expected
+  dir=$(case_dir keyed-terminal-keeps-default)
+  # A secondmate's own unkeyed captain-facing question, on the very file the
+  # child-outcome / PR-readiness / merge publishers append their keyed `done
+  # [key=...]` reports into (a parent home's state/<mate-id>.status). Those
+  # reports are automated and carry no correlation token, so only the retiring
+  # line's own stated key distinguishes them from the crew moving on.
+  printf 'needs-decision: ship without the migration?\n' > "$dir/ios.status"
+  expected=$(printf 'default\tneeds-decision\tship without the migration?\n')
+  assert_fold "$dir/ios.status" "$expected" "unkeyed needs-decision opens the default bucket"
+
+  {
+    printf 'done [key=child-outcome-c7-done-ab12cd34]: child c7 done: shipped\n'
+    printf 'done [key=child-pr-c7]: child c7 PR ready: https://example/pr/1\n'
+    printf 'failed [key=merged-c7]: merge of c7 failed\n'
+    printf 'paused [key=child-outcome-c8-paused-ff00ff00]: child c8 paused\n'
+  } >> "$dir/ios.status"
+  assert_fold "$dir/ios.status" "$expected" \
+    "keyed terminal reports must leave the captain's unkeyed decision open"
+
+  # The crew's own plain terminal line is still the documented route out.
+  printf 'done: shipped\n' >> "$dir/ios.status"
+  assert_fold "$dir/ios.status" "" "a plain done line still retires the unkeyed decision"
+  pass "a keyed done/failed/paused report never retires the unkeyed default bucket, while a plain one still does"
+}
+
+test_plain_terminal_retires_only_the_default_row_among_several_open() {
+  local dir
+  dir=$(case_dir default-among-several)
+  # The unkeyed decision is opened AFTER a keyed one, so it is not the first
+  # record in the open set. A plain terminal line must retire exactly that row
+  # and leave every keyed decision standing, whatever order they were opened in.
+  printf 'needs-decision [key=api-shape]: pick REST or RPC\n' > "$dir/t.status"
+  printf 'blocked: waiting on the captain\n' >> "$dir/t.status"
+  printf 'needs-decision [key=route]: pick the deployment route\n' >> "$dir/t.status"
+  assert_fold "$dir/t.status" \
+    "$(printf 'api-shape\tneeds-decision\tpick REST or RPC\ndefault\tblocked\twaiting on the captain\nroute\tneeds-decision\tpick the deployment route\n')" \
+    "a mid-set unkeyed blocker opens alongside the keyed decisions"
+
+  printf 'done: shipped\n' >> "$dir/t.status"
+  assert_fold "$dir/t.status" \
+    "$(printf 'api-shape\tneeds-decision\tpick REST or RPC\nroute\tneeds-decision\tpick the deployment route\n')" \
+    "the plain done retires the mid-set unkeyed row and leaves both keyed decisions open"
+  pass "a plain terminal line retires a non-first unkeyed row without touching the keyed decisions around it"
+}
+
+test_plain_failed_line_does_not_retire_the_default_bucket() {
+  local dir expected
+  dir=$(case_dir plain-failed-keeps-default)
+  # A worker hits its charter's rule 5, appends an unkeyed blocker, and stops.
+  printf 'blocked: no-mistakes axi run refuses to push the rebased branch\n' > "$dir/t.status"
+  expected=$(printf 'default\tblocked\tno-mistakes axi run refuses to push the rebased branch\n')
+  assert_fold "$dir/t.status" "$expected" "the unkeyed blocker opens"
+
+  # Relaunching that stalled crewmate reuses this same never-truncated status
+  # file, and a failed launch-confirm gate appends a plain unkeyed `failed:`
+  # line. That is the spawn tool giving up, not the crew answering the captain,
+  # so the captain-facing blocker must survive it.
+  printf 'failed: could not confirm the relaunched pane\n' >> "$dir/t.status"
+  assert_fold "$dir/t.status" "$expected" \
+    "a plain failed line must not retire the captain's unkeyed blocker"
+
+  printf 'done: moved the work to a fresh branch\n' >> "$dir/t.status"
+  assert_fold "$dir/t.status" "" "a plain done line still retires the unkeyed blocker"
+  pass "a plain failed line leaves the captain's unkeyed blocker open, while a plain done retires it"
+}
+
+test_retired_unkeyed_decision_is_not_reported_as_a_live_span_event() {
+  local dir record='' needs=''
+  dir=$(case_dir retired-span)
+  # status_span_first_actionable_record is the other reader of this same log,
+  # and it must agree with the fold about what is still live: once the unkeyed
+  # decision is retired, it may not be named as a captain event, or the watcher
+  # routes a wake row for a decision that is already gone.
+  printf 'needs-decision: how should the worker proceed\n' > "$dir/t.status"
+  status_span_first_actionable_record "$dir/t.status" 0 record needs \
+    || fail "an open unkeyed decision should be an actionable span record"
+  [ "$needs" = 1 ] \
+    || fail "an open unkeyed needs-decision was not reported as a captain decision: needs=$needs"
+
+  printf 'done: shipped\n' >> "$dir/t.status"
+  assert_fold "$dir/t.status" "" "the plain done retires the unkeyed decision"
+  record=''; needs=''
+  status_span_first_actionable_record "$dir/t.status" 0 record needs \
+    || fail "the terminal line should still be an actionable span record"
+  [ "$needs" = 0 ] \
+    || fail "a retired unkeyed decision was still reported as a live captain decision: needs=$needs"
+  case "$record" in
+    *'how should the worker proceed'*)
+      fail "the retired decision leaked into the span record: $record" ;;
+  esac
+  pass "a retired unkeyed decision stops being reported as a live captain event by the span reader"
+}
+
 test_resolution_closes_across_positions() {
   local dir
   dir=$(case_dir cross-close)
@@ -264,6 +412,13 @@ test_incremental_agrees_with_full_fold_across_appends() {
 
 test_stated_key_is_honored_in_both_positions
 test_bare_keyless_line_still_folds_to_default
+test_unkeyed_blocked_retires_after_a_later_terminal_or_paused_line
+test_unkeyed_needs_decision_retires_via_done_despite_a_mismatched_keyed_resolution
+test_correlated_terminal_line_does_not_retire_the_default_bucket
+test_keyed_terminal_line_does_not_retire_the_default_bucket
+test_plain_terminal_retires_only_the_default_row_among_several_open
+test_plain_failed_line_does_not_retire_the_default_bucket
+test_retired_unkeyed_decision_is_not_reported_as_a_live_span_event
 test_resolution_closes_across_positions
 test_blocked_is_position_tolerant_like_needs_decision
 test_two_colon_form_decisions_stay_distinct
