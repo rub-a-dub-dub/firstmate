@@ -1,0 +1,26 @@
+How a scanner reads tests/fm-captain-hold-lifecycle.test.sh, before and after the change.
+
+Each stream below is a real run of that file on this host (tasks-axi 0.2.5, jq 1.8.1).
+The rule applied is the one the change's own suite pins (classify_tap_stream in
+tests/fm-test-lib-plan.test.sh): any "not ok" wins; otherwise a present-and-undershot
+plan line means the run was cut short; no plan line means the stream carries no
+evidence either way.
+
+--- BEFORE (base 2e9903c), run cut off by an external 60s bound
+    plan line declared : <none>
+    ok / not ok observed: 3 / 0
+    scanner verdict    : unknown
+    -> no declared count, so a healthy interruption is indistinguishable from a finished run. This is the reported trap: the scanner has nothing to check against and retries.
+
+--- AFTER  (bc743a6), run cut off by the same external 60s bound
+    plan line declared : 50
+    ok / not ok observed: 3 / 0
+    scanner verdict    : incomplete
+    -> 3 of 50 results seen, so the run is reported as cut short, not as a failure. No retry is warranted.
+
+--- AFTER  (bc743a6), run carrying a genuine not ok, also short of its plan
+    plan line declared : 50
+    ok / not ok observed: 12 / 1
+    scanner verdict    : failed
+    -> a real failure is still reported as failed even though 13 of 50 is short of the plan. The new count comparison does not mute real failures.
+
