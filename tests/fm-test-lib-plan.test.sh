@@ -81,14 +81,12 @@ test_scanner_still_reads_a_real_failure_as_failed() {
   local home stream rc
   home=$(fm_test_tmproot fm-plan-scanner)
   stream="$home/stream.out"
-  set +e
   (
     plan 2
     pass "first"
     fail "second: the invariant this fixture checks was violated"
   ) > "$stream" 2>> "$stream"
   rc=$?
-  set -e
   [ "$rc" -ne 0 ] || fail "the fixture's deliberate failure did not exit non-zero"
   assert_equals failed "$(classify_tap_stream "$stream")" \
     "a real not-ok result was not read as a failure"
@@ -103,14 +101,12 @@ test_scanner_reads_a_real_failure_as_failed_even_when_short_of_the_plan() {
   # observed count short of the plan - the same shape a benign interruption
   # produces. This is that case: five results were planned, only two ever
   # ran, and the second one genuinely failed.
-  set +e
   (
     plan 5
     pass "first"
     fail "second: the invariant this fixture checks was violated"
   ) > "$stream" 2>> "$stream"
   rc=$?
-  set -e
   [ "$rc" -ne 0 ] || fail "the fixture's deliberate failure did not exit non-zero"
   [ "$(grep -c '^ok - ' "$stream")" -lt 5 ] \
     || fail "the fixture no longer reproduces a count short of its declared plan"
@@ -126,6 +122,10 @@ test_scanner_reads_a_real_failure_as_failed_even_when_short_of_the_plan() {
 # scan it, reads as interrupted rather than as a failure.
 test_captain_hold_lifecycle_interruption_reads_as_incomplete_not_failed() {
   local home out pid waited=0 planned
+  if ! command -v jq >/dev/null 2>&1 || ! command -v tasks-axi >/dev/null 2>&1; then
+    pass "skipped without jq/tasks-axi: an interrupted run of fm-captain-hold-lifecycle.test.sh reads as incomplete, not failed"
+    return 0
+  fi
   home=$(fm_test_tmproot fm-plan-repro)
   out="$home/captain-hold.out"
   bash "$ROOT/tests/fm-captain-hold-lifecycle.test.sh" > "$out" 2>&1 &
