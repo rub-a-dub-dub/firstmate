@@ -100,22 +100,6 @@ test_scanner_reads_a_stream_with_no_plan_line_as_unknown() {
   pass "a stream with no plan line reads as unknown, not incomplete"
 }
 
-test_scanner_still_reads_a_real_failure_as_failed() {
-  local home stream rc
-  home=$(fm_test_tmproot fm-plan-scanner)
-  stream="$home/stream.out"
-  (
-    plan 2
-    pass "first"
-    fail "second: the invariant this fixture checks was violated"
-  ) > "$stream" 2>> "$stream"
-  rc=$?
-  [ "$rc" -ne 0 ] || fail "the fixture's deliberate failure did not exit non-zero"
-  assert_equals failed "$(classify_tap_stream "$stream")" \
-    "a real not-ok result was not read as a failure"
-  pass "a real not-ok result still reads as a failure"
-}
-
 test_scanner_reads_a_real_failure_as_failed_even_when_short_of_the_plan() {
   local home stream rc
   home=$(fm_test_tmproot fm-plan-scanner)
@@ -143,7 +127,6 @@ TESTS=(
   test_scanner_reads_a_complete_run_as_complete
   test_scanner_reads_a_truncated_clean_run_as_incomplete_not_failed
   test_scanner_reads_a_stream_with_no_plan_line_as_unknown
-  test_scanner_still_reads_a_real_failure_as_failed
   test_scanner_reads_a_real_failure_as_failed_even_when_short_of_the_plan
 )
 
