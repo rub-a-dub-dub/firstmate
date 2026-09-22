@@ -99,6 +99,9 @@ FLEET="$SCRIPT_DIR/fm-fleet-snapshot.sh"
 # shellcheck source=bin/fm-landed-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-landed-lib.sh"  # FM_LANDED_JQ_DEFS: the shared landed selector
+# shellcheck source=bin/fm-check-rollup-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-check-rollup-lib.sh"  # FM_CHECK_ROLLUP_JQ_DEFS: the shared check verdict
 
 # Bounds (overridable for tests / large fleets).
 FM_BEARINGS_LANDED=${FM_BEARINGS_LANDED:-6}
@@ -285,6 +288,10 @@ $(printf '%s' "$SNAP" | jq -r '.tasks[] | select(.kind != "secondmate") | .paths
 EOF
 
     for repo in $repos; do PR_REPOS_TOTAL=$((PR_REPOS_TOTAL + 1)); done
+    # checks below reads bin/fm-check-rollup-lib.sh's check_rollup_verdicts, so
+    # a check name with a stale superseded run alongside a passing current one
+    # reads "passing" here exactly as bin/fm-pr-merge.sh's merge gate does,
+    # rather than "failing" on a run nothing still holds against the head.
     nrepos=0; npr=0; nwarn=0; ncapped=0; rows='[]'
     pr_fetch_limit=$((FM_BEARINGS_PR_LIMIT + 1))
     for repo in $repos; do
@@ -294,7 +301,7 @@ EOF
         --json number,title,url,headRefName,reviewDecision,mergeable,statusCheckRollup 2>/dev/null) \
         || { nwarn=$((nwarn + 1)); continue; }
       [ -n "$out" ] || out='[]'
-      repo_result=$(printf '%s' "$out" | jq --arg repo "$repo" --argjson limit "$FM_BEARINGS_PR_LIMIT" '
+      repo_result=$(printf '%s' "$out" | jq --arg repo "$repo" --argjson limit "$FM_BEARINGS_PR_LIMIT" "$FM_CHECK_ROLLUP_JQ_DEFS"'
         [ .[] | {
           num:(.number|tostring),
           repo:$repo,
@@ -303,10 +310,10 @@ EOF
           review:(.reviewDecision // "none"),
           mergeable:(.mergeable // "UNKNOWN"),
           checks:(
-            (.statusCheckRollup // []) as $c
-            | if ($c|length) == 0 then "none"
-              elif any($c[]; (.conclusion // .state // "") as $s | ($s=="FAILURE" or $s=="ERROR" or $s=="TIMED_OUT" or $s=="CANCELLED" or $s=="ACTION_REQUIRED")) then "failing"
-              elif any($c[]; ((.status // "") != "COMPLETED") and ((.state // "") != "SUCCESS")) then "pending"
+            [check_rollup_verdicts] as $v
+            | if ($v|length) == 0 then "none"
+              elif any($v[]; (.ok|not) and (.pending|not)) then "failing"
+              elif any($v[]; .pending) then "pending"
               else "passing" end)
         } ] as $rows | {returned:($rows | length), rows:$rows[:$limit]}') || { nwarn=$((nwarn + 1)); continue; }
       returned=$(printf '%s' "$repo_result" | jq '.returned')

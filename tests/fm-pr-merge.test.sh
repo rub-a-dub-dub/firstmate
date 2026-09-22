@@ -2558,6 +2558,56 @@ test_superseded_failed_check_run_no_longer_refuses() {
   pass "fm-pr-merge merges when a failed check run was replaced by a passing re-run"
 }
 
+# Pinned to the live incident that filed this rule: rub-a-dub-dub/firstmate PR
+# 10's head carried exactly this shape - three runs of "PR must be raised via
+# no-mistakes" at one head, the first a FAILURE at 05:59:46Z, then a SUCCESS at
+# 06:00:27Z after the pipeline re-attested, then another SUCCESS at 07:32:09Z -
+# reproduced here from the real GitHub API response rather than a fixture with
+# placeholder names or times.
+test_live_pr10_superseded_attestation_no_longer_refuses() {
+  local case_dir head
+  head=56773f3db02cf5df683857fde3f1604e12976628
+  case_dir=$(make_case github-live-pr10-superseded)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  write_github_rollup_json "$case_dir" "$head" \
+    "$(check_run 'PR must be raised via no-mistakes' COMPLETED FAILURE 2026-09-20T05:59:46Z)" \
+    "$(check_run 'PR must be raised via no-mistakes' COMPLETED SUCCESS 2026-09-20T06:00:27Z)" \
+    "$(check_run 'PR must be raised via no-mistakes' COMPLETED SUCCESS 2026-09-20T07:32:09Z)"
+
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/10 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "github-live-pr10-superseded: the real PR 10 shape must merge"$'\n'"$(cat "$case_dir/stderr")"
+  assert_logged_gh_merge "$case_dir" 10 example/repo --squash
+  pass "fm-pr-merge merges the real PR 10 shape whose earliest attestation attempt failed"
+}
+
+# The inverse of the case above, and the one that proves this is precision
+# rather than leniency: the same real check name and head, but the LATEST
+# attestation run is the one that failed. The gate must still refuse.
+test_live_pr10_shaped_current_failure_still_refuses() {
+  local case_dir rc head
+  head=56773f3db02cf5df683857fde3f1604e12976628
+  case_dir=$(make_case github-live-pr10-current-red)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  write_github_rollup_json "$case_dir" "$head" \
+    "$(check_run 'PR must be raised via no-mistakes' COMPLETED SUCCESS 2026-09-20T05:59:46Z)" \
+    "$(check_run 'PR must be raised via no-mistakes' COMPLETED FAILURE 2026-09-20T06:00:27Z)"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/10 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "github-live-pr10-current-red: a currently failing re-attestation must refuse"
+  assert_grep "check 'PR must be raised via no-mistakes' is not green" "$case_dir/stderr" \
+    "github-live-pr10-current-red: the red check was not named"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "github-live-pr10-current-red: gh pr merge ran while the latest attestation was red"
+  pass "fm-pr-merge still refuses the real PR 10 shape when the latest attestation run failed"
+}
+
 # Legacy status contexts remain independent from check runs, even when their
 # reported names match.
 test_check_runs_never_supersede_status_contexts() {
@@ -3588,6 +3638,8 @@ test_absent_user_backend_config_directory_and_backlog_still_merge
 test_backend_override_bypasses_unreadable_user_config
 test_github_red_checks_refuse_and_allow_red_waives_named
 test_superseded_failed_check_run_no_longer_refuses
+test_live_pr10_superseded_attestation_no_longer_refuses
+test_live_pr10_shaped_current_failure_still_refuses
 test_check_runs_never_supersede_status_contexts
 test_current_failed_check_run_still_refuses
 test_late_finishing_old_success_does_not_hide_current_failure
