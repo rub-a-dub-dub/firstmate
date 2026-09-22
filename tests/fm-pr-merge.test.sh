@@ -3335,6 +3335,42 @@ test_crlf_workflow_branches_filter_is_read_as_a_filter() {
   pass "fm-pr-merge reads a branches filter out of a CRLF-encoded workflow file"
 }
 
+# A branches filter written as a flow sequence that spans more than one line.
+# Reading only its first line would leave the filter as [main] alone and
+# confirm a skip GitHub itself never made, since the real filter's second item
+# covers this pull request's base. An include filter that cannot be read whole
+# is therefore read as no filter at all, so this pull request counts as covered
+# and its zero-run stale head still refuses.
+test_multiline_inline_branches_filter_never_confirms_a_skip() {
+  local case_dir rc head
+  head=7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c
+  case_dir=$(make_case github-multiline-inline-branches)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head" release-2.0
+  set_pr_ci_workflow "$case_dir" 'on:
+  pull_request:
+    branches: [main,
+      release-*]
+'
+  set_pr_files "$case_dir" src/app.c
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/131 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "multiline-inline-branches: a branches filter read only in part must never confirm a skip"
+  assert_grep 'suspected dropped CI event' "$case_dir/stderr" \
+    "multiline-inline-branches: the suspected-drop reason was not reported"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "multiline-inline-branches: gh pr merge ran on a suspected dropped CI event"
+  pass "fm-pr-merge never confirms a skip from a branches filter whose flow sequence spans lines"
+}
+
 # The filters that decide the exemption are the ones committed on the pull
 # request's OWN base ref, not the ones on the repository's default branch. Here
 # the default branch's copy would exempt this pull request and the base ref's
@@ -4018,6 +4054,7 @@ test_unreadable_changed_files_still_refuses_zero_runs
 test_truncated_changed_file_list_still_refuses_zero_runs
 test_same_indent_branches_sequence_is_read_as_a_filter
 test_crlf_workflow_branches_filter_is_read_as_a_filter
+test_multiline_inline_branches_filter_never_confirms_a_skip
 test_workflow_filters_are_read_from_the_base_ref
 test_pull_request_editing_its_workflows_is_never_exempted
 test_head_past_the_run_retention_window_is_not_a_dropped_event
