@@ -81,7 +81,7 @@ test_bare_keyless_line_still_folds_to_default() {
   pass "a keyless needs-decision still opens and closes the default key"
 }
 
-test_unkeyed_blocked_retires_after_a_later_done_line() {
+test_unkeyed_blocked_retires_after_a_later_terminal_or_paused_line() {
   local dir
   dir=$(case_dir unkeyed-blocked-retires)
   printf 'blocked: no-mistakes axi run refuses to push the rebased branch\n' > "$dir/t.status"
@@ -94,8 +94,8 @@ test_unkeyed_blocked_retires_after_a_later_done_line() {
   printf 'working: moved the work to a fresh branch\ndone: PR checks green at 14/14\npaused: captain-held\n' \
     >> "$dir/t.status"
   assert_fold "$dir/t.status" "" \
-    "a later working/done sequence retires the unkeyed blocked line"
-  pass "an unkeyed blocked line retires once a later done line follows it"
+    "a later working/done/paused sequence retires the unkeyed blocked line"
+  pass "an unkeyed blocked line retires once a later done or paused line follows it"
 }
 
 test_unkeyed_needs_decision_retires_via_done_despite_a_mismatched_keyed_resolution() {
@@ -181,7 +181,7 @@ test_plain_terminal_retires_only_the_default_row_among_several_open() {
   pass "a plain terminal line retires a non-first unkeyed row without touching the keyed decisions around it"
 }
 
-test_plain_failed_or_paused_line_does_not_retire_the_default_bucket() {
+test_plain_failed_line_does_not_retire_the_default_bucket() {
   local dir expected
   dir=$(case_dir plain-failed-keeps-default)
   # A worker hits its charter's rule 5, appends an unkeyed blocker, and stops.
@@ -197,18 +197,9 @@ test_plain_failed_or_paused_line_does_not_retire_the_default_bucket() {
   assert_fold "$dir/t.status" "$expected" \
     "a plain failed line must not retire the captain's unkeyed blocker"
 
-  # The away-mode shape of the same log: the worker declares the wait its
-  # blocker implies. A `paused:` line is deliberately not captain-relevant, so
-  # retiring on one would drop the blocker before any reader saw it - the
-  # watcher's own span classifier proves that loss in
-  # tests/fm-watch-triage.test.sh.
-  printf 'paused: waiting for release access\n' >> "$dir/t.status"
-  assert_fold "$dir/t.status" "$expected" \
-    "a plain paused line must not retire the captain's unkeyed blocker"
-
   printf 'done: moved the work to a fresh branch\n' >> "$dir/t.status"
   assert_fold "$dir/t.status" "" "a plain done line still retires the unkeyed blocker"
-  pass "a plain failed or paused line leaves the captain's unkeyed blocker open, while a plain done retires it"
+  pass "a plain failed line leaves the captain's unkeyed blocker open, while a plain done retires it"
 }
 
 test_retired_unkeyed_decision_is_not_reported_as_a_live_span_event() {
@@ -421,12 +412,12 @@ test_incremental_agrees_with_full_fold_across_appends() {
 
 test_stated_key_is_honored_in_both_positions
 test_bare_keyless_line_still_folds_to_default
-test_unkeyed_blocked_retires_after_a_later_done_line
+test_unkeyed_blocked_retires_after_a_later_terminal_or_paused_line
 test_unkeyed_needs_decision_retires_via_done_despite_a_mismatched_keyed_resolution
 test_correlated_terminal_line_does_not_retire_the_default_bucket
 test_keyed_terminal_line_does_not_retire_the_default_bucket
 test_plain_terminal_retires_only_the_default_row_among_several_open
-test_plain_failed_or_paused_line_does_not_retire_the_default_bucket
+test_plain_failed_line_does_not_retire_the_default_bucket
 test_retired_unkeyed_decision_is_not_reported_as_a_live_span_event
 test_resolution_closes_across_positions
 test_blocked_is_position_tolerant_like_needs_decision
