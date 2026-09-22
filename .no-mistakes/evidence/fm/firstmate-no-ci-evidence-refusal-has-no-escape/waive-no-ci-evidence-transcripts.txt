@@ -1,0 +1,169 @@
+fm-pr-merge.sh --waive-no-ci-evidence: end-to-end operator transcripts
+repo: firstmate   branch: fm/firstmate-no-ci-evidence-refusal-has-no-escape
+commit: c8a0c66
+Each scenario runs the real bin/fm-pr-merge.sh against the suite forge mocks.
+
+========================================================================
+1. BEFORE (today, no flag): a suspected dropped CI event refuses, and the refusal now names the attended escape
+------------------------------------------------------------------------
+$ fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/105
+--- exit code: 1
+--- stderr (what the operator reads):
+    ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    ●  WATCHER DOWN - SUPERVISION IS OFF
+    ●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+    ●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+    ●  This is a supervision warning only; the guarded operation WILL still run.
+    ●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+    ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    error: refusing to merge https://github.com/example/repo/pull/105
+      - no pull_request-triggered check has reported for head 1111111111111111111111111111111111111111, and its delivery is already past the grace window: wait and retry this merge first, because a run still on its way looks identical here once the delivery has aged out of the window, and treat it as a suspected dropped CI event only if a retry still finds none. Neither is ever treated as green. Once attended and certain, merge again with --waive-no-ci-evidence https://github.com/example/repo/pull/105 (refused while away; recorded as attended-ci-waived merge authority)
+--- state/task-x1.merge-authority: (absent - no merge was authorized)
+--- state/.wake-queue: (absent - nothing landed)
+--- gh calls the script actually made:
+    (gh pr merge was NOT invoked)
+
+========================================================================
+2. THE ESCAPE: the same head merges under --waive-no-ci-evidence, tagged attended-ci-waived everywhere it is recorded
+------------------------------------------------------------------------
+$ fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/105 --waive-no-ci-evidence https://github.com/example/repo/pull/105
+--- exit code: 0
+--- stderr (what the operator reads):
+    ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    ●  WATCHER DOWN - SUPERVISION IS OFF
+    ●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+    ●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+    ●  This is a supervision warning only; the guarded operation WILL still run.
+    ●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+    ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    notice: --waive-no-ci-evidence accepted head 2222222222222222222222222222222222222222 as a suspected dropped CI event; this merge will be recorded as attended-ci-waived merge authority once the forge accepts it
+    verified: https://github.com/example/repo/pull/105 is open and mergeable, with no check red at head 2222222222222222222222222222222222222222 and its missing CI evidence waived
+--- state/task-x1.merge-authority (persisted audit record):
+    fm-merge-authority-v1
+    github
+    github.com
+    example/repo
+    105
+    attended-ci-waived
+--- state/.wake-queue (captain-facing outcome):
+    1790116820	1	check	merged-task-x1-https://github.com/example/repo/pull/105	check: merge landed: task-x1 https://github.com/example/repo/pull/105 attended-ci-waived
+--- gh calls the script actually made:
+    pr merge 105 --repo example/repo --match-head-commit 2222222222222222222222222222222222222222 --squash
+    (gh pr merge WAS invoked)
+
+========================================================================
+3. GRACE WINDOW: the younger no-evidence refusal is equally escapable
+------------------------------------------------------------------------
+$ fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/105 --waive-no-ci-evidence https://github.com/example/repo/pull/105
+--- exit code: 0
+--- stderr (what the operator reads):
+    ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    ●  WATCHER DOWN - SUPERVISION IS OFF
+    ●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+    ●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+    ●  This is a supervision warning only; the guarded operation WILL still run.
+    ●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+    ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    notice: --waive-no-ci-evidence accepted head 3333333333333333333333333333333333333333 with no pull_request-triggered check reported yet, younger than the grace window; this merge will be recorded as attended-ci-waived merge authority once the forge accepts it
+    verified: https://github.com/example/repo/pull/105 is open and mergeable, with no check red at head 3333333333333333333333333333333333333333 and its missing CI evidence waived
+--- state/task-x1.merge-authority (persisted audit record):
+    fm-merge-authority-v1
+    github
+    github.com
+    example/repo
+    105
+    attended-ci-waived
+--- state/.wake-queue (captain-facing outcome):
+    1790116823	1	check	merged-task-x1-https://github.com/example/repo/pull/105	check: merge landed: task-x1 https://github.com/example/repo/pull/105 attended-ci-waived
+--- gh calls the script actually made:
+    pr merge 105 --repo example/repo --match-head-commit 3333333333333333333333333333333333333333 --squash
+    (gh pr merge WAS invoked)
+
+========================================================================
+4. COMPOSED WITH --allow-red: the success line names the waived red check instead of claiming nothing is red
+------------------------------------------------------------------------
+$ fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/105 --allow-red lint --waive-no-ci-evidence https://github.com/example/repo/pull/105
+--- exit code: 0
+--- stderr (what the operator reads):
+    ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    ●  WATCHER DOWN - SUPERVISION IS OFF
+    ●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+    ●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+    ●  This is a supervision warning only; the guarded operation WILL still run.
+    ●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+    ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    notice: --waive-no-ci-evidence accepted head 4444444444444444444444444444444444444444 as a suspected dropped CI event; this merge will be recorded as attended-ci-waived merge authority once the forge accepts it
+    verified: https://github.com/example/repo/pull/105 is open and mergeable, with no check red at head 4444444444444444444444444444444444444444 other than waived lint, and its missing CI evidence waived
+--- state/task-x1.merge-authority (persisted audit record):
+    fm-merge-authority-v1
+    github
+    github.com
+    example/repo
+    105
+    attended-ci-waived
+--- state/.wake-queue (captain-facing outcome):
+    1790116825	1	check	merged-task-x1-https://github.com/example/repo/pull/105	check: merge landed: task-x1 https://github.com/example/repo/pull/105 attended-ci-waived
+--- gh calls the script actually made:
+    pr merge 105 --repo example/repo --match-head-commit 4444444444444444444444444444444444444444 --squash
+    (gh pr merge WAS invoked)
+
+========================================================================
+5. SCOPE: the waiver never reaches an uncovered red check
+------------------------------------------------------------------------
+$ fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/105 --waive-no-ci-evidence https://github.com/example/repo/pull/105
+--- exit code: 1
+--- stderr (what the operator reads):
+    ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    ●  WATCHER DOWN - SUPERVISION IS OFF
+    ●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+    ●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+    ●  This is a supervision warning only; the guarded operation WILL still run.
+    ●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+    ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    error: refusing to merge https://github.com/example/repo/pull/105
+      - check 'lint' is not green
+    error: these checks are not green: lint
+--- state/task-x1.merge-authority: (absent - no merge was authorized)
+--- state/.wake-queue: (absent - nothing landed)
+--- gh calls the script actually made:
+    (gh pr merge was NOT invoked)
+
+========================================================================
+6. ATTENDED-ONLY: refused outright while the away-posture record exists
+------------------------------------------------------------------------
+$ fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/105 --waive-no-ci-evidence https://github.com/example/repo/pull/105
+--- exit code: 2
+--- stderr (what the operator reads):
+    error: --waive-no-ci-evidence is attended-only; while the away-posture record exists the no-CI-evidence refusal is absolute
+--- state/task-x1.merge-authority: (absent - no merge was authorized)
+--- state/.wake-queue: (absent - nothing landed)
+--- gh calls the script actually made:
+    (gh pr merge was NOT invoked)
+
+========================================================================
+7. UNUSED: passing the flag on an ordinary green merge changes nothing; authority stays plain attended
+------------------------------------------------------------------------
+$ fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/105 --waive-no-ci-evidence https://github.com/example/repo/pull/105
+--- exit code: 0
+--- stderr (what the operator reads):
+    ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    ●  WATCHER DOWN - SUPERVISION IS OFF
+    ●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+    ●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+    ●  This is a supervision warning only; the guarded operation WILL still run.
+    ●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+    ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    verified: https://github.com/example/repo/pull/105 is open and mergeable, with every required check green at head 7777777777777777777777777777777777777777
+--- state/task-x1.merge-authority (persisted audit record):
+    fm-merge-authority-v1
+    github
+    github.com
+    example/repo
+    105
+    attended
+--- state/.wake-queue (captain-facing outcome):
+    1790116831	1	check	merged-task-x1-https://github.com/example/repo/pull/105	check: merge landed: task-x1 https://github.com/example/repo/pull/105
+--- gh calls the script actually made:
+    pr merge 105 --repo example/repo --match-head-commit 7777777777777777777777777777777777777777 --squash
+    (gh pr merge WAS invoked)
+

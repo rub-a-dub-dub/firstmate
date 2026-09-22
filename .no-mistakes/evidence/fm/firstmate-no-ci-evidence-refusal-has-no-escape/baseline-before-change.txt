@@ -1,0 +1,23 @@
+BASELINE at base commit a918156 (before this change)
+Same forge mocks, same suspected-dropped-CI head: the refusal had no escape.
+
+========================================================================
+1. BEFORE: the no-CI-evidence refusal, with no attended escape offered anywhere in it
+------------------------------------------------------------------------
+$ fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/105
+--- exit code: 1
+--- stderr:
+    error: refusing to merge https://github.com/example/repo/pull/105
+      - no pull_request-triggered check has reported for head 1111111111111111111111111111111111111111, and its delivery is already past the grace window: wait and retry this merge first, because a run still on its way looks identical here once the delivery has aged out of the window, and treat it as a suspected dropped CI event only if a retry still finds none. Neither is ever treated as green
+    (gh pr merge was NOT invoked)
+
+========================================================================
+2. BEFORE: --waive-no-ci-evidence does not exist yet
+------------------------------------------------------------------------
+$ fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/105 --waive-no-ci-evidence https://github.com/example/repo/pull/105
+--- exit code: 1
+--- stderr:
+    error: refusing to merge https://github.com/example/repo/pull/105
+      - no pull_request-triggered check has reported for head 2222222222222222222222222222222222222222, and its delivery is already past the grace window: wait and retry this merge first, because a run still on its way looks identical here once the delivery has aged out of the window, and treat it as a suspected dropped CI event only if a retry still finds none. Neither is ever treated as green
+    (gh pr merge was NOT invoked)
+

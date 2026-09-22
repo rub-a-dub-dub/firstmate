@@ -1,0 +1,17 @@
+targeted subset of tests/fm-pr-merge.test.sh: the 8 new --waive-no-ci-evidence tests plus the 6 neighbouring dropped-CI / --allow-red tests
+commit: c8a0c66   attempt 2
+
+ok - fm-pr-merge never treats a suspected dropped CI event as green, even with --allow-red
+ok - fm-pr-merge reaches the grace window for a just-opened pull request on an old head
+ok - fm-pr-merge keeps --allow-red scoped to its named check beside a superseded failure
+ok - fm-pr-merge rechecks away presence before an attended red merge
+ok - fm-pr-merge accepts exactly one separately named red-check waiver
+ok - fm-pr-merge refuses --allow-red on GitLab
+ok - fm-pr-merge's attended --waive-no-ci-evidence merges past both the grace and suspected-drop no-evidence refusals
+ok - fm-pr-merge records a used --waive-no-ci-evidence waiver as attended-ci-waived merge authority
+ok - fm-pr-merge's waived success line reports a waived head instead of claiming every required check green
+ok - fm-pr-merge leaves ordinary attended authority alone when --waive-no-ci-evidence never fires
+ok - fm-pr-merge's --waive-no-ci-evidence never waives a red or missing named check
+ok - fm-pr-merge refuses --waive-no-ci-evidence while the away-posture record exists
+ok - fm-pr-merge accepts --waive-no-ci-evidence only once and only for the exact PR being merged
+ok - fm-pr-merge refuses --waive-no-ci-evidence on GitLab
