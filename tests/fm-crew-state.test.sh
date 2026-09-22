@@ -579,13 +579,15 @@ test_active_run_is_authoritative() {
 }
 
 # The wedge timer's own recency fact (AGENTS.md/2026-09-20): for a
-# running/fixing run-step, RUN_DETAIL carries the pipeline's own
-# `activity: recent|quiet` verdict (nm_run_activity_is_recent), which
-# bin/fm-classify-lib.sh's crew_run_activity_recent and bin/fm-watch.sh's
-# wedge timer consult so a quiet pane during a healthy fix round is never
-# mistaken for a wedge. Absent positive evidence (no active_steps table at
-# all) must read quiet, never recent - a run record that merely still says
-# running/fixing while nothing executes it must never vouch for a quiet pane.
+# running/fixing run-step that is demonstrably still logging, RUN_DETAIL
+# carries the pipeline's own `activity: recent` verdict
+# (nm_run_activity_is_recent), which bin/fm-classify-lib.sh's
+# crew_run_activity_recent and bin/fm-watch.sh's wedge timer consult so a quiet
+# pane during a healthy fix round is never mistaken for a wedge. It is a
+# POSITIVE fact only: with no active_steps table to judge by, the line says
+# nothing rather than claiming the run went quiet, because a healthy run
+# sampled between two steps has that exact shape. Either way a run record that
+# merely still says running/fixing must never vouch for a quiet pane.
 test_running_run_step_carries_activity_verdict() {
   reset_fakes
   local d; d=$(new_case activity-verdict)
@@ -606,7 +608,7 @@ test_running_run_step_carries_activity_verdict() {
   FM_FAKE_AXI_STATUS="$(run_fixing_active_quiet fm/feat-avq)"
   out=$(run_crew_state "$d" feat-avq)
   assert_contains "$out" "state: working" "a quiet active_steps entry still reads the run's status word as working"
-  assert_contains "$out" "activity: quiet" "a quiet active_steps entry reads quiet, not recent"
+  assert_not_contains "$out" "activity:" "a quiet active_steps entry emits no recency claim at all"
 
   reset_fakes
   d=$(new_case activity-verdict-absent)
@@ -616,8 +618,9 @@ test_running_run_step_carries_activity_verdict() {
   FM_FAKE_AXI_STATUS="$(run_running fm/feat-ava)"
   out=$(run_crew_state "$d" feat-ava)
   assert_contains "$out" "state: working" "a running status with no active_steps table remains working"
-  assert_contains "$out" "activity: quiet" "an absent active_steps table is not positive recency evidence"
-  pass "a running/fixing run-step carries the pipeline's own activity: recent|quiet verdict for the wedge timer"
+  assert_not_contains "$out" "activity:" \
+    "an absent active_steps table states nothing about recency, so a healthy run between steps is not called quiet"
+  pass "a running/fixing run-step carries the pipeline's own activity: recent verdict only as a positive fact"
 }
 
 # (b) needs-decision log + a resumed (running/fixing) run = SUPERSEDED

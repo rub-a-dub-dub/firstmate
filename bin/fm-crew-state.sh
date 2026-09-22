@@ -17,14 +17,16 @@
 #
 #   state: <working|parked|done|blocked|paused|failed|unknown> · source: <run-step|pane|status-log|remote-endpoint|none> · <detail>
 #
-# For a full (non-coarse) run-step read whose active status is running/fixing,
-# <detail> also carries the pipeline's own `activity: recent|quiet` verdict
-# (nm_run_activity_is_recent, sourced from the run's active_steps[] table) -
-# the single fact bin/fm-classify-lib.sh's crew_run_activity_recent consults so
-# the watcher's wedge timer can judge a long-quiet pane by the run's own
-# recency instead of pane idle time alone. Absent for every other case (no
-# run, a coarse ledger-only read, or a non-running/fixing status), which
-# callers must treat as no recency evidence, never as "recent".
+# For a full (non-coarse) run-step read whose active status is running/fixing
+# AND whose own active_steps[] table reports fresh logging, <detail> also
+# carries the pipeline's `activity: recent` verdict (nm_run_activity_is_recent)
+# - the single fact bin/fm-classify-lib.sh's crew_run_activity_recent consults
+# so the watcher's wedge timer can judge a long-quiet pane by the run's own
+# recency instead of pane idle time alone. It is a POSITIVE fact only: it is
+# absent for every other case (no run, a coarse ledger-only read, a
+# non-running/fixing status, a run sampled between two steps, or a step that
+# has genuinely gone quiet), and callers must read that absence as no recency
+# evidence rather than as a claim that the run has stopped logging.
 #
 # Logic, in order:
 #   1. Resolve worktree + backend target + kind from state/<id>.meta. A meta
@@ -762,11 +764,11 @@ if [ "$HAVE_RUN" = 1 ]; then
           # Surface the pipeline's own recency verdict for the wedge timer
           # (bin/fm-watch.sh's crew_run_activity_recent, bin/fm-classify-lib.sh):
           # a quiet pane is not a wedge while the run itself is still logging,
-          # but a run that stopped logging must not vouch for it forever.
+          # but a run that stopped logging must not vouch for it forever. Only
+          # the positive fact is emitted; saying nothing is the honest reading
+          # of "no active_steps[] table to judge by".
           if nm_run_activity_is_recent; then
             RUN_DETAIL="$RUN_DETAIL${SEP}activity: recent"
-          else
-            RUN_DETAIL="$RUN_DETAIL${SEP}activity: quiet"
           fi
           ;;
         completed)      RUN_STATE="done"; RUN_DETAIL="run completed" ;;
