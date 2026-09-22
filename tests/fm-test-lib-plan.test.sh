@@ -94,7 +94,7 @@ test_scanner_reads_a_stream_with_no_plan_line_as_unknown() {
     pass "first"
     pass "second"
   } > "$stream"
-  assert_no_grep '1\.\.' "$stream" "the plan-less fixture used to reproduce this declared a count after all"
+  assert_no_grep '1..' "$stream" "the plan-less fixture used to reproduce this declared a count after all"
   assert_equals unknown "$(classify_tap_stream "$stream")" \
     "a complete run that declares no plan was read as cut short"
   pass "a stream with no plan line reads as unknown, not incomplete"
