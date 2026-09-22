@@ -3434,6 +3434,110 @@ test_multiline_inline_branches_filter_never_confirms_a_skip() {
   pass "fm-pr-merge never confirms a skip from a branches filter whose flow sequence spans lines"
 }
 
+# A paths filter whose pattern uses GitHub's character-class syntax, inline on
+# one line. The class is part of the pattern, not the flow sequence's own
+# delimiters, so it must survive into github_glob_pattern_simple - which
+# refuses a class as unevaluable and counts the pull request as covered. A
+# reader that stripped every bracket would judge "*.[ch]" as "*.ch", find no
+# match for main.c, and confirm a skip GitHub never made: its own filter does
+# match main.c, so a dropped delivery on that head would merge unchecked.
+test_inline_character_class_paths_filter_is_unevaluable_not_a_skip() {
+  local case_dir rc head
+  head=9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a
+  case_dir=$(make_case github-inline-class-paths)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir" 'on:
+  pull_request:
+    paths: ["*.[ch]"]
+'
+  set_pr_files "$case_dir" main.c
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/137 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "inline-class-paths: a character-class pattern must be unevaluable, never a confirmed skip"
+  assert_grep 'suspected dropped CI event' "$case_dir/stderr" \
+    "inline-class-paths: the suspected-drop reason was not reported"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "inline-class-paths: gh pr merge ran on a suspected dropped CI event"
+  pass "fm-pr-merge treats an inline character-class paths filter as covering rather than skipping"
+}
+
+# The same class, this time inside a flow sequence that wraps onto a second
+# line. The class supplies a "]" on the first line, which must not be read as
+# the sequence closing there - doing so would drop the second line's "main"
+# and confirm a skip against a filter that does cover this main-based pull
+# request.
+test_wrapped_flow_sequence_with_a_class_is_not_read_as_closed() {
+  local case_dir rc head
+  head=9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b
+  case_dir=$(make_case github-wrapped-class-branches)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir" 'on:
+  pull_request:
+    branches: ["release-[0-9]*",
+      "main"]
+'
+  set_pr_files "$case_dir" src/app.c
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/138 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "wrapped-class-branches: a class bracket must not close a wrapped flow sequence"
+  assert_grep 'suspected dropped CI event' "$case_dir/stderr" \
+    "wrapped-class-branches: the suspected-drop reason was not reported"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "wrapped-class-branches: gh pr merge ran on a suspected dropped CI event"
+  pass "fm-pr-merge never closes a wrapped flow sequence on a character class's bracket"
+}
+
+# A block-sequence filter carrying the same class, the spelling the inline
+# reader never touches. It reaches the glob guard intact today; pinning it
+# keeps the two spellings answering alike.
+test_block_sequence_character_class_filter_is_unevaluable() {
+  local case_dir rc head
+  head=9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c
+  case_dir=$(make_case github-block-class-paths)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir" 'on:
+  pull_request:
+    paths:
+      - "*.[ch]"
+'
+  set_pr_files "$case_dir" main.c
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/139 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "block-class-paths: a block-sequence character class must be unevaluable, never a confirmed skip"
+  assert_grep 'suspected dropped CI event' "$case_dir/stderr" \
+    "block-class-paths: the suspected-drop reason was not reported"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "block-class-paths: gh pr merge ran on a suspected dropped CI event"
+  pass "fm-pr-merge treats a block-sequence character-class filter as covering rather than skipping"
+}
+
 # The filters that decide the exemption are the ones on the pull request's
 # MERGE ref - head merged into base, the tree GitHub resolves a pull_request
 # run from - and on no other ref. Here every other ref's copy would cover this
@@ -4271,6 +4375,9 @@ test_truncated_changed_file_list_still_refuses_zero_runs
 test_same_indent_branches_sequence_is_read_as_a_filter
 test_crlf_workflow_branches_filter_is_read_as_a_filter
 test_multiline_inline_branches_filter_never_confirms_a_skip
+test_inline_character_class_paths_filter_is_unevaluable_not_a_skip
+test_wrapped_flow_sequence_with_a_class_is_not_read_as_closed
+test_block_sequence_character_class_filter_is_unevaluable
 test_workflow_filters_are_read_from_the_merge_ref
 test_filter_confirmed_stand_down_names_the_workflow_and_filter
 test_workflow_editing_pr_is_judged_by_its_own_merge_ref_filter

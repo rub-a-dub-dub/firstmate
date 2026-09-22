@@ -685,15 +685,21 @@ github_checks_not_green() {
 # ("branches: [main, release/*]") or a block list ("paths:\n  - src/**") in
 # either of YAML's two spellings - sequence items indented under their key,
 # or sitting at the key's own indentation - with each item's surrounding
-# whitespace and quotes stripped. A "types:" key, a
+# whitespace and quotes stripped. Only the sequence's own opening and closing
+# brackets are removed, never a bracket inside an item: GitHub's filter
+# patterns spell a character class that way ("*.[ch]"), and that class has to
+# survive intact to reach github_glob_pattern_simple, which refuses it as
+# unevaluable so the pull request counts as covered. A "types:" key, a
 # branches-ignore/paths-ignore exclusion, or any other sibling under the
 # trigger is not a filter this reads and cannot pollute one: a line back at
 # the trigger's own child indentation that is not one of the two keys clears
 # the key whose values were being collected, and only a sequence item or a
-# more indented line continues it. A flow sequence spread over more than one
-# line is read as no filter at all rather than as the items on its first line,
-# since a partially read include filter is the one shape that could wrongly
-# confirm a skip. No filter line at all means the trigger narrows nothing this
+# more indented line continues it. A flow sequence is read as closed only when
+# its value ENDS in "]", never on a "]" that merely appears somewhere in it,
+# which a character class supplies; one spread over more than one line is
+# therefore read as no filter at all rather than as the items on its first
+# line, since a partially read include filter is the one shape that could
+# wrongly confirm a skip. No filter line at all means the trigger narrows nothing this
 # judges (an inline "on: [push, pull_request]" list, a bare "pull_request:",
 # a "- pull_request" sequence entry, a flow-mapping value, or a trigger
 # narrowed only by exclusions): those are read as covering every base branch
@@ -705,7 +711,8 @@ github_workflow_pull_request_trigger() {
     function indent_of(s) { match(s, /^[[:space:]]*/); return RLENGTH }
     function emit_inline(key, s,    n, i, parts, v) {
       sub(/^[^:]*:[[:space:]]*/, "", s)
-      gsub(/[][]/, "", s)
+      sub(/^[[:space:]]*\[/, "", s)
+      sub(/\][[:space:]]*$/, "", s)
       n = split(s, parts, ",")
       for (i = 1; i <= n; i++) {
         v = parts[i]
@@ -755,7 +762,7 @@ github_workflow_pull_request_trigger() {
             rest = line
             sub(/^[^:]*:[[:space:]]*/, "", rest)
             if (rest ~ /^\[/) {
-              if (rest ~ /\]/) emit_inline(cur_key, line)
+              if (rest ~ /\][[:space:]]*$/) emit_inline(cur_key, line)
               cur_key = ""
             }
           }
