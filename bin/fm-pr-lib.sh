@@ -627,6 +627,8 @@ fm_pr_poll_publish_prepared() {
   fi
 }
 
+# shellcheck disable=SC2034 # FM_PR_POLL_REJECT_REASON is an output global, read
+# by the sourcing caller (fm-watch.sh) after a rejection.
 fm_pr_poll_artifacts_valid() {
   local state=$1 id=$2 template=$3 state_device check data registration meta
   FM_PR_POLL_REJECT_REASON=
