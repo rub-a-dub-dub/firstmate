@@ -32,7 +32,7 @@ A recorded `harness=` is not always an exact adapter name: a task launched from 
 | --- | --- | --- |
 | `interrupt` | Deliver the harness's verified interrupt sequence while leaving the agent running. | Delivery succeeds while the endpoint still exists and the agent is still alive where the backend can classify that; cancellation is confirmed only from an adapter-owned acknowledgement and otherwise reports `cancel=unconfirmed`. |
 | `exit` | Stop the agent, preserving the endpoint, the worktree, and every uncommitted change. | The backend's recovery-grade classifier reports the agent gone. Already-stopped is idempotent success. |
-| `relaunch` | Replace the running agent with a new one in the same endpoint and worktree, on the exact recorded adapter or an explicitly chosen harness, model, and effort. | The new agent is alive on the recorded endpoint, and the durable record names the harness that is actually running. |
+| `relaunch` | Replace the agent with a new one in the same worktree, on the exact recorded adapter or an explicitly chosen harness, model, and effort. The endpoint is adopted when the recorded one is agent-free, or recreated fresh when it is positively missing (no server, no pane, no agent to adopt). | The new agent is alive on the (adopted or recreated) endpoint, and the durable record names the harness and endpoint that are actually running. |
 
 An exit that delivers lifecycle input but cannot prove the agent stopped fails with `exit=unconfirmed`, reports the observed agent state and any interrupt cancellation claim, and never claims that nothing changed.
 Interrupt never rewrites busy state as proof of its own success.
@@ -68,8 +68,8 @@ It is not deterministic across the verified adapters: codex, grok, and gemini re
 3. **Record the note.**
    A ship or scout relaunch requires `--note`, because the replacement inherits the local copy but none of the conversation; the note is appended to the instructions it reads.
    A secondmate relaunch does not require one and never rewrites its standing charter.
-4. **Stop the old agent** through the `exit` verb, with its postcondition.
-5. **Launch the replacement** through its single owner, `bin/fm-spawn.sh --relaunch`, which adopts the recorded endpoint and worktree instead of creating either, clears the previous harness's per-task wiring, and arms a fresh busy generation.
+4. **Stop the old agent** through the `exit` verb, with its postcondition - skipped when the recorded endpoint already reads `missing`, since there is provably no agent left to stop.
+5. **Launch the replacement** through its single owner, `bin/fm-spawn.sh --relaunch`, which reuses the recorded worktree and either adopts the recorded endpoint or, if it is `missing`, recreates one fresh through the same creation path a first spawn uses, clears the previous harness's per-task wiring, and arms a fresh busy generation.
 
 Switching harness is therefore one ordinary relaunch rather than a separate mechanism.
 
@@ -99,8 +99,9 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
   zellij, orca, and cmux are refused rather than reported as successful blind.
 - An ambiguous or unreadable endpoint state refuses.
   Only a positively classified state acts.
-- `fm-spawn --relaunch` independently refuses unless the recorded endpoint is positively agent-free, so a replacement can never join a live agent.
-  It also requires the shell to be in the recorded worktree: tmux refuses immediately when it is not, while Herdr sends one `cd` to the recorded path and refuses unless a subsequent path read confirms the move.
+- `fm-spawn --relaunch` independently refuses unless the recorded endpoint reads positively agent-free (`dead`) or positively absent (`missing` - no server, no pane, no agent), so a replacement can never join a live agent; an ambiguous or unreadable read still refuses, because absence of evidence there is not evidence of absence.
+  A `dead` endpoint is adopted; a `missing` one has no pane left to adopt, so it is recreated fresh through the same endpoint-creation path a first spawn uses, still in the task's recorded worktree.
+  It also requires the shell to be in the recorded worktree: tmux refuses immediately when an adopted endpoint is not, a recreated endpoint is sent there directly since it starts fresh in the spawning project, and Herdr sends one `cd` to the recorded path either way and refuses unless a subsequent path read confirms the move.
 
 ## Capability matrix
 

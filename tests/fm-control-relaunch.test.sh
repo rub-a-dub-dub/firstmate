@@ -92,6 +92,15 @@ case "${1:-}" in
         'export TRACEPARENT='*)
           [ -z "${FM_FAKE_TRACE_EXPORTED:-}" ] || : > "$FM_FAKE_TRACE_EXPORTED"
           ;;
+        "cd -- '"*)
+          # fm_backend_tmux_send_text_line's recreated-endpoint cd (bin/fm-spawn.sh):
+          # simulate the shell actually moving there, so the worktree-detection
+          # poll that follows sees the recorded worktree instead of the fixed
+          # fixture cwd.
+          p=${payload#"cd -- '"}
+          p=${p%\'}
+          printf '%s' "$p" > "$D/cwd"
+          ;;
       esac
     fi
     exit 0 ;;
@@ -111,6 +120,22 @@ case "${1:-}" in
     printf 'fakepane\n'; exit 0 ;;
   capture-pane) printf '╭────╮\n│    │\n╰────╯\n'; exit 0 ;;
   list-windows) [ -f "$D/windows" ] && cat "$D/windows"; exit 0 ;;
+  new-window)
+    # fm_backend_tmux_create_task's -dP -F '#{window_id}' capture, used only
+    # when a missing endpoint's replacement window is created fresh. Record
+    # the created window's name so a later list-windows (the liveness check
+    # on the NEW endpoint) finds it instead of reading missing forever.
+    shift
+    wname=
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -n) wname=$2; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    [ -z "$wname" ] || printf '%s\n' "$wname" >> "$D/windows"
+    printf '%s\n' "${FM_FAKE_NEW_WINDOW_ID:-@99}"
+    exit 0 ;;
 esac
 exit 0
 SH
@@ -322,6 +347,74 @@ test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint() {
   assert_grep "/exit" "$dir/fake/literal" "the previous agent should have been exited"
   assert_grep "encode launch-brief" "$dir/fake/literal" "the replacement should have been launched"
   pass "fm-control relaunch: a same-harness relaunch replaces the agent in the same endpoint and worktree"
+}
+
+# --- 1a. missing-endpoint relaunch (a reboot-killed terminal backend) -------
+#
+# A `missing` endpoint is authoritatively absent - no server, no pane, no
+# agent - and is strictly safer than `dead`, so a relaunch must recreate it
+# fresh in the recorded worktree instead of refusing (issue: both
+# bin/fm-control.sh's stop step and bin/fm-spawn.sh's own precondition used to
+# refuse on `missing`, and the refusal's own suggested recovery command hit
+# the identical refusal, an unbreakable loop).
+
+test_missing_endpoint_relaunch_recreates_it() {
+  local dir out rc
+  dir=$(new_case gone rlmiss)
+  add_ship_task "$dir" rlmiss claude
+  : > "$dir/fake/windows"
+  # A freshly created endpoint starts in the spawning project, not the
+  # recorded worktree, unlike add_ship_task's default fixture cwd (which
+  # already equals the worktree, and would pass trivially even without the
+  # fix's active cd).
+  printf '%s' "$dir/proj" > "$dir/fake/cwd"
+  out=$(run_control "$dir" rlmiss relaunch --note "recover after a reboot killed the terminal backend"); rc=$?
+  expect_code 0 "$rc" "a relaunch onto a positively missing endpoint should succeed"$'\n'"$out"
+  assert_contains "$out" "relaunched rlmiss harness=claude from=claude" "the outcome should name the transition"
+  [ "$(meta_field "$dir" rlmiss window)" != "fmses:fm-rlmiss" ] \
+    || fail "a missing endpoint has no pane left to adopt; it must be recorded as recreated, not reused"
+  [ "$(meta_field "$dir" rlmiss worktree)" = "$dir/wt" ] \
+    || fail "the intact worktree must still be reused, never reallocated"
+  [ "$(journal_field "$dir" rlmiss phase)" = complete ] \
+    || fail "the transaction journal should end complete"
+  assert_no_grep "/exit" "$dir/fake/literal" \
+    "there was no agent left to stop; nothing should have been sent to exit one"
+  assert_grep "cd -- '$dir/wt'" "$dir/fake/keys" \
+    "the recreated endpoint should have been told to enter the recorded worktree"
+  assert_grep "encode launch-brief" "$dir/fake/literal" "the replacement should have been launched"
+  pass "fm-control relaunch: a positively missing endpoint is recreated fresh, in the recorded worktree, with no agent to stop first"
+}
+
+test_missing_endpoint_relaunch_verifies_the_replacement_on_its_new_endpoint() {
+  local dir out rc
+  dir=$(new_case gone-verify rlmiss2)
+  add_ship_task "$dir" rlmiss2 claude
+  : > "$dir/fake/windows"
+  printf '%s' "$dir/proj" > "$dir/fake/cwd"
+  # Unset for a deterministic session name: fm_backend_tmux_container_ensure
+  # reuses the launching shell's own tmux session when TMUX is set, which
+  # would make the recreated endpoint's session name depend on whether this
+  # suite itself happens to run inside a real tmux session.
+  out=$(TMUX='' run_control "$dir" rlmiss2 relaunch --note "recover after a reboot"); rc=$?
+  expect_code 0 "$rc" "relaunch should verify liveness on the recreated endpoint, not the abandoned one"$'\n'"$out"
+  assert_contains "$out" "endpoint=firstmate:fm-rlmiss2" \
+    "the outcome should report the recreated endpoint, not the abandoned one"
+  pass "fm-control relaunch: a recreated endpoint's liveness is proven on its own new endpoint, not the stale recorded one"
+}
+
+test_ambiguous_endpoint_relaunch_still_refuses() {
+  local dir out rc
+  dir=$(new_case ambiguous rlamb)
+  add_ship_task "$dir" rlamb claude
+  printf 'some-unrelated-process' > "$dir/fake/command"
+  out=$(run_control "$dir" rlamb relaunch --note "should never reach here"); rc=$?
+  expect_code 1 "$rc" "a relaunch onto an unattributed endpoint should refuse"
+  assert_contains "$out" "positively classified" \
+    "the refusal should name the missing attribution, never treat ambiguous as absent"
+  [ -z "$(cat "$dir/fake/literal")" ] || fail "an ambiguous endpoint must receive no bytes"
+  [ "$(meta_field "$dir" rlamb window)" = "fmses:fm-rlamb" ] \
+    || fail "a refused relaunch must not touch the recorded endpoint"
+  pass "fm-control relaunch: an endpoint whose process cannot be attributed still refuses, unlike a positively missing one"
 }
 
 test_relaunch_from_linked_home_preserves_recorded_worktree() {
@@ -1395,9 +1488,41 @@ test_spawn_relaunch_refuses_a_live_agent() {
   add_ship_task "$dir" rl15 claude
   out=$(run_spawn "$dir" rl15 --relaunch --harness claude); rc=$?
   expect_code 1 "$rc" "relaunching into a live endpoint should refuse"
-  assert_contains "$out" "positively agent-free endpoint" "the refusal should demand an agent-free endpoint"
+  assert_contains "$out" "holds a live agent" "the refusal should name the live agent"
   assert_contains "$out" "fm-control.sh rl15 exit" "the refusal should point at the way to stop it"
   pass "fm-spawn --relaunch: refuses to launch a second agent into a live endpoint"
+}
+
+test_spawn_relaunch_recreates_a_missing_endpoint() {
+  local dir out rc
+  dir=$(new_case recreate rl41)
+  add_ship_task "$dir" rl41 claude
+  : > "$dir/fake/windows"
+  printf '%s' "$dir/proj" > "$dir/fake/cwd"
+  # Unset for a deterministic session name (see the same note in
+  # test_missing_endpoint_relaunch_verifies_the_replacement_on_its_new_endpoint).
+  out=$(TMUX='' run_spawn "$dir" rl41 --relaunch --harness claude); rc=$?
+  expect_code 0 "$rc" "relaunching a positively missing endpoint should recreate it"$'\n'"$out"
+  [ "$(meta_field "$dir" rl41 window)" = "firstmate:fm-rl41" ] \
+    || fail "a missing endpoint should be recreated through the ordinary fresh-endpoint path (got '$(meta_field "$dir" rl41 window)')"
+  [ "$(meta_field "$dir" rl41 worktree)" = "$dir/wt" ] \
+    || fail "the recorded worktree must be reused, never a new one"
+  assert_grep "cd -- '$dir/wt'" "$dir/fake/keys" \
+    "the recreated endpoint should have been sent directly to the recorded worktree"
+  pass "fm-spawn --relaunch: a positively missing endpoint is recreated in the recorded worktree, not adopted"
+}
+
+test_spawn_relaunch_refuses_an_ambiguous_endpoint() {
+  local dir out rc
+  dir=$(new_case unattributed rl42a)
+  add_ship_task "$dir" rl42a claude
+  printf 'some-unrelated-process' > "$dir/fake/command"
+  out=$(run_spawn "$dir" rl42a --relaunch --harness claude); rc=$?
+  expect_code 1 "$rc" "relaunching onto an unattributed endpoint should refuse"
+  assert_contains "$out" "rather than a positively agent-free or positively absent state" \
+    "the refusal should distinguish an unreadable/ambiguous read from a positively missing one"
+  [ ! -s "$dir/fake/keys" ] || fail "a refused relaunch must send nothing to the pane"
+  pass "fm-spawn --relaunch: an endpoint that cannot be positively classified still refuses, unlike a missing one"
 }
 
 test_spawn_relaunch_refuses_a_symlinked_task_record_before_inspection() {
@@ -1559,6 +1684,9 @@ test_relaunch_moves_a_drifted_item_back_in_flight() {
 }
 
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
+test_missing_endpoint_relaunch_recreates_it
+test_missing_endpoint_relaunch_verifies_the_replacement_on_its_new_endpoint
+test_ambiguous_endpoint_relaunch_still_refuses
 test_relaunch_from_linked_home_preserves_recorded_worktree
 test_relaunch_preserves_durable_task_metadata
 test_relaunch_serializes_concurrent_durable_metadata_publication
@@ -1603,6 +1731,8 @@ test_concurrent_relaunch_is_refused
 test_direct_spawn_relaunch_participates_in_the_lifecycle_lock
 test_promotion_participates_in_the_lifecycle_lock_before_metadata_resolution
 test_spawn_relaunch_refuses_a_live_agent
+test_spawn_relaunch_recreates_a_missing_endpoint
+test_spawn_relaunch_refuses_an_ambiguous_endpoint
 test_spawn_relaunch_refuses_a_symlinked_task_record_before_inspection
 test_spawn_relaunch_keeps_its_early_meta_lock_continuous
 test_spawn_relaunch_refuses_a_pending_authoritative_close
