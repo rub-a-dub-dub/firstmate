@@ -336,8 +336,10 @@ no_server_error() {
   printf 'no server running on /tmp/tmux-test/default\n' >&2
   exit 1
 }
-target_session() {  # <target> -> session name, stripping a trailing :window
-  printf '%s' "${1%%:*}"
+target_session() {  # <target> -> session name, stripping a leading = (tmux's
+                     # exact-match prefix) and a trailing :window
+  local t=${1#=}
+  printf '%s' "${t%%:*}"
 }
 case "${1:-}" in
   list-sessions)

@@ -936,25 +936,6 @@ fm_backend_agent_alive() {  # <backend> <target>
   esac
 }
 
-# fm_backend_endpoint_absent: 0 only when <target> exists nowhere on
-# <backend>, so the task's agent cannot be running in it at any address. This
-# is a STRICTLY stronger claim than a `missing` agent state, which says only
-# that the recorded address stopped resolving: a renamed tmux session or a
-# window moved out of the recorded one both read `missing` while the agent
-# keeps running somewhere else. A caller that is about to treat `missing` as
-# license to relaunch a fresh agent onto the recorded endpoint must ask this
-# first - the difference decides whether a second agent joins a worktree that
-# already has one. A backend with no such probe reports "not absent", so it
-# simply never qualifies.
-fm_backend_endpoint_absent() {  # <backend> <target>
-  local backend=$1 target=$2
-  fm_backend_source "$backend" || return 1
-  case "$backend" in
-    tmux) fm_backend_tmux_endpoint_absent "$target" ;;
-    *) return 1 ;;
-  esac
-}
-
 # --- native event push (backend-extensible) ---------------------------------
 #
 # The watcher's event-wait splice (bin/fm-watch.sh) is backend-agnostic: it asks
