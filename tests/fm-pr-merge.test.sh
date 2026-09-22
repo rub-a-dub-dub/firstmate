@@ -353,6 +353,24 @@ set_pr_files() {
   printf '%s\n' "$@" > "$case_dir/github-pr-files"
 }
 
+# A changed-file list that reaches the list endpoint's own 3000-file cap, where
+# GitHub stops paginating without any error or truncation marker. None of these
+# paths matches the workflow's paths filter, so a reader that trusted the
+# truncated list would exempt the pull request on files it never read.
+set_capped_pr_files() {
+  local case_dir=$1
+  awk 'BEGIN { for (i = 1; i <= 3000; i++) printf "docs/f%d.md\n", i }' \
+    > "$case_dir/github-pr-files"
+}
+
+# The changed-file read fails outright, the way a 502 fails it, so a case can
+# prove what a paths filter does when the files it must be judged against
+# cannot be read at all.
+fail_pr_files() {
+  local case_dir=$1
+  : > "$case_dir/github-pr-files-fail"
+}
+
 # The head commit's date read fails outright, the way a 502 or a secondary rate
 # limit fails it, so a case can prove what the gate does when it cannot
 # establish the age of a head whose run count it already read as zero.
@@ -534,6 +552,7 @@ run_pr_merge() {
   FM_TEST_GH_WORKFLOW_CONTENT_B64="$case_dir/github-workflow-content-b64" \
   FM_TEST_GH_PR_RUN_COUNT="$case_dir/github-pr-run-count" \
   FM_TEST_GH_PR_FILES="$case_dir/github-pr-files" \
+  FM_TEST_GH_PR_FILES_FAIL="$case_dir/github-pr-files-fail" \
   FM_TEST_GH_COMMIT_DATE="$case_dir/github-commit-date" \
   FM_TEST_GH_COMMIT_FAIL="$case_dir/github-commit-fail" \
   FM_TEST_GH_VIEW_JSON="$case_dir/github-view.json" \
@@ -3174,6 +3193,102 @@ test_unevaluable_filter_still_refuses_zero_runs() {
   pass "fm-pr-merge treats a branches-ignore filter as covered rather than exempting the pull request"
 }
 
+# The same paths filter, with the changed-file list unreadable rather than
+# judged: a filter that cannot be evaluated counts the pull request as covered,
+# so a stale zero-run head still refuses instead of being exempted on a read
+# that never came back.
+test_unreadable_changed_files_still_refuses_zero_runs() {
+  local case_dir rc head
+  head=9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e
+  case_dir=$(make_case github-unreadable-pr-files)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir" 'on:
+  pull_request:
+    paths:
+      - "src/**"
+'
+  fail_pr_files "$case_dir"
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/124 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "unreadable-pr-files: an unreadable changed-file list must leave the pull request covered"
+  assert_grep 'suspected dropped CI event' "$case_dir/stderr" \
+    "unreadable-pr-files: the suspected-drop reason was not reported"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "unreadable-pr-files: gh pr merge ran on a suspected dropped CI event"
+  pass "fm-pr-merge keeps a pull request covered when its changed files cannot be read"
+}
+
+# The changed-file list comes back complete-looking but is capped at the
+# endpoint's 3000-file limit, so the unreturned files could still match the
+# paths filter. A truncated list must never exempt the pull request.
+test_truncated_changed_file_list_still_refuses_zero_runs() {
+  local case_dir rc head
+  head=9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f
+  case_dir=$(make_case github-truncated-pr-files)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir" 'on:
+  pull_request:
+    paths:
+      - "src/**"
+'
+  set_capped_pr_files "$case_dir"
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/125 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "truncated-pr-files: a changed-file list at the endpoint cap must not exempt the pull request"
+  assert_grep 'suspected dropped CI event' "$case_dir/stderr" \
+    "truncated-pr-files: the suspected-drop reason was not reported"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "truncated-pr-files: gh pr merge ran on a suspected dropped CI event"
+  pass "fm-pr-merge keeps a pull request covered when its changed-file list is truncated at the endpoint cap"
+}
+
+# The same base-branch exemption, written in YAML's other block-sequence
+# spelling: the filter's items sit at the filter key's own indentation rather
+# than indented under it. Both spellings mean the same filter, so both must
+# exempt a pull request whose base the filter never covers.
+test_same_indent_branches_sequence_is_read_as_a_filter() {
+  local case_dir rc head
+  head=8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a
+  case_dir=$(make_case github-same-indent-branches)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head" release-1.0
+  set_pr_ci_workflow "$case_dir" 'on:
+  pull_request:
+    branches:
+    - main
+'
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+
+  run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/126 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "same-indent-branches: a same-indentation branches sequence must be read as a branches filter"$'\n'"$(cat "$case_dir/stderr")"
+  assert_no_grep 'suspected dropped' "$case_dir/stderr" \
+    "same-indent-branches: the dropped-event gate must not fire when the base branch does not match the branches filter"
+  assert_logged_gh_merge "$case_dir" 126 example/repo --squash
+  pass "fm-pr-merge reads a branches filter whose block sequence sits at the key's own indentation"
+}
+
 # The head's run count already confirmed zero pull_request-event runs, and only
 # then does the commit-date read fail. Both readable ages refuse, so the date
 # can never do more than choose the wording - an unreadable one must not hand
@@ -3754,6 +3869,9 @@ test_paths_filtered_workflow_with_untouched_paths_is_exempt
 test_branches_filtered_workflow_not_covering_base_is_exempt
 test_covered_pr_matching_paths_filter_still_refuses_zero_runs
 test_unevaluable_filter_still_refuses_zero_runs
+test_unreadable_changed_files_still_refuses_zero_runs
+test_truncated_changed_file_list_still_refuses_zero_runs
+test_same_indent_branches_sequence_is_read_as_a_filter
 test_unreadable_head_commit_date_still_refuses_a_zero_run_head
 test_unreadable_workflow_listing_does_not_block_a_green_merge
 test_allow_red_still_waives_only_the_current_failure

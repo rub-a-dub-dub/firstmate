@@ -670,20 +670,23 @@ github_workflow_declares_pull_request() {
   '
 }
 
-# The branches/branches-ignore/paths/paths-ignore filter values nested under
-# an already-confirmed pull_request trigger key, one "key value" pair per
-# line: an inline list ("branches: [main, release/*]") and a block list
-# ("paths:\n  - src/**") are both read, each item with its surrounding quotes
-# stripped. A "types:" key or any other sibling under the trigger is not a
-# filter this reads and cannot pollute one, because only lines strictly more
-# indented than a matched filter key - up to the next line back at the
-# trigger's own child indentation - are read as that key's values. No output
-# at all means the trigger carries no nested filters at all (an inline
-# "on: [push, pull_request]" list, a bare "pull_request:", or a "- pull_request"
-# sequence entry): those match every base branch and every changed file, so
-# github_workflow_applies_to_pr's caller-side "no filter present" default
-# already covers them correctly. This is a text heuristic over one block's
-# indentation, not a YAML parser.
+# The branches/paths include-filter values nested under an already-confirmed
+# pull_request trigger key, one "key value" pair per line: an inline list
+# ("branches: [main, release/*]") and a block list ("paths:\n  - src/**") are
+# both read, the latter in either of YAML's two spellings - sequence items
+# indented under their key, or sitting at the key's own indentation - with
+# each item's surrounding quotes stripped. A "types:" key, a
+# branches-ignore/paths-ignore exclusion, or any other sibling under the
+# trigger is not a filter this reads and cannot pollute one: a line back at
+# the trigger's own child indentation that is not one of the two keys clears
+# the key whose values were being collected, and only a sequence item or a
+# more indented line continues it. No output at all means the trigger carries
+# no nested include filter at all (an inline "on: [push, pull_request]" list,
+# a bare "pull_request:", a "- pull_request" sequence entry, or a trigger
+# narrowed only by exclusions): those are read as covering every base branch
+# and every changed file, so github_workflow_applies_to_pr's caller-side "no
+# filter present" default already covers them correctly. This is a text
+# heuristic over one block's indentation, not a YAML parser.
 github_workflow_pull_request_filters() {
   printf '%s\n' "$1" | awk '
     function indent_of(s) { match(s, /^[[:space:]]*/); return RLENGTH }
@@ -717,22 +720,22 @@ github_workflow_pull_request_filters() {
       }
       if (in_pr) {
         if (pr_child < 0) pr_child = here
-        if (here == pr_child) {
+        if (here > pr_child || (here == pr_child && line ~ /^[[:space:]]*-/)) {
+          if (cur_key != "") {
+            v = line
+            sub(/^[[:space:]]*-[[:space:]]*/, "", v)
+            gsub(/^[\x27"]+|[\x27"]+$/, "", v)
+            if (v != "") print cur_key, v
+          }
+        } else if (here == pr_child) {
           cur_key = ""
-          if (line ~ /^[[:space:]]*branches-ignore[[:space:]]*:/) cur_key = "branches-ignore"
-          else if (line ~ /^[[:space:]]*branches[[:space:]]*:/) cur_key = "branches"
-          else if (line ~ /^[[:space:]]*paths-ignore[[:space:]]*:/) cur_key = "paths-ignore"
+          if (line ~ /^[[:space:]]*branches[[:space:]]*:/) cur_key = "branches"
           else if (line ~ /^[[:space:]]*paths[[:space:]]*:/) cur_key = "paths"
           if (cur_key != "") {
             rest = line
             sub(/^[^:]*:[[:space:]]*/, "", rest)
             if (rest ~ /^\[/) { emit_inline(cur_key, line); cur_key = "" }
           }
-        } else if (here > pr_child && cur_key != "") {
-          v = line
-          sub(/^[[:space:]]*-[[:space:]]*/, "", v)
-          gsub(/^[\x27"]+|[\x27"]+$/, "", v)
-          if (v != "") print cur_key, v
         }
       }
     }
@@ -806,80 +809,76 @@ CANDIDATES
 # cached, since more than one workflow's paths filter may need them. Sets
 # FM_PR_FILES to a newline-separated list of paths and FM_PR_FILES_STATUS to
 # "ok" or "unreadable". Never called unless some workflow's pull_request
-# trigger actually declares a paths or paths-ignore filter, so an ordinary
-# merge with no such filter never pays for this call.
+# trigger actually declares a paths filter, so an ordinary merge with no such
+# filter never pays for this call.
+#
+# The list endpoint answers at most FM_PR_FILES_CAP files and then simply
+# stops paginating, with no error and no truncation marker, so a list that
+# reaches the cap is reported "unreadable" rather than as a complete one: a
+# truncated list would let a paths filter be judged NOT to match on files
+# that were never read, which is the one direction - a wrongly exempted pull
+# request - this gate must never take.
+FM_PR_FILES_CAP=3000
 FM_PR_FILES_FETCHED=false
 FM_PR_FILES_STATUS=unreadable
 FM_PR_FILES=''
 github_pr_changed_files() {
+  local count
   $FM_PR_FILES_FETCHED && return 0
   FM_PR_FILES_FETCHED=true
-  if FM_PR_FILES=$(gh api --paginate "repos/$PR_OWNER/$PR_REPO/pulls/$PR_NUMBER/files" \
+  FM_PR_FILES_STATUS=unreadable
+  if FM_PR_FILES=$(gh api --paginate "repos/$PR_OWNER/$PR_REPO/pulls/$PR_NUMBER/files?per_page=100" \
     --jq '.[].filename' 2>/dev/null); then
-    FM_PR_FILES_STATUS=ok
-  else
-    FM_PR_FILES_STATUS=unreadable
-    FM_PR_FILES=''
+    count=$(printf '%s\n' "$FM_PR_FILES" | awk 'NF { n++ } END { print n + 0 }')
+    if [ "$count" -lt "$FM_PR_FILES_CAP" ]; then
+      FM_PR_FILES_STATUS=ok
+    fi
   fi
+  [ "$FM_PR_FILES_STATUS" = ok ] || FM_PR_FILES=''
 }
 
 # Whether the pull_request trigger in this already-confirmed-present workflow
-# actually applies to this pull request, given its base branch and changed
-# files. Only branches and paths are ever judged toward "no" (see
-# github_glob_matches_any for why over-matching an include filter is the safe
-# direction); a branches-ignore or paths-ignore filter is always left
-# uncertain, because confidently confirming an EXCLUSION needs the opposite
-# bias from confirming an inclusion, and getting that wrong is the unsafe
-# direction this whole change exists to avoid. Sets FM_PR_WORKFLOW_APPLIES to:
-#   yes       - no branches/paths filter narrows this trigger at all, or every
-#               filter present is confirmed to cover this pull request.
-#   no        - a branches or paths filter is confirmed NOT to cover this pull
-#               request, and nothing about that read was uncertain.
-#   uncertain - at least one filter could not be confidently evaluated either
-#               way, including an unreadable changed-file list for any
-#               paths/paths-ignore filter present.
+# applies to this pull request, given its base branch and changed files. Only
+# an include filter - branches or paths - can ever answer "no" (see
+# github_glob_matches_any for why over-matching one is the safe direction).
+# Everything this cannot judge confidently counts the pull request as covered:
+# a branches-ignore or paths-ignore exclusion, a glob too complex to evaluate,
+# an unreadable changed-file list. Confidently confirming an EXCLUSION needs
+# the opposite bias from confirming an inclusion, and getting that wrong is
+# the unsafe direction this whole change exists to avoid, so "covered" is the
+# only verdict an unevaluable filter ever produces - it is not spelled
+# differently from a confirmed coverage, because nothing downstream treats the
+# two differently. Sets FM_PR_WORKFLOW_APPLIES to:
+#   yes - nothing confirms that this trigger skips this pull request.
+#   no  - a branches or paths filter is confirmed NOT to cover it.
 # Args: workflow-content base-branch
-FM_PR_WORKFLOW_APPLIES=uncertain
+FM_PR_WORKFLOW_APPLIES=yes
 github_workflow_applies_to_pr() {
   local content=$1 base=$2
-  local key value branch_result=yes paths_result=yes
+  local key value
   local -a branches=() paths_incl=()
-  local has_branches_ignore=false has_paths_ignore=false
   while IFS=' ' read -r key value; do
     [ -n "$key" ] || continue
     case "$key" in
       branches) branches+=("$value") ;;
-      branches-ignore) has_branches_ignore=true ;;
       paths) paths_incl+=("$value") ;;
-      paths-ignore) has_paths_ignore=true ;;
     esac
   done <<FILTERS
 $(github_workflow_pull_request_filters "$content")
 FILTERS
 
-  if $has_branches_ignore; then
-    branch_result=uncertain
-  elif [ "${#branches[@]}" -gt 0 ]; then
-    branch_result=$(github_glob_matches_any "$base" "${branches[@]}")
-  fi
-
-  if $has_paths_ignore; then
-    paths_result=uncertain
-  elif [ "${#paths_incl[@]}" -gt 0 ]; then
-    github_pr_changed_files
-    if [ "$FM_PR_FILES_STATUS" != ok ]; then
-      paths_result=uncertain
-    else
-      paths_result=$(github_glob_matches_any_of "$FM_PR_FILES" "${paths_incl[@]}")
-    fi
-  fi
-
-  if [ "$branch_result" = no ] || [ "$paths_result" = no ]; then
+  FM_PR_WORKFLOW_APPLIES=yes
+  if [ "${#branches[@]}" -gt 0 ] \
+    && [ "$(github_glob_matches_any "$base" "${branches[@]}")" = no ]; then
     FM_PR_WORKFLOW_APPLIES=no
-  elif [ "$branch_result" = uncertain ] || [ "$paths_result" = uncertain ]; then
-    FM_PR_WORKFLOW_APPLIES=uncertain
-  else
-    FM_PR_WORKFLOW_APPLIES=yes
+    return 0
+  fi
+  if [ "${#paths_incl[@]}" -gt 0 ]; then
+    github_pr_changed_files
+    if [ "$FM_PR_FILES_STATUS" = ok ] \
+      && [ "$(github_glob_matches_any_of "$FM_PR_FILES" "${paths_incl[@]}")" = no ]; then
+      FM_PR_WORKFLOW_APPLIES=no
+    fi
   fi
 }
 
@@ -890,19 +889,21 @@ FILTERS
 # level; github_workflow_applies_to_pr then judges its filters, if any,
 # against this pull request's own base branch and changed files. Sets
 # FM_PR_GITHUB_PR_CI to:
-#   yes        - a workflow file was found declaring the trigger, and it is
-#                confirmed or uncertain whether that trigger's filters cover
-#                this pull request (never resolved toward "no" on an
-#                uncertain filter - see github_workflow_applies_to_pr).
+#   yes        - a workflow file was found declaring the trigger, and nothing
+#                confirmed that trigger's filters skip this pull request
+#                (never resolved toward "no" on a filter this cannot judge -
+#                see github_workflow_applies_to_pr). Settled by the first such
+#                workflow, so a later file that cannot be read can never take
+#                an already-established coverage back.
 #   no         - proven absence: no .github/workflows directory (a 404 on the
 #                listing), an empty listing, every file read declared no such
 #                trigger, or every declared trigger's filters are confirmed
 #                NOT to cover this pull request. Either way this pull request
 #                genuinely has no PR CI coming; absence of checks on it is
 #                expected and the dropped-event check below never runs for it.
-#   unreadable - the listing or a file's content could not be read. This
-#                never arms the dropped-event refusal below: only a
-#                positively confirmed-or-uncertain applicable trigger does,
+#   unreadable - the listing, or a file's content read before any applicable
+#                trigger was found, could not be read. This never arms the
+#                dropped-event refusal below: only an applicable trigger does,
 #                so a transient failure to list or read workflow files here
 #                can never turn into a new merge refusal that today's repos,
 #                including ones this call can't reach for whatever reason,
@@ -913,7 +914,7 @@ FILTERS
 FM_PR_GITHUB_PR_CI=unreadable
 github_repo_has_pr_ci_workflow() {
   local base=$1
-  local listing name err_file err_text encoded content any_uncertain=false
+  local listing name err_file err_text encoded content
   FM_PR_GITHUB_PR_CI=unreadable
   err_file=$(mktemp "${TMPDIR:-/tmp}/fm-pr-merge-workflows.XXXXXX") || return 0
   if ! listing=$(gh api "repos/$PR_OWNER/$PR_REPO/contents/.github/workflows" \
@@ -945,19 +946,15 @@ github_repo_has_pr_ci_workflow() {
       || return 0
     if github_workflow_declares_pull_request "$content"; then
       github_workflow_applies_to_pr "$content" "$base"
-      case "$FM_PR_WORKFLOW_APPLIES" in
-        yes) FM_PR_GITHUB_PR_CI=yes; return 0 ;;
-        uncertain) any_uncertain=true ;;
-      esac
+      if [ "$FM_PR_WORKFLOW_APPLIES" = yes ]; then
+        FM_PR_GITHUB_PR_CI=yes
+        return 0
+      fi
     fi
   done <<WORKFLOWS
 $listing
 WORKFLOWS
-  if $any_uncertain; then
-    FM_PR_GITHUB_PR_CI=yes
-  else
-    FM_PR_GITHUB_PR_CI=no
-  fi
+  FM_PR_GITHUB_PR_CI=no
 }
 
 # Whether the given head SHA of a PR-CI-configured repository shows a
@@ -1080,9 +1077,8 @@ FIELDS
   # see what never arrived - the exact trap this closes (report Section 2). It
   # runs independently of the rollup, so a rollup made non-empty and green by a
   # workflow_dispatch diagnostic run, a push-triggered run, or an external
-  # status context does not satisfy it. Only a positively confirmed-or-
-  # uncertain trigger that applies to this pull request's own base branch and
-  # changed files arms it: "no" and "unreadable" both leave today's merge
+  # status context does not satisfy it. Only a trigger not confirmed to skip
+  # this pull request's own base branch and changed files arms it: "no" and "unreadable" both leave today's merge
   # behavior untouched, and an inconclusive read says so on stderr rather than
   # disarming the gate in silence.
   github_repo_has_pr_ci_workflow "$base"
