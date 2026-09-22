@@ -201,7 +201,7 @@ case "${1:-} ${2:-}" in
     cat "$FM_TEST_GH_OUTCOME"
     exit 0
     ;;
-  api\ repos/*/contents/.github/workflows)
+  api\ repos/*/contents/.github/workflows|api\ repos/*/contents/.github/workflows\?*)
     if [ -f "${FM_TEST_GH_WORKFLOWS_404:-}" ]; then
       echo 'gh: Not Found (HTTP 404)' >&2
       exit 1
@@ -210,7 +210,17 @@ case "${1:-} ${2:-}" in
     exit 0
     ;;
   api\ repos/*/contents/.github/workflows/*)
-    cat "$FM_TEST_GH_WORKFLOW_CONTENT_B64"
+    # GitHub serves whatever the requested ref holds, so a case that stores a
+    # per-ref copy of the file gets that copy for that ref and the shared one
+    # for every other ref - the difference a reader pinned to the wrong ref
+    # cannot see.
+    workflow_ref=${2##*\?ref=}
+    if [ "$workflow_ref" != "$2" ] \
+      && [ -f "$FM_TEST_GH_WORKFLOW_CONTENT_B64.$workflow_ref" ]; then
+      cat "$FM_TEST_GH_WORKFLOW_CONTENT_B64.$workflow_ref"
+    else
+      cat "$FM_TEST_GH_WORKFLOW_CONTENT_B64"
+    fi
     exit 0
     ;;
   api\ repos/*/actions/runs\?*)
@@ -306,6 +316,14 @@ set_pr_ci_workflow() {
 '}
   printf 'ci.yml\n' > "$case_dir/github-workflows-listing"
   printf '%s' "$content" | base64 > "$case_dir/github-workflow-content-b64"
+}
+
+# The copy of .github/workflows/ci.yml that lives on one specific ref, as
+# GitHub would serve it for ?ref=<that ref>. Every other ref keeps whatever
+# set_pr_ci_workflow stored. Args: case_dir ref content
+set_pr_ci_workflow_on_ref() {
+  local case_dir=$1 ref=$2 content=$3
+  printf '%s' "$content" | base64 > "$case_dir/github-workflow-content-b64.$ref"
 }
 
 # A workflow file exists but declares no pull_request trigger (e.g. push- or
@@ -3317,6 +3335,105 @@ test_crlf_workflow_branches_filter_is_read_as_a_filter() {
   pass "fm-pr-merge reads a branches filter out of a CRLF-encoded workflow file"
 }
 
+# The filters that decide the exemption are the ones committed on the pull
+# request's OWN base ref, not the ones on the repository's default branch. Here
+# the default branch's copy would exempt this pull request and the base ref's
+# copy covers it, so a reader taking the default branch's copy merges a stale
+# zero-run head that its real CI was going to check.
+test_workflow_filters_are_read_from_the_base_ref() {
+  local case_dir rc head
+  head=7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a
+  case_dir=$(make_case github-base-ref-filters)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head" release-1.0
+  set_pr_ci_workflow "$case_dir" 'on:
+  pull_request:
+    branches: [main]
+'
+  set_pr_ci_workflow_on_ref "$case_dir" release-1.0 'on:
+  pull_request:
+    branches: [release-1.0]
+'
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/128 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "base-ref-filters: the base ref's own branches filter covers this pull request, so its zero-run head must refuse"
+  assert_grep 'suspected dropped CI event' "$case_dir/stderr" \
+    "base-ref-filters: the suspected-drop reason was not reported"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "base-ref-filters: gh pr merge ran on a suspected dropped CI event"
+  pass "fm-pr-merge judges a workflow's filters by the copy on the pull request's base ref"
+}
+
+# A pull request that edits the workflows themselves. GitHub runs a
+# pull_request workflow from the head merged into the base, so the base ref's
+# paths filter is not the filter that ran and no committed copy can settle
+# whether CI applied. That is unevaluable, so this pull request counts as
+# covered and its zero-run stale head still refuses.
+test_pull_request_editing_its_workflows_is_never_exempted() {
+  local case_dir rc head
+  head=7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b
+  case_dir=$(make_case github-pr-edits-workflows)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir" 'on:
+  pull_request:
+    paths:
+      - "src/**"
+'
+  set_pr_files "$case_dir" .github/workflows/ci.yml docs/guide.md
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/129 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "pr-edits-workflows: a pull request editing its own workflows must not be exempted by the base ref's filters"
+  assert_grep 'suspected dropped CI event' "$case_dir/stderr" \
+    "pr-edits-workflows: the suspected-drop reason was not reported"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "pr-edits-workflows: gh pr merge ran on a suspected dropped CI event"
+  pass "fm-pr-merge never exempts a pull request that edits the workflows its coverage was read from"
+}
+
+# A head commit older than GitHub's Actions run retention window: the runs it
+# had have been purged, so the zero count proves nothing and no retry can ever
+# change it. Refusing forever would leave merging outside firstmate as the only
+# route, so the gate reports the expired evidence and stands down.
+test_head_past_the_run_retention_window_is_not_a_dropped_event() {
+  local case_dir rc head
+  head=7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c
+  case_dir=$(make_case github-retention-expired)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir"
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-06-01T00:00:00Z # 214 days before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+
+  run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/130 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "retention-expired: a head whose runs have aged out of retention must not be refused as a dropped event"$'\n'"$(cat "$case_dir/stderr")"
+  assert_no_grep 'suspected dropped' "$case_dir/stderr" \
+    "retention-expired: an absence that is only expired evidence must not be reported as a suspected drop"
+  assert_grep 'retention window' "$case_dir/stderr" \
+    "retention-expired: the disarmed gate was not reported on stderr"
+  assert_logged_gh_merge "$case_dir" 130 example/repo --squash
+  pass "fm-pr-merge reports expired run evidence instead of refusing a head past the retention window"
+}
+
 # The head's run count already confirmed zero pull_request-event runs, and only
 # then does the commit-date read fail. Both readable ages refuse, so the date
 # can never do more than choose the wording - an unreadable one must not hand
@@ -3901,6 +4018,9 @@ test_unreadable_changed_files_still_refuses_zero_runs
 test_truncated_changed_file_list_still_refuses_zero_runs
 test_same_indent_branches_sequence_is_read_as_a_filter
 test_crlf_workflow_branches_filter_is_read_as_a_filter
+test_workflow_filters_are_read_from_the_base_ref
+test_pull_request_editing_its_workflows_is_never_exempted
+test_head_past_the_run_retention_window_is_not_a_dropped_event
 test_unreadable_head_commit_date_still_refuses_a_zero_run_head
 test_unreadable_workflow_listing_does_not_block_a_green_merge
 test_allow_red_still_waives_only_the_current_failure

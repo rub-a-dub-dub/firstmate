@@ -36,7 +36,14 @@
 # evaluate - an unfamiliar glob form, a changed-file list it could not read -
 # is never resolved toward "does not apply": it counts the pull request as
 # covered instead, because refusing a mergeable pull request is recoverable
-# by hand while merging an unchecked one is not. pull_request_target
+# by hand while merging an unchecked one is not. Each workflow's text is read
+# at the pull request's own BASE ref rather than the repository's default
+# branch, so a long-lived base branch whose filters differ from the default
+# branch's is judged by its own copy of them; and because GitHub resolves a
+# pull_request run from head merged into base, a pull request that itself
+# edits anything under .github/workflows/ has no single committed copy whose
+# filters can be judged at all, so that pull request counts as covered too.
+# pull_request_target
 # deliberately does NOT arm it, even though it is also a pull-request
 # trigger: GitHub records such a run under the pull_request_target event and
 # against the BASE branch's SHA, so it can never appear in step two's
@@ -52,21 +59,24 @@
 # diagnostic run leaves a run on the same SHA without ever carrying the
 # pull_request event and without ever attaching to the PR, and counting it
 # would read a manual diagnostic as proof the checks arrived. A run count of
-# zero refuses the merge unconditionally, whatever the rollup says beside it;
-# the head commit's age only chooses the wording, "not arrived yet, re-check"
-# while it is younger than the grace window and a suspected dropped event once
-# it is older, because GitHub's own pull_request delivery to Actions can
-# silently drop for a given push. The window is measured from the head commit's
-# own date, never from the pull request's updatedAt, which any comment, label
-# or approval bumps and which would therefore reset the clock on the ordinary
-# approve-then-merge path. Because both ages refuse, a commit date that cannot
-# be read cannot flip the verdict either: it only falls back to the wording
-# that names both causes. The one read that still leaves today's merge behavior
-# untouched is the one taken BEFORE any absence is confirmed - an unreadable
-# workflow listing, an unreadable changed-file list needed by a paths filter,
-# or an unreadable run count - and it says so on stderr, because an
-# inconclusive read must never become a refusal a healthy pull request cannot
-# clear. Every failing condition is reported, not
+# zero refuses the merge, whatever the rollup says beside it, and the head
+# commit's age chooses the wording: "not arrived yet, re-check" while it is
+# younger than the grace window, a suspected dropped event once it is older,
+# because GitHub's own pull_request delivery to Actions can silently drop for a
+# given push. Older than the Actions run retention window, though, a zero count
+# is expired evidence rather than a confirmed absence - GitHub has purged the
+# runs, no retry can ever bring them back, and a refusal no retry can clear
+# would leave merging outside firstmate as the operator's only route - so that
+# one age disarms the check with a note instead of refusing. Every age is
+# measured from the head commit's own date, never from the pull request's
+# updatedAt, which any comment, label or approval bumps and which would
+# therefore reset the clock on the ordinary approve-then-merge path. A commit
+# date that cannot be read therefore keeps the refusal: it falls back to the
+# wording that names both delivery causes, never to the retention exemption.
+# The one read that still leaves today's merge behavior untouched is the one
+# taken BEFORE any absence is confirmed - an unreadable workflow listing or an
+# unreadable run count - and it says so on stderr, because an inconclusive read
+# must never become a refusal a healthy pull request cannot clear. Every failing condition is reported, not
 # just the first. The verified head is then passed to gh as
 # --match-head-commit, so a push that lands between that read and the merge
 # fails the merge instead of landing commits nothing verified. Reading that
@@ -188,6 +198,15 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 # here is an override of a merge gate that exists to be un-overridable; tests
 # pin "now" by mocking date itself.
 FM_PR_MERGE_CI_GRACE_SECS=300
+
+# How long a pull_request-event run stays queryable at its head SHA: GitHub
+# retains Actions run history for 90 days, so past that an empty count at a
+# head is evidence that expired rather than evidence CI never applied, and the
+# count alone cannot tell the two apart. Fixed and un-overridable for the same
+# reason the grace window above is - a seam here would be a seam for waiving
+# the gate - and deliberately the retention floor rather than a day less, so a
+# head whose runs may well still exist keeps refusing.
+FM_PR_MERGE_CI_RETENTION_SECS=7776000
 
 if [ "$#" -lt 2 ]; then
   echo "error: invalid PR merge request" >&2
@@ -628,66 +647,49 @@ github_checks_not_green() {
   ' 2>/dev/null || return 1
 }
 
-# Whether a workflow file's raw text declares a pull_request trigger, and that
-# event exactly: pull_request_target does not count, because step two can never
-# count a run for it (see the header). Comments are stripped first, and only the
-# trigger block is scanned: from a line whose key is on:, or one of the "on": /
-# 'on': spellings that work around YAML 1.1 parsing bare on as true, to the
-# next unindented line that is not itself a sequence entry, since a block
-# sequence is legally written at its own parent key's indentation. Within
-# that block the word counts only where it is shaped like a trigger AND sits
-# at the block's own immediate child indentation (taken from its first
-# non-blank child line) - the inline "on: [push, pull_request]" list, a
-# nested "pull_request:" key, or a "- pull_request" sequence entry. An event
-# name is a direct child of on: and nothing else, so requiring that depth is
-# what separates a real trigger from a same-named key nested deeper, such as
-# a workflow_dispatch input called pull_request, which declares no PR CI at
-# all. A commented-out trigger, a comment elsewhere in the file, a path
-# filter naming a pull_request.yml file, and a job step that merely mentions
-# the word are likewise never mistaken for a trigger declaration. This is a
-# text heuristic, not a YAML parser.
-github_workflow_declares_pull_request() {
-  printf '%s\n' "$1" | awk '
-    function indent_of(s) { match(s, /^[[:space:]]*/); return RLENGTH }
-    { line = $0; sub(/[[:space:]]*#.*$/, "", line) }
-    line ~ "^(on|\"on\"|\047on\047)[[:space:]]*:" {
-      in_on = 1
-      child = -1
-      rest = line
-      sub(/^[^:]*:/, "", rest)
-      if (rest ~ /(^|[^A-Za-z0-9_])pull_request([^A-Za-z0-9_]|$)/) found = 1
-      next
-    }
-    !in_on { next }
-    line ~ /^[[:space:]]*$/ { next }
-    line ~ /^[^[:space:]]/ && line !~ /^-([[:space:]]|$)/ { in_on = 0; next }
-    {
-      here = indent_of(line)
-      if (child < 0) child = here
-      if (here == child && line ~ /^[[:space:]]*(-[[:space:]]*)?pull_request[[:space:]]*(:|$)/) found = 1
-    }
-    END { exit(found ? 0 : 1) }
-  '
-}
-
-# The branches/paths include-filter values nested under an already-confirmed
-# pull_request trigger key, one "key value" pair per line: an inline list
-# ("branches: [main, release/*]") and a block list ("paths:\n  - src/**") are
-# both read, the latter in either of YAML's two spellings - sequence items
-# indented under their key, or sitting at the key's own indentation - with
-# each item's surrounding quotes stripped. A "types:" key, a
-# branches-ignore/paths-ignore exclusion, or any other sibling under the
+# What a workflow file's raw text says about the pull_request trigger, and
+# that event exactly: pull_request_target does not count, because step two can
+# never count a run for it (see the header). Prints one "declares" line when
+# the trigger is present at all, plus one "branches <value>" or "paths <value>"
+# line per include-filter value nested under it. Both answers come out of this
+# one scan so that which block is the trigger, and at what depth, has exactly
+# one definition: a second scanner free to disagree with this one could read
+# filters out of a block this never accepted as a trigger, which is the
+# wrongly-exempting direction.
+#
+# Comments are stripped first, and only the trigger block is scanned: from a
+# line whose key is on:, or one of the "on": / 'on': spellings that work
+# around YAML 1.1 parsing bare on as true, to the next unindented line that is
+# not itself a sequence entry, since a block sequence is legally written at
+# its own parent key's indentation. Within that block the event counts only
+# where it is shaped like a trigger AND sits at the block's own immediate
+# child indentation (taken from its first non-blank child line) - the inline
+# "on: [push, pull_request]" list, a nested "pull_request:" key, or a
+# "- pull_request" sequence entry. An event name is a direct child of on: and
+# nothing else, so requiring that depth is what separates a real trigger from
+# a same-named key nested deeper, such as a workflow_dispatch input called
+# pull_request, which declares no PR CI at all. A commented-out trigger, a
+# comment elsewhere in the file, a path filter naming a pull_request.yml file,
+# and a job step that merely mentions the word are likewise never mistaken for
+# a trigger declaration.
+#
+# Filter values are read only under a "pull_request:" key that opens a block
+# of its own, from an inline list ("branches: [main, release/*]") or a block
+# list ("paths:\n  - src/**") in either of YAML's two spellings - sequence
+# items indented under their key, or sitting at the key's own indentation -
+# with each item's surrounding whitespace and quotes stripped. A "types:" key,
+# a branches-ignore/paths-ignore exclusion, or any other sibling under the
 # trigger is not a filter this reads and cannot pollute one: a line back at
 # the trigger's own child indentation that is not one of the two keys clears
 # the key whose values were being collected, and only a sequence item or a
-# more indented line continues it. No output at all means the trigger carries
-# no nested include filter at all (an inline "on: [push, pull_request]" list,
-# a bare "pull_request:", a "- pull_request" sequence entry, or a trigger
-# narrowed only by exclusions): those are read as covering every base branch
-# and every changed file, so github_workflow_applies_to_pr's caller-side "no
-# filter present" default already covers them correctly. This is a text
-# heuristic over one block's indentation, not a YAML parser.
-github_workflow_pull_request_filters() {
+# more indented line continues it. No filter line at all means the trigger
+# narrows nothing this judges (an inline "on: [push, pull_request]" list, a
+# bare "pull_request:", a "- pull_request" sequence entry, a flow-mapping
+# value, or a trigger narrowed only by exclusions): those are read as covering
+# every base branch and every changed file, which is exactly what
+# github_workflow_applies_to_pr's "no filter present" default does. This is a
+# text heuristic over one block's indentation, not a YAML parser.
+github_workflow_pull_request_trigger() {
   printf '%s\n' "$1" | awk '
     function indent_of(s) { match(s, /^[[:space:]]*/); return RLENGTH }
     function emit_inline(key, s,    n, i, parts, v) {
@@ -701,8 +703,12 @@ github_workflow_pull_request_filters() {
       }
     }
     { line = $0; sub(/[[:space:]]*#.*$/, "", line) }
-    !found_on && line ~ "^(on|\"on\"|\047on\047)[[:space:]]*:" {
-      in_on = 1; on_child = -1; found_on = 1; next
+    line ~ "^(on|\"on\"|\047on\047)[[:space:]]*:" {
+      in_on = 1; on_child = -1; in_pr = 0; cur_key = ""
+      rest = line
+      sub(/^[^:]*:/, "", rest)
+      if (rest ~ /(^|[^A-Za-z0-9_])pull_request([^A-Za-z0-9_]|$)/) declares = 1
+      next
     }
     !in_on { next }
     line ~ /^[[:space:]]*$/ { next }
@@ -710,12 +716,15 @@ github_workflow_pull_request_filters() {
     {
       here = indent_of(line)
       if (on_child < 0) on_child = here
-      if (in_pr && here <= on_child) in_pr = 0
-      if (!in_pr && here == on_child && line ~ /^[[:space:]]*pull_request[[:space:]]*:/) {
-        rest = line
-        sub(/^[[:space:]]*pull_request[[:space:]]*:/, "", rest)
-        gsub(/[[:space:]]/, "", rest)
-        if (rest == "") { in_pr = 1; pr_child = -1; cur_key = "" }
+      if (in_pr && here <= on_child) { in_pr = 0; cur_key = "" }
+      if (here == on_child && line ~ /^[[:space:]]*(-[[:space:]]*)?pull_request[[:space:]]*(:|$)/) {
+        declares = 1
+        in_pr = 0
+        cur_key = ""
+        if (line ~ /^[[:space:]]*pull_request[[:space:]]*:[[:space:]]*$/) {
+          in_pr = 1
+          pr_child = -1
+        }
         next
       }
       if (in_pr) {
@@ -739,6 +748,7 @@ github_workflow_pull_request_filters() {
         }
       }
     }
+    END { if (declares) print "declares" }
   '
 }
 
@@ -800,9 +810,9 @@ CANDIDATES
 # This pull request's changed file paths, read once per merge attempt and
 # cached, since more than one workflow's paths filter may need them. Sets
 # FM_PR_FILES to a newline-separated list of paths and FM_PR_FILES_STATUS to
-# "ok" or "unreadable". Never called unless some workflow's pull_request
-# trigger actually declares a paths filter, so an ordinary merge with no such
-# filter never pays for this call.
+# "ok" or "unreadable". Never called unless a paths filter has to be judged or
+# an exemption is about to be granted, so an ordinary merge of a pull request
+# its repository's CI plainly covers never pays for this call.
 #
 # The list endpoint answers at most FM_PR_FILES_CAP files and then simply
 # stops paginating, with no error and no truncation marker, so a list that
@@ -829,55 +839,88 @@ github_pr_changed_files() {
   [ "$FM_PR_FILES_STATUS" = ok ] || FM_PR_FILES=''
 }
 
-# Whether the pull_request trigger in this already-confirmed-present workflow
-# applies to this pull request, given its base branch and changed files. Only
-# an include filter - branches or paths - can ever answer "no" (see
+# Whether this pull request itself changes anything under .github/workflows/.
+# GitHub resolves a pull_request run from the head merged into the base, so for
+# such a pull request the filters committed on the base ref are not the filters
+# GitHub ran: a pull request that broadens its own workflow's paths filter, or
+# retargets its branches filter, genuinely gets PR CI that the base ref's copy
+# says it would not. No committed copy can settle that, so this answers the
+# question the same way every other unevaluable read is answered - yes, treat
+# it as covered - including when the changed-file list cannot be read at all.
+# It never invents a trigger the read workflow does not declare, so a pull
+# request adding the repository's first workflow still arms nothing.
+github_pr_touches_workflows() {
+  local f
+  github_pr_changed_files
+  [ "$FM_PR_FILES_STATUS" = ok ] || return 0
+  while IFS= read -r f; do
+    case "$f" in
+      .github/workflows/*) return 0 ;;
+    esac
+  done <<CANDIDATES
+$FM_PR_FILES
+CANDIDATES
+  return 1
+}
+
+# Whether the pull_request trigger a workflow file declares, if it declares one
+# at all, applies to this pull request, given its base branch and changed
+# files. Only an include filter - branches or paths - can ever answer "no" (see
 # github_glob_may_match for why over-matching one is the safe direction).
 # Everything this cannot judge confidently counts the pull request as covered:
 # a branches-ignore or paths-ignore exclusion, a glob too complex to evaluate,
-# an unreadable changed-file list. Confidently confirming an EXCLUSION needs
-# the opposite bias from confirming an inclusion, and getting that wrong is
-# the unsafe direction this whole change exists to avoid. Sets
-# FM_PR_WORKFLOW_APPLIES to:
-#   yes - nothing confirms that this trigger skips this pull request.
-#   no  - a branches or paths filter is confirmed NOT to cover it.
+# an unreadable changed-file list, a pull request editing the workflows
+# themselves. Confidently confirming an EXCLUSION needs the opposite bias from
+# confirming an inclusion, and getting that wrong is the unsafe direction this
+# whole change exists to avoid. Sets FM_PR_WORKFLOW_APPLIES to:
+#   yes  - this file declares the trigger and nothing confirms that the
+#          trigger skips this pull request.
+#   no   - it declares the trigger, and a branches or paths filter committed on
+#          the base ref is confirmed NOT to cover this pull request, which that
+#          pull request does not edit.
+#   none - this file declares no pull_request trigger at all.
 # Args: workflow-content base-branch
-FM_PR_WORKFLOW_APPLIES=yes
+FM_PR_WORKFLOW_APPLIES=none
 github_workflow_applies_to_pr() {
   local content=$1 base=$2
-  local key value
+  local key value declared=false skipped=false
   local -a branches=() paths_incl=()
   while IFS=' ' read -r key value; do
     [ -n "$key" ] || continue
     case "$key" in
+      declares) declared=true ;;
       branches) branches+=("$value") ;;
       paths) paths_incl+=("$value") ;;
     esac
-  done <<FILTERS
-$(github_workflow_pull_request_filters "$content")
-FILTERS
+  done <<TRIGGER
+$(github_workflow_pull_request_trigger "$content")
+TRIGGER
 
+  FM_PR_WORKFLOW_APPLIES=none
+  $declared || return 0
   FM_PR_WORKFLOW_APPLIES=yes
   if [ "${#branches[@]}" -gt 0 ] \
     && ! github_glob_may_match "$base" "${branches[@]}"; then
-    FM_PR_WORKFLOW_APPLIES=no
-    return 0
-  fi
-  if [ "${#paths_incl[@]}" -gt 0 ]; then
+    skipped=true
+  elif [ "${#paths_incl[@]}" -gt 0 ]; then
     github_pr_changed_files
     if [ "$FM_PR_FILES_STATUS" = ok ] \
       && ! github_glob_may_match_any_of "$FM_PR_FILES" "${paths_incl[@]}"; then
-      FM_PR_WORKFLOW_APPLIES=no
+      skipped=true
     fi
+  fi
+  if $skipped && ! github_pr_touches_workflows; then
+    FM_PR_WORKFLOW_APPLIES=no
   fi
 }
 
 # Whether this pull request has any pull_request-triggered workflow that
 # actually applies to it, read once per merge attempt (not cached across
 # attempts or repos; each invocation of this script judges exactly one
-# merge). A workflow declaring the trigger is read once at the repository
-# level; github_workflow_applies_to_pr then judges its filters, if any,
-# against this pull request's own base branch and changed files. Sets
+# merge). Every workflow file is read at this pull request's own base ref, the
+# nearest committed copy of what GitHub resolves for a pull_request run;
+# github_workflow_applies_to_pr judges each one's trigger and its filters, if
+# any, against this pull request's own base branch and changed files. Sets
 # FM_PR_GITHUB_PR_CI to:
 #   yes        - a workflow file was found declaring the trigger, and nothing
 #                confirmed that trigger's filters skip this pull request
@@ -904,10 +947,11 @@ FILTERS
 FM_PR_GITHUB_PR_CI=unreadable
 github_repo_has_pr_ci_workflow() {
   local base=$1
-  local listing name err_file err_text encoded content
+  local listing name err_file err_text encoded content ref
   FM_PR_GITHUB_PR_CI=unreadable
+  ref=$(github_urlencode_path_segment "$base")
   err_file=$(mktemp "${TMPDIR:-/tmp}/fm-pr-merge-workflows.XXXXXX") || return 0
-  if ! listing=$(gh api "repos/$PR_OWNER/$PR_REPO/contents/.github/workflows" \
+  if ! listing=$(gh api "repos/$PR_OWNER/$PR_REPO/contents/.github/workflows?ref=$ref" \
     --jq '.[] | select(.type == "file") | .name' 2>"$err_file"); then
     err_text=$(cat "$err_file" 2>/dev/null)
     rm -f "$err_file"
@@ -927,19 +971,17 @@ github_repo_has_pr_ci_workflow() {
       *.yml|*.yaml) ;;
       *) continue ;;
     esac
-    if ! encoded=$(gh api "repos/$PR_OWNER/$PR_REPO/contents/.github/workflows/$(github_urlencode_path_segment "$name")" \
+    if ! encoded=$(gh api "repos/$PR_OWNER/$PR_REPO/contents/.github/workflows/$(github_urlencode_path_segment "$name")?ref=$ref" \
       --jq '.content // ""' 2>/dev/null); then
       return 0
     fi
     content=$(printf '%s' "$encoded" | base64 --decode 2>/dev/null) \
       || content=$(printf '%s' "$encoded" | base64 -D 2>/dev/null) \
       || return 0
-    if github_workflow_declares_pull_request "$content"; then
-      github_workflow_applies_to_pr "$content" "$base"
-      if [ "$FM_PR_WORKFLOW_APPLIES" = yes ]; then
-        FM_PR_GITHUB_PR_CI=yes
-        return 0
-      fi
+    github_workflow_applies_to_pr "$content" "$base"
+    if [ "$FM_PR_WORKFLOW_APPLIES" = yes ]; then
+      FM_PR_GITHUB_PR_CI=yes
+      return 0
     fi
   done <<WORKFLOWS
 $listing
@@ -967,6 +1009,14 @@ WORKFLOWS
 #                dropped one; the refusal says to re-check rather than to act.
 #   dropped    - zero such runs, and the head commit is older than the grace
 #                window or its age could not be established. Never green.
+#   expired    - zero such runs, and the head commit is provably older than
+#                FM_PR_MERGE_CI_RETENTION_SECS, past which GitHub has purged
+#                the run history this count reads. The absence is therefore
+#                expired evidence, not a confirmed one: the runs may well have
+#                existed and reported green. Treated like "present" by the
+#                caller, with a stderr note, because no retry can ever bring
+#                purged runs back and a refusal nothing can clear is the
+#                deadlock this exemption exists to remove.
 #   unreadable - the run count itself could not be read, so no absence was ever
 #                confirmed. Treated like "present" by the caller (no new
 #                refusal) for the same reason github_repo_has_pr_ci_workflow's
@@ -975,14 +1025,15 @@ WORKFLOWS
 #                dropped event should cause. The caller prints a stderr note so
 #                the disarmed gate is visible.
 #
-# Once the run count confirms zero, every remaining path refuses. The commit
-# date is read only to choose between the two refusal wordings and can never
-# return the verdict to "merge": a failed date read, an unparseable date, or an
-# unreadable clock all land on "dropped", whose wording already covers an age
-# it could not establish.
+# Once the run count confirms zero, only a head commit provably older than the
+# retention window escapes a refusal. Every other path refuses, and the commit
+# date can only choose which wording: a failed date read, an unparseable date,
+# or an unreadable clock all land on "dropped", whose wording already covers an
+# age it could not establish, never on the retention exemption an unread date
+# has not earned.
 FM_PR_GITHUB_DROPPED_CI=unreadable
 github_check_dropped_ci_event() {
-  local sha=$1 total committer_date commit_epoch now_epoch
+  local sha=$1 total committer_date commit_epoch now_epoch age
   FM_PR_GITHUB_DROPPED_CI=unreadable
   if ! total=$(gh api "repos/$PR_OWNER/$PR_REPO/actions/runs?head_sha=$sha&event=pull_request" \
     --jq '.total_count' 2>/dev/null); then
@@ -1003,8 +1054,11 @@ github_check_dropped_ci_event() {
   case "$now_epoch" in
     ''|*[!0-9]*) return 0 ;;
   esac
-  if [ "$((now_epoch - commit_epoch))" -lt "$FM_PR_MERGE_CI_GRACE_SECS" ]; then
+  age=$((now_epoch - commit_epoch))
+  if [ "$age" -lt "$FM_PR_MERGE_CI_GRACE_SECS" ]; then
     FM_PR_GITHUB_DROPPED_CI=grace
+  elif [ "$age" -gt "$FM_PR_MERGE_CI_RETENTION_SECS" ]; then
+    FM_PR_GITHUB_DROPPED_CI=expired
   fi
 }
 
@@ -1081,6 +1135,9 @@ FIELDS
       case "$FM_PR_GITHUB_DROPPED_CI" in
         unreadable)
           echo "note: could not read the pull_request-event run count for head $live_head, so no absence was confirmed and the dropped-CI-event check is disarmed for this merge attempt" >&2
+          ;;
+        expired)
+          echo "note: no pull_request-event run is recorded for head $live_head and its commit is older than GitHub's Actions run retention window, so that absence is expired evidence rather than a confirmed one and the dropped-CI-event check is disarmed for this merge attempt" >&2
           ;;
         grace)
           refusals="$refusals  - no pull_request-triggered check has reported for head $live_head yet, and its commit is younger than the delivery grace window; re-check shortly
