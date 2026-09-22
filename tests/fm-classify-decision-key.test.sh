@@ -159,6 +159,26 @@ test_keyed_terminal_line_does_not_retire_the_default_bucket() {
   pass "a keyed done/failed/paused report never retires the unkeyed default bucket, while a plain one still does"
 }
 
+test_plain_terminal_retires_only_the_default_row_among_several_open() {
+  local dir
+  dir=$(case_dir default-among-several)
+  # The unkeyed decision is opened AFTER a keyed one, so it is not the first
+  # record in the open set. A plain terminal line must retire exactly that row
+  # and leave every keyed decision standing, whatever order they were opened in.
+  printf 'needs-decision [key=api-shape]: pick REST or RPC\n' > "$dir/t.status"
+  printf 'blocked: waiting on the captain\n' >> "$dir/t.status"
+  printf 'needs-decision [key=route]: pick the deployment route\n' >> "$dir/t.status"
+  assert_fold "$dir/t.status" \
+    "$(printf 'api-shape\tneeds-decision\tpick REST or RPC\ndefault\tblocked\twaiting on the captain\nroute\tneeds-decision\tpick the deployment route\n')" \
+    "a mid-set unkeyed blocker opens alongside the keyed decisions"
+
+  printf 'done: shipped\n' >> "$dir/t.status"
+  assert_fold "$dir/t.status" \
+    "$(printf 'api-shape\tneeds-decision\tpick REST or RPC\nroute\tneeds-decision\tpick the deployment route\n')" \
+    "the plain done retires the mid-set unkeyed row and leaves both keyed decisions open"
+  pass "a plain terminal line retires a non-first unkeyed row without touching the keyed decisions around it"
+}
+
 test_resolution_closes_across_positions() {
   local dir
   dir=$(case_dir cross-close)
@@ -346,6 +366,7 @@ test_unkeyed_blocked_retires_after_a_later_terminal_or_paused_line
 test_unkeyed_needs_decision_retires_via_done_despite_a_mismatched_keyed_resolution
 test_correlated_terminal_line_does_not_retire_the_default_bucket
 test_keyed_terminal_line_does_not_retire_the_default_bucket
+test_plain_terminal_retires_only_the_default_row_among_several_open
 test_resolution_closes_across_positions
 test_blocked_is_position_tolerant_like_needs_decision
 test_two_colon_form_decisions_stay_distinct

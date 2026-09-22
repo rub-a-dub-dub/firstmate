@@ -536,8 +536,12 @@ _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb
       # correlation token - never a stated key, which stays governed by the
       # resolve/held case above regardless of what else follows it.
       if [ "$key" = default ] && ! _fm_classify_line_has_corr_token "$line"; then
-        open=$(_fm_decision_drop "$open" default)
-        [ -n "$open" ] && open="${open}"$'\n'
+        case "$open" in
+          default$'\t'*|*$'\n'default$'\t'*)
+            open=$(_fm_decision_drop "$open" default)
+            [ -n "$open" ] && open="${open}"$'\n'
+            ;;
+        esac
       fi
       ;;
   esac
