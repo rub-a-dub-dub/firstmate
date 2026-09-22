@@ -2603,13 +2603,45 @@ test_registration_identity_refuses_inode_swap_with_identical_content() {
   pass "an inode swap with identical bytes still refuses the armed poll and names the inode mismatch"
 }
 
-# fm_pr_poll_artifacts_valid's own structural checks (cmp against the check
+test_armed_poll_refuses_sidecar_content_change_the_parser_admits() {
+  local dir state rc
+  dir=$(make_case sidecar-trailing-bytes)
+  state="$dir/home/state"
+  write_task_meta "$dir"
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/1 \
+    > "$dir/stdout" 2> "$dir/stderr" || fail "could not arm the poll before the sidecar rewrite"
+  fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
+    || fail "the armed poll was not authorized before the sidecar rewrite"
+  # Appended in place, so the inode is unchanged and only the bytes differ.
+  printf 'trailing' >> "$state/task-a.pr-poll"
+  fm_pr_poll_data_parse "$state/task-a.pr-poll" \
+    || fail "the fixture did not reach the identity comparison: the sidecar parser refused it first"
+  ! fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
+    || fail "a sidecar content change was silently authorized"
+  [ "$FM_PR_POLL_REJECT_REASON" = "data file content" ] \
+    || fail "a sidecar content change was not reported as a content mismatch: $FM_PR_POLL_REJECT_REASON"
+
+  rm -f "$state/.last-check"
+  set +e
+  FM_TEST_GH_STATE=MERGED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch.out" 2> "$dir/watch.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "watcher did not complete after the sidecar rewrite: $(cat "$dir/watch.err")"
+  assert_grep 'rejected unauthenticated state checks' "$dir/watch.out" \
+    "a rewritten sidecar was not reported as an unauthenticated state check"
+  assert_grep 'data file content' "$dir/watch.out" \
+    "the unauthenticated state check did not name the content mismatch it found"
+  pass "a sidecar content change the parser admits still refuses the armed poll and names the content mismatch"
+}
+
+# fm_pr_poll_artifacts_valid's structural checks (cmp against the check
 # template, and comparing the sidecar's parsed fields against the
-# registration) already fully validate content before an identity is ever
-# compared, so a raw content forgery can never reach fm_pr_identity_matches
-# from that entrypoint: it is always caught earlier, generically. The
-# retirement check file has no such earlier content gate of its own, so it is
-# what actually exercises fm_pr_identity_matches's content-mismatch branch.
+# registration) catch most content forgeries before an identity is ever
+# compared, but they do not catch every one: the sidecar parser stops after
+# five lines and only refuses a sixth that is newline-terminated, so trailing
+# bytes without a final newline survive it and the content hash inside
+# fm_pr_identity_matches is what refuses them. The retirement check file has
+# no earlier content gate at all, so it exercises the same branch directly.
 test_retirement_check_identity_refuses_content_change() {
   local dir state receipt
   dir=$(make_case retirement-content-change-check)
@@ -2725,5 +2757,6 @@ test_returned_custom_check_descendants_are_drained
 test_teardown_removes_poll_artifacts
 test_registration_identity_tolerates_device_only_drift
 test_registration_identity_refuses_inode_swap_with_identical_content
+test_armed_poll_refuses_sidecar_content_change_the_parser_admits
 test_retirement_check_identity_refuses_content_change
 test_retirement_recovery_tolerates_device_only_drift
