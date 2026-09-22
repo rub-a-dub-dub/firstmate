@@ -410,6 +410,22 @@ outcome: passed-with-override
 EOF
 }
 
+# A run that finished without ever opening a PR: the record states so, which
+# is a known fact and not the absent-field unknown.
+run_passed_pr_none() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: completed
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: ""
+  pr_state: none
+  findings: none
+outcome: passed
+EOF
+}
+
 run_failed() {  # <branch>
   cat <<EOF
 run:
@@ -1034,6 +1050,23 @@ test_terminal_passed_absent_pr_state_reads_unknown() {
   assert_not_contains "$out" "no PR opened" "an absent pr_state must not claim no PR was opened"
   assert_not_contains "$out" "PR merged" "an absent pr_state must not claim a merge"
   pass "terminal passed run without pr_state reports the merge state as unknown"
+}
+
+# pr_state: none is the record stating no PR was ever opened - a known fact
+# that must stay distinct from the absent-field unknown default.
+test_terminal_passed_pr_state_none_reads_no_pr_opened() {
+  reset_fakes
+  local d; d=$(new_case passed-pr-none)
+  make_repo_on_branch "$d/wt" fm/feat-passed-pr-none
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-passed-pr-none.meta" "window=fm:fm-feat-passed-pr-none" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_passed_pr_none fm/feat-passed-pr-none)"
+  local out; out=$(run_crew_state "$d" feat-passed-pr-none)
+  assert_contains "$out" "state: done" "a passed run that opened no PR still reads done"
+  assert_contains "$out" "no PR opened" "pr_state none is a known fact, not an unknown"
+  assert_not_contains "$out" "merge state unknown" "a stated none must not read as the unknown default"
+  assert_not_contains "$out" "PR merged" "a run that opened no PR must never report a merge"
+  pass "terminal passed run with pr_state none reports no PR opened, not unknown"
 }
 
 test_terminal_failed() {
@@ -2768,6 +2801,7 @@ test_terminal_passed
 test_terminal_passed_open_pr_reads_honest_detail
 test_terminal_passed_with_override_reads_done_not_unknown
 test_terminal_passed_absent_pr_state_reads_unknown
+test_terminal_passed_pr_state_none_reads_no_pr_opened
 test_terminal_failed
 test_terminal_failed_ci_orphan_after_green_reads_done
 test_terminal_failed_ci_orphan_status_only_reads_done

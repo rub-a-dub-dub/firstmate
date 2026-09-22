@@ -476,9 +476,10 @@ EOF
 # alongside pr_state=open in the same status block, with the forge
 # independently confirming merged=false, merged_at=null). Read the run's own
 # pr_state field instead of asserting a merge the outcome name does not
-# prove. An absent pr_state (an older no-mistakes without the field, or a
-# not-yet-observed state) proves nothing either way and reads unknown; any
-# other value is reported verbatim rather than interpreted.
+# prove. merged, open, closed and none are each a fact the run record states;
+# every other value - an absent field from an older no-mistakes, a
+# not-yet-observed state, a spelling this reader does not know - is a single
+# unknown, never a guess in either direction.
 nm_outcome_pr_detail() {
   local pr_state
   pr_state=$(strip_quotes "$(nm_field pr_state)")
@@ -486,8 +487,8 @@ nm_outcome_pr_detail() {
     merged) printf 'PR merged' ;;
     open)   printf 'PR open, not yet merged' ;;
     closed) printf 'PR closed, not merged' ;;
-    "")     printf 'PR merge state unknown' ;;
-    *)      printf 'PR state %s' "$pr_state" ;;
+    none)   printf 'no PR opened' ;;
+    *)      printf 'PR merge state unknown' ;;
   esac
 }
 
