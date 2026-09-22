@@ -2540,6 +2540,271 @@ EOF
   pass "newest filed gates are selected before snapshot bounds"
 }
 
+# Filed-date ordering cannot discriminate within a same-day cluster, so the gate
+# bound alone can silently drop the one row a live captain hold is waiting on.
+# A gate named in a live captain hold's body text must survive the bound even
+# when its filed date ties with every other row in the cluster, and even when the
+# naming sentence sits past the hold body's display-excerpt cutoff. A gate whose
+# id is merely a prefix of the named one, or whose id is an ordinary word the hold
+# prose happens to use, is NOT referenced and must not be kept; a single-word id a
+# hold names structurally through blocked-by is.
+test_gate_named_in_a_live_captain_hold_survives_the_bound() {
+  local home fakebin json
+  home=$(make_home hold-named-gate)
+  : > "$home/data/secondmates.md"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+- [ ] gate-a - Gate A (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] gate-b - Gate B (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] gate-c - Gate C (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] signing - Rotate the release signing key (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] enabling - Rewrite the enabling guide (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] signing-fix - Fix the unattended commit signing (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] docs - Rewrite the runner docs (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] ship-docs - Ship the rewritten guide blocked-by: docs (repo: firstmate) (kind: captain) (since 2026-07-11) (hold: waiting on the rewrite) (hold-kind: captain)
+  Captain hold set: 2026-07-11T00:00:00Z
+- [ ] enable-schedule - Enable the nightly job (repo: firstmate) (kind: captain) (since 2026-07-11) (hold: waiting on the fix) (hold-kind: captain)
+  Captain hold set: 2026-07-11T00:00:00Z
+  The captain spent the evening tracing why the unattended runner refuses to commit anything at all, walked the runner log twice, compared it against last week's clean run, and wrote the whole trail down here so the next session does not have to rediscover any of it from scratch again.
+  Waiting on signing-fix before enabling this schedule tonight.
+
+## Done
+EOF
+  fakebin=$(make_fakebin "$home")
+  json=$(FM_BEARINGS_GATES=3 run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    (.gates | any(.id == "signing-fix"))
+      and (.gates | any(.id == "docs"))
+      and (.gates | any(.id == "gate-a"))
+      and (.gates | any(.id == "gate-b"))
+      and (.gates | any(.id == "gate-c"))
+      and (.gates | any(.id == "signing") | not)
+      and (.gates | any(.id == "enabling") | not)
+      and (.gates | length) == 5
+      and (.decisions_open | any(.id == "enable-schedule"))
+      and ([.omitted[].surface] | index("gates showing 5 of 8") != null)
+      and ([.omitted[].surface]
+           | any(startswith("gates retained past the truncation bound, referenced by a captain hold: ")
+                 and contains("signing-fix") and contains("docs")
+                 and (contains("enabling") | not)))
+  ' >/dev/null || fail "a gate named in a live captain hold vanished behind the bound: $json"
+  pass "a gate named in a live captain hold survives the bound"
+}
+
+# A registered secondmate publishes its queued rows with live captain holds sorted
+# last and then truncated, so a busy ledger drops exactly the hold that names the
+# urgent gate. The pinning text has to come from the summary's captain-hold
+# decisions, which keep backlog order under their own separate bound.
+test_secondmate_hold_pins_its_gate_past_the_queued_bound() {
+  local home mate fakebin json
+  home=$(make_home mate-hold-named-gate)
+  : > "$home/data/secondmates.md"
+  mate="$TMP_ROOT/mate-hold-named-gate-home"
+  make_valid_secondmate_home hold-text-mate "$mate"
+  append_secondmate_registry "$home" hold-text-mate "$mate"
+  cat > "$mate/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+- [ ] mate-gate-a - Mate gate A (repo: sample) (kind: ship) (since 2026-07-11)
+- [ ] mate-gate-b - Mate gate B (repo: sample) (kind: ship) (since 2026-07-11)
+- [ ] mate-gate-c - Mate gate C (repo: sample) (kind: ship) (since 2026-07-11)
+- [ ] mate-signing-fix - Fix the mate commit signing (repo: sample) (kind: ship) (since 2026-07-11)
+- [ ] mate-enable - Enable the mate nightly job (repo: sample) (kind: captain) (since 2026-07-11) (hold: waiting on mate-signing-fix) (hold-kind: captain)
+  Captain hold set: 2026-07-11T00:00:00Z
+
+## Done
+EOF
+  fakebin=$(make_fakebin "$home")
+  json=$(FM_SNAPSHOT_SECONDMATE_QUEUED=4 FM_BEARINGS_GATES=2 run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    (.gates | any(.id == "mate-signing-fix" and .owner == "hold-text-mate"))
+      and ([.gates[].id] | contains(["mate-gate-a", "mate-gate-b"]))
+      and (.gates | any(.id == "mate-gate-c") | not)
+      and (.gates | length) == 3
+      and (.decisions_open | any(.id == "hold-text-mate/mate-enable"))
+      and ([.omitted[].surface] | index("gates showing 3 of 4") != null)
+      and ([.omitted[].surface]
+           | index("gates retained past the truncation bound, referenced by a captain hold: hold-text-mate/mate-signing-fix") != null)
+  ' >/dev/null || fail "a secondmate live captain hold lost its gate past the ledger queued bound: $json"
+  pass "a secondmate live captain hold pins its gate past the queued bound"
+}
+
+# Gate ids are unique within a home, not across the fleet, so a hold naming its own
+# home's gate must not reach into another home and pin the same-named row there.
+# The disclosure has to stay unambiguous about which home's row was retained.
+test_a_captain_hold_never_pins_another_homes_same_named_gate() {
+  local home mate fakebin json
+  home=$(make_home cross-home-pin)
+  : > "$home/data/secondmates.md"
+  mate="$TMP_ROOT/cross-home-pin-home"
+  make_valid_secondmate_home mate-a "$mate"
+  append_secondmate_registry "$home" mate-a "$mate"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+- [ ] main-gate-a - Main gate A (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] main-gate-b - Main gate B (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] release-notes - Write the main release notes (repo: firstmate) (kind: ship) (since 2026-07-11)
+
+## Done
+EOF
+  cat > "$mate/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+- [ ] release-notes - Write the mate release notes (repo: sample) (kind: ship) (since 2026-07-11)
+- [ ] mate-publish - Publish the mate build (repo: sample) (kind: captain) (since 2026-07-11) (hold: waiting on release-notes) (hold-kind: captain)
+  Captain hold set: 2026-07-11T00:00:00Z
+
+## Done
+EOF
+  fakebin=$(make_fakebin "$home")
+  json=$(FM_BEARINGS_GATES=2 run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    (.gates | any(.id == "release-notes" and .owner == "mate-a"))
+      and (.gates | any(.id == "release-notes" and .owner == "(main)") | not)
+      and ([.gates[].id] | contains(["main-gate-a", "main-gate-b"]))
+      and (.gates | length) == 3
+      and ([.omitted[].surface] | index("gates showing 3 of 4") != null)
+      and ([.omitted[].surface]
+           | index("gates retained past the truncation bound, referenced by a captain hold: mate-a/release-notes") != null)
+  ' >/dev/null || fail "a captain hold pinned a same-named gate outside its own home: $json"
+  pass "a captain hold never pins another home's same-named gate"
+}
+
+# A secondmate ledger publishes its hold rows' blocker ids on queued[], so a
+# secondmate captain hold blocked on a queued row must pin that row the same way a
+# main-home hold does - otherwise nothing in the digest names the blocker at all.
+test_secondmate_blocked_hold_pins_its_structural_blocker() {
+  local home mate fakebin json
+  home=$(make_home mate-structural-pin)
+  : > "$home/data/secondmates.md"
+  mate="$TMP_ROOT/mate-structural-pin-home"
+  make_valid_secondmate_home struct-mate "$mate"
+  append_secondmate_registry "$home" struct-mate "$mate"
+  cat > "$mate/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+- [ ] mate-newer-a - Mate newer gate A (repo: sample) (kind: ship) (since 2026-07-12)
+- [ ] mate-newer-b - Mate newer gate B (repo: sample) (kind: ship) (since 2026-07-12)
+- [ ] mate-blocker - The row the mate hold waits on (repo: sample) (kind: ship) (since 2026-07-10)
+- [ ] mate-blocked-hold - Ship once the blocker clears blocked-by: mate-blocker (repo: sample) (kind: captain) (since 2026-07-10) (hold: waiting on the blocker) (hold-kind: captain)
+  Captain hold set: 2026-07-10T00:00:00Z
+
+## Done
+EOF
+  fakebin=$(make_fakebin "$home")
+  json=$(FM_BEARINGS_GATES=2 run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    (.gates | any(.id == "mate-blocker" and .owner == "struct-mate"))
+      and ([.gates[].id] | contains(["mate-newer-a", "mate-newer-b"]))
+      and (.gates | length) == 3
+      and ([.omitted[].surface] | index("gates showing 3 of 4") != null)
+      and ([.omitted[].surface]
+           | index("gates retained past the truncation bound, referenced by a captain hold: struct-mate/mate-blocker") != null)
+  ' >/dev/null || fail "a secondmate captain hold lost the row it is structurally blocked on: $json"
+  pass "a secondmate blocked hold pins its structural blocker"
+}
+
+# Retention is driven by hold text, so without its own cap the gates array could
+# grow past FM_BEARINGS_GATES by however many rows a hold body happens to name.
+# Under contention for the cap the live hold wins: the captain is mid-way through
+# that one, while a deferred hold's own gate row already names its blockers. Raise
+# the cap and the deferred hold's structural blocker is retained too.
+test_gate_retention_is_capped_and_discloses_the_cap() {
+  local home fakebin json raised
+  home=$(make_home pinned-gate-cap)
+  : > "$home/data/secondmates.md"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+- [ ] top-gate - Newest filed gate (repo: firstmate) (kind: ship) (since 2026-07-12)
+- [ ] pin-a - Pinned gate A (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] pin-b - Pinned gate B (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] blk - Oldest filed structural blocker (repo: firstmate) (kind: ship) (since 2026-07-10)
+- [ ] hold-on-blk - Wait for the blocker blocked-by: blk (repo: firstmate) (kind: captain) (since 2026-07-10) (hold: waiting on the blocker) (hold-kind: captain)
+  Captain hold set: 2026-07-10T00:00:00Z
+- [ ] hold-on-two - Wait for both prose rows (repo: firstmate) (kind: captain) (since 2026-07-11) (hold: waiting on pin-a and pin-b) (hold-kind: captain)
+  Captain hold set: 2026-07-11T00:00:00Z
+
+## Done
+EOF
+  fakebin=$(make_fakebin "$home")
+  json=$(FM_BEARINGS_GATES=1 FM_BEARINGS_GATES_PINNED=2 run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    (.gates | length) == 3
+      and (.gates | any(.id == "top-gate"))
+      and ([.gates[].id] | contains(["pin-a", "pin-b"]))
+      and (.gates | any(.id == "blk") | not)
+      and ([.omitted[].surface] | index("gates showing 3 of 5") != null)
+      and ([.omitted[].surface]
+           | any(startswith("gates retained past the truncation bound, referenced by a captain hold: ")
+                 and contains("pin-a") and contains("pin-b") and (contains("blk") | not)))
+      and ([.omitted[].surface] | index("gates retained past the bound capped at 2; 1 more omitted") != null)
+  ' >/dev/null || fail "a live captain hold's gate lost its cap slot to a deferred hold: $json"
+  raised=$(FM_BEARINGS_GATES=1 FM_BEARINGS_GATES_PINNED=3 run "$home" "$fakebin" --json)
+  printf '%s' "$raised" | jq -e '
+    ([.gates[].id] | contains(["top-gate", "pin-a", "pin-b", "blk"]))
+      and (.gates | length) == 4
+      and ([.omitted[].surface] | any(startswith("gates retained past the bound capped at")) | not)
+  ' >/dev/null || fail "a raised retention cap did not admit the structurally pinned gate: $raised"
+  pass "gate retention past the bound is capped, ranked live-hold first, and disclosed"
+}
+
+# The human-readable retention line in omitted[] is bounded prose, so with realistic
+# ids it cannot name every retained row. A consumer that has to carry them all - the
+# board composer, whose own truncation is by filed date, the ordering that lost them
+# in the first place - reads the complete gates_retained field instead.
+test_every_retained_gate_is_named_in_the_structured_field() {
+  local home fakebin json
+  home=$(make_home retained-field)
+  : > "$home/data/secondmates.md"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+- [ ] top-gate - Newest filed gate (repo: firstmate) (kind: ship) (since 2026-07-12)
+- [ ] cowork-refine-job-unattended-commit-and-timeout - Unattended commit and timeout (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] cowork-refine-job-signing-and-retry-backoff-path - Signing and retry backoff (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] cowork-refine-job-log-rotation-and-disk-pressure - Log rotation and disk pressure (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] cowork-refine-job-secret-rotation-and-key-escrow - Secret rotation and key escrow (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] cowork-refine-job-timeout-budget-and-kill-switch - Timeout budget and kill switch (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] enable-nightly - Enable the nightly job (repo: firstmate) (kind: captain) (since 2026-07-11) (hold: waiting on the refine work) (hold-kind: captain)
+  Captain hold set: 2026-07-11T00:00:00Z
+  Waiting on cowork-refine-job-unattended-commit-and-timeout, cowork-refine-job-signing-and-retry-backoff-path, cowork-refine-job-log-rotation-and-disk-pressure, cowork-refine-job-secret-rotation-and-key-escrow and cowork-refine-job-timeout-budget-and-kill-switch before enabling this schedule.
+
+## Done
+EOF
+  fakebin=$(make_fakebin "$home")
+  json=$(FM_BEARINGS_GATES=1 run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    ["cowork-refine-job-unattended-commit-and-timeout",
+     "cowork-refine-job-signing-and-retry-backoff-path",
+     "cowork-refine-job-log-rotation-and-disk-pressure",
+     "cowork-refine-job-secret-rotation-and-key-escrow",
+     "cowork-refine-job-timeout-budget-and-kill-switch"] as $retained
+    | ([.gates_retained[].id] | sort) == ($retained | sort)
+      and ([.gates_retained[].owner] | unique) == ["(main)"]
+      and ([.gates[].id] | contains($retained))
+      and (.gates | length) == 6
+      and ([.omitted[].surface] | any(startswith("gates retained past the truncation bound")))
+      and ([.omitted[].surface] | any(startswith("gates retained past the bound capped at")) | not)
+  ' >/dev/null || fail "the structured retained-gate field did not carry every retained row: $json"
+  json=$(FM_BEARINGS_GATES=20 run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    (.gates | length) == 6
+      and (has("gates_retained") | not)
+      and ([.omitted[].surface] | any(startswith("gates retained")) | not)
+  ' >/dev/null || fail "a run that retained nothing still published a retained-gate field: $json"
+  pass "every retained gate is named in the structured field"
+}
+
 # A captain scanning Underway must be able to tell WHICH task a row is, and the
 # board orders Charted Next by the durable filed date, so both facts have to come
 # out of fleet state rather than being invented at render time.
@@ -3411,6 +3676,12 @@ test_working_captain_holds_keep_their_bucket_surfaces
 test_active_children_project_independent_of_home_captain_hold
 test_nameless_legacy_summary_uses_its_durable_identifier
 test_newest_filed_gates_are_selected_before_snapshot_bounds
+test_gate_named_in_a_live_captain_hold_survives_the_bound
+test_secondmate_hold_pins_its_gate_past_the_queued_bound
+test_a_captain_hold_never_pins_another_homes_same_named_gate
+test_secondmate_blocked_hold_pins_its_structural_blocker
+test_gate_retention_is_capped_and_discloses_the_cap
+test_every_retained_gate_is_named_in_the_structured_field
 test_underway_and_gate_rows_carry_the_durable_name_and_filed_date
 test_mixed_secondmate_roles_partial_state_and_captain_readiness
 test_main_captain_readiness_matches_secondmate_projection

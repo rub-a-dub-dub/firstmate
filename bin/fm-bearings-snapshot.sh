@@ -31,8 +31,10 @@
 # captain_decision because it has an open
 # captain hold still contributes each working child as its own Underway row;
 # the home row on secondmates[] keeps the decision and gate classification.
-# Captain-hold placement follows the canonical snapshot's hold_bucket and
-# nothing else; this wrapper never inspects hold reason or body prose. The
+# Captain-hold classification and placement follow the canonical snapshot's
+# hold_bucket and nothing else; the wrapper reads a hold's reason and body prose
+# only to retain a gate that hold points at (see Charted Next below), never to
+# bucket or place the hold itself. The
 # buckets are total and mutually exclusive, so every captain hold appears in
 # exactly one decision bucket and none can fall through both. An actively worked
 # held task may also appear in Underway. A "live" hold is a default Captain's Call
@@ -48,6 +50,25 @@
 # before the FM_BEARINGS_GATES bound is applied. Gates without a comparable filed
 # date keep their input order after dated gates. The synthetic (return-catchup)
 # posture row is reserved ahead of that ordering and bound so it always surfaces.
+# A same-day filing cluster leaves that ordering unable to discriminate among its
+# rows, so a gate that a captain hold IN ITS OWN HOME points at is retained past
+# the bound rather than silently dropped behind an honest count: textually when a
+# live hold's title, hold reason, or body text names it, structurally when a
+# deferred hold's unresolved blocked-by names it. hold_bucket is exclusive, so only
+# live holds carry pinning text and only deferred holds carry unresolved blockers;
+# retentions are capped at FM_BEARINGS_GATES_PINNED with the live-hold ones
+# claiming that cap first, because the live hold is the one the captain is
+# mid-way through and the deferred hold's own gate row already names its blockers.
+# gates_retained lists every gate kept this way for a consumer that must keep them
+# all; omitted[] carries the bounded human-readable note plus any retention the cap
+# dropped.
+# The textual half is a heuristic, so it only considers gate ids carrying a - or _:
+# an ordinary prose word can never pin a gate, at the accepted cost that a
+# single-word gate id is retained only when a hold names it structurally.
+# A registered secondmate ledger publishes no hold body, so its holds pin on the
+# title and reason its decisions_open carries plus the blocker ids on its queued
+# rows. A hold never pins a gate owned by another home, and pinning never changes
+# hold_bucket.
 #
 # Main-home inventory validity comes from the canonical snapshot's main_inventory
 # object (orphan structured in-flight without meta, unstructured current rows).
@@ -110,6 +131,7 @@ FM_BEARINGS_IN_FLIGHT=${FM_BEARINGS_IN_FLIGHT:-20}
 FM_BEARINGS_DECISIONS=${FM_BEARINGS_DECISIONS:-20}
 FM_BEARINGS_SECONDMATES=${FM_BEARINGS_SECONDMATES:-20}
 FM_BEARINGS_GATES=${FM_BEARINGS_GATES:-20}
+FM_BEARINGS_GATES_PINNED=${FM_BEARINGS_GATES_PINNED:-5}
 FM_BEARINGS_REPORTS=${FM_BEARINGS_REPORTS:-20}
 FM_BEARINGS_RECORDED_PRS=${FM_BEARINGS_RECORDED_PRS:-20}
 FM_BEARINGS_UNHEALTHY=${FM_BEARINGS_UNHEALTHY:-20}
@@ -126,6 +148,7 @@ validate_bound FM_BEARINGS_IN_FLIGHT "$FM_BEARINGS_IN_FLIGHT"
 validate_bound FM_BEARINGS_DECISIONS "$FM_BEARINGS_DECISIONS"
 validate_bound FM_BEARINGS_SECONDMATES "$FM_BEARINGS_SECONDMATES"
 validate_bound FM_BEARINGS_GATES "$FM_BEARINGS_GATES"
+validate_bound FM_BEARINGS_GATES_PINNED "$FM_BEARINGS_GATES_PINNED"
 validate_bound FM_BEARINGS_REPORTS "$FM_BEARINGS_REPORTS"
 validate_bound FM_BEARINGS_RECORDED_PRS "$FM_BEARINGS_RECORDED_PRS"
 validate_bound FM_BEARINGS_UNHEALTHY "$FM_BEARINGS_UNHEALTHY"
@@ -150,10 +173,17 @@ Default fields: schema, home, generated, prs, in_flight{id,kind,state,repo,name,
   secondmates{id,state,doing,provenance,freshness,age_seconds,contradiction,reason},
   secondmate_reconcile{id,spawn_gen,host,kind,ids},
   decisions_open{id,key,verb,summary,owner}, landed{id,what,artifact,owner},
-  gates{id,title,blocked_by,reason,owner,filed}, reports{id,path}, recorded_prs{id,url},
+  gates{id,title,blocked_by,reason,owner,filed},
+  gates_retained{id,owner} (only when a bounded run retained a gate),
+  reports{id,path}, recorded_prs{id,url},
   unhealthy_endpoints{...} (only when non-empty), omitted{surface,reveal}.
 Default gates are selected newest filed first before their bound; undated gates
-  retain input order after dated gates.
+  retain input order after dated gates. A gate that a captain hold in its own home
+  names - textually in a live hold's title, hold reason, or body text, or
+  structurally by a deferred hold's unresolved blocked-by id - is kept past that
+  bound, capped by FM_BEARINGS_GATES_PINNED with the live-hold retentions first.
+  gates_retained names each of those rows in full for a consumer that must carry
+  every one of them; omitted[] reports the same retention as a bounded note.
 landed merges this home's Done with registered secondmate homes' Done, bounded by
   a per-home cap (FM_BEARINGS_LANDED_PER_HOME) and an overall cap (FM_BEARINGS_LANDED),
   with omitted[] disclosure. Default selection is balanced across deterministic home
@@ -357,6 +387,7 @@ MODEL=$(printf '%s' "$SNAP" | jq \
   --argjson decisions_n "$FM_BEARINGS_DECISIONS" \
   --argjson secondmates_n "$FM_BEARINGS_SECONDMATES" \
   --argjson gates_n "$FM_BEARINGS_GATES" \
+  --argjson gates_pinned_n "$FM_BEARINGS_GATES_PINNED" \
   --argjson reports_n "$FM_BEARINGS_REPORTS" \
   --argjson recorded_prs_n "$FM_BEARINGS_RECORDED_PRS" \
   --argjson unhealthy_n "$FM_BEARINGS_UNHEALTHY" \
@@ -426,6 +457,14 @@ MODEL=$(printf '%s' "$SNAP" | jq \
      blocked_by:((.unresolved_blocker_ids // []) | if length > 0 then join(",") else "-" end | trunc(120)),
      reason:(hold_gate_reason | trunc(40)), owner:$owner,
      filed:((.since // null) | trunc(40))};
+  def gate_ref: if .owner == "(main)" then .id else (.owner + "/" + .id) end;
+  def hold_ref_text:
+    ((.title // "") + " " + (.hold_reason // "") + " "
+     + ((.body_lines // []) | join(" ")));
+  def id_word_re($id):
+    "(^|[^A-Za-z0-9_-])"
+    + ($id | gsub("(?<c>[^A-Za-z0-9_])"; "\\\(.c)"))
+    + "($|[^A-Za-z0-9_-])";
   def round_robin_landed($n):
     . as $groups
     | [range(0; (($groups | map(length) | max) // 0)) as $i
@@ -580,6 +619,22 @@ MODEL=$(printf '%s' "$SNAP" | jq \
          | select(.captain_actionable != true)
          | select((.hold_bucket == null) or ($all_decisions == 0))
          | as_gate($m.id) ]) as $gates_all
+  | ([ .backlog.records[]
+         | select(.structured and .hold_bucket != null)
+         | {owner:"(main)",
+            blockers:(.unresolved_blocker_ids // []),
+            text:(if live_captain_call then hold_ref_text else "" end)} ]
+     + [ (.secondmate_current.records // [])[] as $m
+         | select($m.provenance.selected == "structured-home")
+         | ([ $m.decisions_open[]?
+              | select(.source == "backlog" and .verb == "captain-hold")
+              | select(live_captain_call)
+              | {owner:$m.id,
+                 text:((.summary // "") + " " + (.reason // ""))} ]
+            + [ $m.queued[]?
+                | select(.hold_bucket != null)
+                | {owner:$m.id,
+                   blockers:(.unresolved_blocker_ids // [])} ])[] ]) as $captain_hold_refs
   | ([ .scout_reports[]
        | . as $r
        | select(($all_reports == 1) or (($rel_ids | index($r.id)) != null))
@@ -595,7 +650,29 @@ MODEL=$(printf '%s' "$SNAP" | jq \
       | sort_by((.value | filed_epoch) as $epoch
           | if $epoch == null then [1, 0, .key] else [0, -$epoch, .key] end)
       | map(.value);
-    . as $snap
+    def pinned_structurally:
+      . as $gate
+      | ($gate.id // "") as $id
+      | $id != ""
+        and any($captain_hold_refs[];
+                .owner == $gate.owner
+                and (((.blockers // []) | index($id)) != null));
+    def pinned_by_hold_text:
+      . as $gate
+      | ($gate.id // "") as $id
+      | ($id | test("[-_]"))
+        and (id_word_re($id) as $re
+             | any($captain_hold_refs[];
+                   .owner == $gate.owner and ((.text // "") | test($re))));
+    ($gates_all | newest_filed_first) as $gates_sorted
+  | ($gates_sorted[:$gates_n]) as $gates_top
+  | ($gates_sorted[$gates_n:]) as $gates_rest
+  | (($gates_rest | map(select(pinned_by_hold_text)))
+     + ($gates_rest | map(select((pinned_by_hold_text | not) and pinned_structurally)))) as $gates_pinned_all
+  | ($gates_pinned_all[:$gates_pinned_n]) as $gates_pinned
+  | (($gates_top + $gates_pinned) | newest_filed_first) as $gates_capped
+  | (if $all_queued == 1 then $gates_sorted else $gates_capped end) as $gates_shown
+  | . as $snap
   | {
       schema: "fm-bearings.v1",
       home: $home,
@@ -609,12 +686,16 @@ MODEL=$(printf '%s' "$SNAP" | jq \
       decisions_open: (if $all_decisions == 1 then $decisions_all else $decisions_all[:$decisions_n] end),
       landed: ($done | map({id, what:(.title | trunc(70)),
                             artifact:(landed_artifact // "-"),owner:.home_id})),
-      gates: ($return_catchup_gate
-              + ($gates_all | newest_filed_first
-                 | if $all_queued == 1 then . else .[:$gates_n] end)),
+      gates: ($return_catchup_gate + $gates_shown),
       reports: (if $all_reports == 1 then $reports_all else $reports_all[:$reports_n] end),
       recorded_prs: (if $all_recorded_prs == 1 then $recorded_prs_all else $recorded_prs_all[:$recorded_prs_n] end)
     }
+  # gates_retained is bounded by FM_BEARINGS_GATES_PINNED, which is the whole point
+  # of it: a consumer that must keep every retained row needs the complete list, so
+  # never trunc() this array or drop rows from it.
+  | . + (if $all_queued == 0 and ($gates_pinned | length) > 0 then
+           {gates_retained:($gates_pinned | map({id, owner}))}
+         else {} end)
   | . + (if ($unhealthy_all | length) > 0 then
            {unhealthy_endpoints:(if $all_unhealthy == 1 then $unhealthy_all else $unhealthy_all[:$unhealthy_n] end)}
          else {} end)
@@ -653,7 +734,17 @@ MODEL=$(printf '%s' "$SNAP" | jq \
         (([($snap.secondmate_current.records // [])[] | select(.parent_event.activity_scan.available == false)] | length) as $n | if $n > 0 then {surface:("secondmate parent activity evidence unavailable for \($n) record(s)"), reveal:"inspect the parent status logs"} else empty end),
         (if $all_decisions == 0 and ($decisions_all | length) > $decisions_n then {surface:("decisions_open showing \($decisions_n) of \($decisions_all | length)"), reveal:"--all-decisions"} else empty end),
         (if $all_decisions == 0 and $decisions_marked_deferred > 0 then {surface:("captain holds bucketed blocked, dated, or aged: \($decisions_marked_deferred)"), reveal:"--all-decisions"} else empty end),
-        (if $all_queued == 0 and ($gates_all | length) > $gates_n then {surface:("gates showing \($gates_n) of \($gates_all | length)"), reveal:"--all-queued"} else empty end),
+        (if $all_queued == 0 and ($gates_all | length) > ($gates_shown | length) then {surface:("gates showing \($gates_shown | length) of \($gates_all | length)"), reveal:"--all-queued"} else empty end),
+        (if $all_queued == 0 and ($gates_pinned | length) > 0 then
+           {surface:("gates retained past the truncation bound, referenced by a captain hold: "
+                     + ($gates_pinned | map(gate_ref) | join(",") | trunc(120))),
+            reveal:"--all-queued"}
+         else empty end),
+        ((($gates_pinned_all | length) - ($gates_pinned | length)) as $k
+         | if $all_queued == 0 and $k > 0 then
+             {surface:("gates retained past the bound capped at \($gates_pinned_n); \($k) more omitted"),
+              reveal:"--all-queued"}
+           else empty end),
         (if $all_reports == 0 and ($reports_all | length) > $reports_n then {surface:("reports showing \($reports_n) of \($reports_all | length)"), reveal:"--all-reports"} else empty end),
         (if $all_recorded_prs == 0 and ($recorded_prs_all | length) > $recorded_prs_n then {surface:("recorded_prs showing \($recorded_prs_n) of \($recorded_prs_all | length)"), reveal:"--all-recorded-prs"} else empty end),
         (if $all_unhealthy == 0 and ($unhealthy_all | length) > $unhealthy_n then {surface:("unhealthy_endpoints showing \($unhealthy_n) of \($unhealthy_all | length)"), reveal:"--all-unhealthy"} else empty end),
