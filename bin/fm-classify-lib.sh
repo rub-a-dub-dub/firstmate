@@ -243,13 +243,13 @@ status_paused_until() {  # <status-line> -> epoch on stdout
 # below): an UNKEYED needs-decision/blocked names no specific captain decision to
 # answer, so a captain reading OPEN DECISIONS has no key to close it with - it
 # used to fold as open forever, with no route out, even long after the crew
-# moved past it (a `done:`, `failed:`, or `paused:` line is exactly that crew
+# moved past it (a `done:` or `paused:` line is exactly that crew
 # moving on). A STATED key stays governed by the rule above unconditionally: it
 # names a real captain decision, and only its own resolved/captain-held line
 # ever closes it. Only the unkeyed "default" bucket is retired by a later plain
-# done/failed/paused line on the same task, and "plain" is read off that
+# done/paused line on the same task, and "plain" is read off that
 # retiring line too: it must itself be unkeyed, because a keyed
-# done/failed/paused line is a report about the decision its OWN key names (the
+# done/paused line is a report about the decision its OWN key names (the
 # scripted `done [key=child-outcome-...]`, `done [key=child-pr-<id>]` and
 # `done [key=merged-<id>]` lines the child-outcome, PR-readiness and merge
 # publishers append straight into a secondmate's parent channel are exactly
@@ -530,7 +530,7 @@ _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb
       open=$(_fm_decision_drop "$open" "$key")
       [ -n "$open" ] && open="${open}"$'\n'
       ;;
-    done|failed|"${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}")
+    done|"${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}")
       # Retire only the shared "default" bucket (see the key-grammar comment
       # above) and only for a PLAIN terminal/paused line - one with no
       # correlation token - never a stated key, which stays governed by the
@@ -759,8 +759,11 @@ EOF
 # is open. Cost is bounded by NEW appends since the last drain, not by the
 # status file's total lifetime size.
 #
-# Correctness invariant (unchanged from the whole-file fold): an open decision
-# is dropped ONLY by an explicit resolved/captain-held line for its exact key,
+# Correctness invariant (identical to the whole-file fold, which this shares
+# through _fm_decision_fold_line): a KEYED open decision is dropped ONLY by an
+# explicit resolved/captain-held line for its exact key, and the shared unkeyed
+# "default" bucket only by one of those or by a later plain done/paused line
+# (the key-grammar block above owns that exception);
 # never by cursor advancement, age, or being buried under later appends - the
 # persisted open-set carries every still-open key forward across calls
 # regardless of how much new unrelated log content has since been folded in.
@@ -814,7 +817,7 @@ _fm_open_decisions_cursor_path() {  # <status-file>
 # Version 4 was already spent on the bracketed-tag parser change above, and a
 # cursor persisted under that reading predates this one, so it must still be
 # discarded and rebuilt from byte 0 under the new reading.
-# 6: a plain (no correlation token) done/failed/paused line now also retires
+# 6: a plain (no correlation token) done/paused line now also retires
 # the shared "default" bucket, so a status log whose unkeyed blocked/
 # needs-decision line is already followed by one of those in its history
 # folds differently under this version than under 5 - a cursor persisted
@@ -1774,9 +1777,10 @@ EOF
 
 _fm_status_open_decision_origins() {  # <status-file>
   local f=$1 line open='' after key verb note number=0 origins=''
-  local resolve held
+  local resolve held pause
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
+  pause=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
   while IFS= read -r line || [ -n "$line" ]; do
     number=$((number + 1))
     after=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held")
@@ -1796,7 +1800,7 @@ _fm_status_open_decision_origins() {  # <status-file>
           esac
         fi
         ;;
-      "$resolve"|"$held")
+      "$resolve"|"$held"|done|"$pause")
         _fm_open_set_has "$after" "$key" || origins=$(_fm_decision_origin_drop "$origins" "$key")
         ;;
     esac
