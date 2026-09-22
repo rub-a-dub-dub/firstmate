@@ -2676,12 +2676,48 @@ EOF
   pass "a captain hold never pins another home's same-named gate"
 }
 
+# A secondmate ledger publishes its hold rows' blocker ids on queued[], so a
+# secondmate captain hold blocked on a queued row must pin that row the same way a
+# main-home hold does - otherwise nothing in the digest names the blocker at all.
+test_secondmate_blocked_hold_pins_its_structural_blocker() {
+  local home mate fakebin json
+  home=$(make_home mate-structural-pin)
+  : > "$home/data/secondmates.md"
+  mate="$TMP_ROOT/mate-structural-pin-home"
+  make_valid_secondmate_home struct-mate "$mate"
+  append_secondmate_registry "$home" struct-mate "$mate"
+  cat > "$mate/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+- [ ] mate-newer-a - Mate newer gate A (repo: sample) (kind: ship) (since 2026-07-12)
+- [ ] mate-newer-b - Mate newer gate B (repo: sample) (kind: ship) (since 2026-07-12)
+- [ ] mate-blocker - The row the mate hold waits on (repo: sample) (kind: ship) (since 2026-07-10)
+- [ ] mate-blocked-hold - Ship once the blocker clears blocked-by: mate-blocker (repo: sample) (kind: captain) (since 2026-07-10) (hold: waiting on the blocker) (hold-kind: captain)
+  Captain hold set: 2026-07-10T00:00:00Z
+
+## Done
+EOF
+  fakebin=$(make_fakebin "$home")
+  json=$(FM_BEARINGS_GATES=2 run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    (.gates | any(.id == "mate-blocker" and .owner == "struct-mate"))
+      and ([.gates[].id] | contains(["mate-newer-a", "mate-newer-b"]))
+      and (.gates | length) == 3
+      and ([.omitted[].surface] | index("gates showing 3 of 4") != null)
+      and ([.omitted[].surface]
+           | index("gates retained past the truncation bound, referenced by a captain hold: struct-mate/mate-blocker") != null)
+  ' >/dev/null || fail "a secondmate captain hold lost the row it is structurally blocked on: $json"
+  pass "a secondmate blocked hold pins its structural blocker"
+}
+
 # Retention is driven by hold text, so without its own cap the gates array could
 # grow past FM_BEARINGS_GATES by however many rows a hold body happens to name.
-# Under that cap the unambiguous signal wins: a gate a captain hold structurally
-# blocks on is retained even when heuristic text matches were filed later.
+# Under contention for the cap the live hold wins: the captain is mid-way through
+# that one, while a deferred hold's own gate row already names its blockers. Raise
+# the cap and the deferred hold's structural blocker is retained too.
 test_gate_retention_is_capped_and_discloses_the_cap() {
-  local home fakebin json
+  local home fakebin json raised
   home=$(make_home pinned-gate-cap)
   : > "$home/data/secondmates.md"
   cat > "$home/data/backlog.md" <<'EOF'
@@ -2704,15 +2740,21 @@ EOF
   printf '%s' "$json" | jq -e '
     (.gates | length) == 3
       and (.gates | any(.id == "top-gate"))
-      and ([.gates[].id] | contains(["blk", "pin-a"]))
-      and (.gates | any(.id == "pin-b") | not)
+      and ([.gates[].id] | contains(["pin-a", "pin-b"]))
+      and (.gates | any(.id == "blk") | not)
       and ([.omitted[].surface] | index("gates showing 3 of 5") != null)
       and ([.omitted[].surface]
            | any(startswith("gates retained past the truncation bound, referenced by a captain hold: ")
-                 and contains("blk") and contains("pin-a")))
+                 and contains("pin-a") and contains("pin-b") and (contains("blk") | not)))
       and ([.omitted[].surface] | index("gates retained past the bound capped at 2; 1 more omitted") != null)
-  ' >/dev/null || fail "captain-hold gate retention was not capped and disclosed: $json"
-  pass "gate retention past the bound is capped and disclosed"
+  ' >/dev/null || fail "a live captain hold's gate lost its cap slot to a deferred hold: $json"
+  raised=$(FM_BEARINGS_GATES=1 FM_BEARINGS_GATES_PINNED=3 run "$home" "$fakebin" --json)
+  printf '%s' "$raised" | jq -e '
+    ([.gates[].id] | contains(["top-gate", "pin-a", "pin-b", "blk"]))
+      and (.gates | length) == 4
+      and ([.omitted[].surface] | any(startswith("gates retained past the bound capped at")) | not)
+  ' >/dev/null || fail "a raised retention cap did not admit the structurally pinned gate: $raised"
+  pass "gate retention past the bound is capped, ranked live-hold first, and disclosed"
 }
 
 # A captain scanning Underway must be able to tell WHICH task a row is, and the
@@ -3589,6 +3631,7 @@ test_newest_filed_gates_are_selected_before_snapshot_bounds
 test_gate_named_in_a_live_captain_hold_survives_the_bound
 test_secondmate_hold_pins_its_gate_past_the_queued_bound
 test_a_captain_hold_never_pins_another_homes_same_named_gate
+test_secondmate_blocked_hold_pins_its_structural_blocker
 test_gate_retention_is_capped_and_discloses_the_cap
 test_underway_and_gate_rows_carry_the_durable_name_and_filed_date
 test_mixed_secondmate_roles_partial_state_and_captain_readiness

@@ -52,18 +52,21 @@
 # posture row is reserved ahead of that ordering and bound so it always surfaces.
 # A same-day filing cluster leaves that ordering unable to discriminate among its
 # rows, so a gate that a captain hold IN ITS OWN HOME points at is retained past
-# the bound rather than silently dropped behind an honest count: structurally when
-# the hold's unresolved blocked-by names it, otherwise when a live hold's title,
-# hold reason, or body text names it. Retentions are capped at
-# FM_BEARINGS_GATES_PINNED, structural retentions claiming that cap ahead of
-# textual ones, and omitted[] names every gate kept this way plus any retention
-# the cap dropped.
+# the bound rather than silently dropped behind an honest count: textually when a
+# live hold's title, hold reason, or body text names it, structurally when a
+# deferred hold's unresolved blocked-by names it. hold_bucket is exclusive, so only
+# live holds carry pinning text and only deferred holds carry unresolved blockers;
+# retentions are capped at FM_BEARINGS_GATES_PINNED with the live-hold ones
+# claiming that cap first, because the live hold is the one the captain is
+# mid-way through and the deferred hold's own gate row already names its blockers.
+# omitted[] names every gate kept this way plus any retention the cap dropped.
 # The textual half is a heuristic, so it only considers gate ids carrying a - or _:
 # an ordinary prose word can never pin a gate, at the accepted cost that a
 # single-word gate id is retained only when a hold names it structurally.
-# Registered secondmate ledgers publish hold title and reason but neither hold body
-# nor blocker ids, so their holds pin on that text alone. A hold never pins a gate
-# owned by another home, and pinning never changes hold_bucket.
+# A registered secondmate ledger publishes no hold body, so its holds pin on the
+# title and reason its decisions_open carries plus the blocker ids on its queued
+# rows. A hold never pins a gate owned by another home, and pinning never changes
+# hold_bucket.
 #
 # Main-home inventory validity comes from the canonical snapshot's main_inventory
 # object (orphan structured in-flight without meta, unstructured current rows).
@@ -172,10 +175,10 @@ Default fields: schema, home, generated, prs, in_flight{id,kind,state,repo,name,
   unhealthy_endpoints{...} (only when non-empty), omitted{surface,reveal}.
 Default gates are selected newest filed first before their bound; undated gates
   retain input order after dated gates. A gate that a captain hold in its own home
-  names - structurally by an unresolved blocked-by id, or textually in a live
-  hold's title, hold reason, or body text - is kept past that bound, capped by
-  FM_BEARINGS_GATES_PINNED with structural retentions first, and omitted[] names
-  every gate retained this way.
+  names - textually in a live hold's title, hold reason, or body text, or
+  structurally by a deferred hold's unresolved blocked-by id - is kept past that
+  bound, capped by FM_BEARINGS_GATES_PINNED with the live-hold retentions first,
+  and omitted[] names every gate retained this way.
 landed merges this home's Done with registered secondmate homes' Done, bounded by
   a per-home cap (FM_BEARINGS_LANDED_PER_HOME) and an overall cap (FM_BEARINGS_LANDED),
   with omitted[] disclosure. Default selection is balanced across deterministic home
@@ -618,11 +621,15 @@ MODEL=$(printf '%s' "$SNAP" | jq \
             text:(if live_captain_call then hold_ref_text else "" end)} ]
      + [ (.secondmate_current.records // [])[] as $m
          | select($m.provenance.selected == "structured-home")
-         | $m.decisions_open[]?
-         | select(.source == "backlog" and .verb == "captain-hold")
-         | select(live_captain_call)
-         | {owner:$m.id,
-            text:((.summary // "") + " " + (.reason // ""))} ]) as $captain_hold_refs
+         | ([ $m.decisions_open[]?
+              | select(.source == "backlog" and .verb == "captain-hold")
+              | select(live_captain_call)
+              | {owner:$m.id,
+                 text:((.summary // "") + " " + (.reason // ""))} ]
+            + [ $m.queued[]?
+                | select(.hold_bucket != null)
+                | {owner:$m.id,
+                   blockers:(.unresolved_blocker_ids // [])} ])[] ]) as $captain_hold_refs
   | ([ .scout_reports[]
        | . as $r
        | select(($all_reports == 1) or (($rel_ids | index($r.id)) != null))
@@ -655,8 +662,8 @@ MODEL=$(printf '%s' "$SNAP" | jq \
     ($gates_all | newest_filed_first) as $gates_sorted
   | ($gates_sorted[:$gates_n]) as $gates_top
   | ($gates_sorted[$gates_n:]) as $gates_rest
-  | (($gates_rest | map(select(pinned_structurally)))
-     + ($gates_rest | map(select((pinned_structurally | not) and pinned_by_hold_text)))) as $gates_pinned_all
+  | (($gates_rest | map(select(pinned_by_hold_text)))
+     + ($gates_rest | map(select((pinned_by_hold_text | not) and pinned_structurally)))) as $gates_pinned_all
   | ($gates_pinned_all[:$gates_pinned_n]) as $gates_pinned
   | (($gates_top + $gates_pinned) | newest_filed_first) as $gates_capped
   | (if $all_queued == 1 then $gates_sorted else $gates_capped end) as $gates_shown
