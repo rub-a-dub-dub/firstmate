@@ -20,9 +20,9 @@
 # The rule has two
 # steps. First, per-pull-request: does any workflow's pull_request trigger
 # actually apply to THIS pull request (github_repo_has_pr_ci_workflow)? A
-# workflow's trigger is read once at the repository level, but a declared
-# trigger's own base-branch and path filters are then judged against this
-# pull request's base branch and changed files
+# workflow file declaring the trigger at all is only half the question: a
+# declared trigger's own base-branch and path filters are then judged against
+# this pull request's base branch and changed files
 # (github_workflow_applies_to_pr), because a trigger whose filters never fire
 # for this pull request - a paths filter none of this pull request's files
 # touch, a branches filter that excludes this pull request's base - produces
