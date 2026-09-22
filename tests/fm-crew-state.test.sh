@@ -578,6 +578,51 @@ test_active_run_is_authoritative() {
   pass "active run-step is authoritative"
 }
 
+# The wedge timer's own recency fact (AGENTS.md/2026-09-20): for a
+# running/fixing run-step that is demonstrably still logging, RUN_DETAIL
+# carries the pipeline's own `activity: recent` verdict
+# (nm_run_activity_is_recent), which bin/fm-classify-lib.sh's
+# crew_run_activity_recent and bin/fm-watch.sh's wedge timer consult so a quiet
+# pane during a healthy fix round is never mistaken for a wedge. It is a
+# POSITIVE fact only: with no active_steps table to judge by, the line says
+# nothing rather than claiming the run went quiet, because a healthy run
+# sampled between two steps has that exact shape. Either way a run record that
+# merely still says running/fixing must never vouch for a quiet pane.
+test_running_run_step_carries_activity_verdict() {
+  reset_fakes
+  local d; d=$(new_case activity-verdict)
+  make_repo_on_branch "$d/wt" fm/feat-av
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-av.meta" "window=fm:fm-feat-av" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_fixing_active_recent fm/feat-av)"
+  local out; out=$(run_crew_state "$d" feat-av)
+  assert_contains "$out" "state: working" "fresh active_steps activity -> working"
+  assert_contains "$out" "source: run-step" "fresh active_steps activity -> run-step source"
+  assert_contains "$out" "activity: recent" "fresh active_steps activity reads recent"
+
+  reset_fakes
+  d=$(new_case activity-verdict-quiet)
+  make_repo_on_branch "$d/wt" fm/feat-avq
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-avq.meta" "window=fm:fm-feat-avq" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_fixing_active_quiet fm/feat-avq)"
+  out=$(run_crew_state "$d" feat-avq)
+  assert_contains "$out" "state: working" "a quiet active_steps entry still reads the run's status word as working"
+  assert_not_contains "$out" "activity:" "a quiet active_steps entry emits no recency claim at all"
+
+  reset_fakes
+  d=$(new_case activity-verdict-absent)
+  make_repo_on_branch "$d/wt" fm/feat-ava
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-ava.meta" "window=fm:fm-feat-ava" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-ava)"
+  out=$(run_crew_state "$d" feat-ava)
+  assert_contains "$out" "state: working" "a running status with no active_steps table remains working"
+  assert_not_contains "$out" "activity:" \
+    "an absent active_steps table states nothing about recency, so a healthy run between steps is not called quiet"
+  pass "a running/fixing run-step carries the pipeline's own activity: recent verdict only as a positive fact"
+}
+
 # (b) needs-decision log + a resumed (running/fixing) run = SUPERSEDED
 test_stale_needs_decision_superseded() {
   reset_fakes
@@ -2775,6 +2820,7 @@ EOF
 }
 
 test_active_run_is_authoritative
+test_running_run_step_carries_activity_verdict
 test_stale_needs_decision_superseded
 test_stale_blocked_superseded
 test_daemon_claim_over_live_run_reads_run_alive
