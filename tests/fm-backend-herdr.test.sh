@@ -458,6 +458,58 @@ stale_registration_case() {  # <dir-suffix> <agent_status> <process-info-body|->
       fm_backend_herdr_tab_is_husk fmtest w1:p2 && printf husk || printf refused' "$ROOT"
 }
 
+# fm_backend_herdr_endpoint_absent answers a narrower question than the agent
+# state: not "is an agent running in the recorded pane" but "could this pane
+# still exist at all". A relaunch that is about to CREATE a replacement pane
+# asks it, so a wrong 0 here is what would put a second agent in a worktree
+# that already has one.
+test_endpoint_absent_proves_absence_only_from_positive_evidence() {
+  local out
+  herdr_endpoint_absent() {  # <dir-suffix> <pane-response> <pane-exit> [status-json]
+    local dir="$TMP_ROOT/endpoint-absent-$1" resp log fb
+    mkdir -p "$dir/responses"; resp="$dir/responses"; log="$dir/log"; : > "$log"
+    printf '%s\n' "$2" > "$resp/1.out"
+    [ -z "$3" ] || printf '%s\n' "$3" > "$resp/1.exit"
+    [ -z "${4:-}" ] || printf '%s\n' "$4" > "$resp/2.out"
+    fb=$(make_herdr_fakebin "$dir")
+    PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 \
+      bash -c '. "$0/bin/backends/herdr.sh"
+        fm_backend_herdr_endpoint_absent fmtest:w1:p2 && printf absent || printf present' "$ROOT"
+  }
+
+  out=$(herdr_endpoint_absent gone \
+    '{"error":{"code":"pane_not_found","message":"pane w1:p2 not found"}}' '')
+  [ "$out" = absent ] \
+    || fail "a pane the server itself reports gone is absent, got '$out'"
+
+  out=$(herdr_endpoint_absent live \
+    '{"result":{"pane":{"pane_id":"w1:p2"}}}' '')
+  [ "$out" = present ] \
+    || fail "a pane the server still resolves must never read absent, got '$out'"
+
+  out=$(herdr_endpoint_absent server-stopped 'Error: socket unavailable' 1 \
+    '{"client":{"protocol":22},"server":{"running":false}}')
+  [ "$out" = absent ] \
+    || fail "a stopped server proves every pane in its session gone, got '$out'"
+
+  out=$(herdr_endpoint_absent server-running 'Error: socket unavailable' 1 \
+    '{"client":{"protocol":22},"server":{"running":true}}')
+  [ "$out" = present ] \
+    || fail "an unreadable pane over a RUNNING server is not evidence of absence, got '$out'"
+
+  out=$(herdr_endpoint_absent server-unknown 'Error: socket unavailable' 1 'not json at all')
+  [ "$out" = present ] \
+    || fail "a server state that cannot itself be read must fail closed, got '$out'"
+
+  # A target this backend cannot even parse reaches no server at all, so it
+  # cannot have proven anything.
+  out=$(bash -c '. "$0/bin/backends/herdr.sh"
+      fm_backend_herdr_endpoint_absent fmtest && printf absent || printf present' "$ROOT")
+  [ "$out" = present ] \
+    || fail "an unparseable target must never read absent, got '$out'"
+  pass "herdr endpoint absence: only a gone pane or a stopped server proves it, never an unreadable read"
+}
+
 shell_only_process_info() {  # <shell-pid>
   printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w1:p2","shell_pid":%s,"foreground_process_group_id":%s,"foreground_processes":[{"pid":%s,"name":"zsh","argv0":"zsh","argv":["-zsh"],"cmdline":"-zsh"}]}}}' "$1" "$1" "$1"
 }
@@ -5181,6 +5233,7 @@ test_workspace_label_different_secondmates_get_different_labels
 test_cli_helper_sets_env_and_appends_trailing_session_flag
 test_agent_state_bypasses_a_stale_client_shadowing_a_compatible_one
 test_recovery_grade_read_widens_only_at_its_own_boundary
+test_endpoint_absent_proves_absence_only_from_positive_evidence
 test_stale_registration_over_a_shell_only_pane_is_agent_free
 test_stale_registration_ignores_status_and_reads_the_process
 test_registered_agent_with_a_live_foreground_process_stays_alive

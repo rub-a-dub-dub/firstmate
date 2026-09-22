@@ -51,11 +51,13 @@
 #              secondmate reconciles its own home's records at startup, so its
 #              standing charter is never rewritten.
 #              Records a durable checkpoint and that note, exits the old agent
-#              (skipped when it is already missing), then delegates the launch
-#              to its single owner, bin/fm-spawn.sh --relaunch. A failure
-#              before publication keeps the prior durable record in place and
-#              reports the concrete state; it never leaves a half-transitioned
-#              task claiming to be running.
+#              (skipped only when that same backend-wide sweep proves its
+#              endpoint absent, so there is no agent left to stop), then
+#              delegates the launch to its single owner,
+#              bin/fm-spawn.sh --relaunch. A failure before publication keeps
+#              the prior durable record in place and reports the concrete
+#              state; it never leaves a half-transitioned task claiming to be
+#              running.
 #
 # Teardown and discard are NOT verbs here and never will be. `exit` stops an
 # agent and preserves everything else; removing a worktree, killing an

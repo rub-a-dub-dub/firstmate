@@ -591,10 +591,12 @@ case "$EFFORT" in
   *) echo "error: --effort must be one of low, medium, high, xhigh, max, ultra" >&2; exit 1 ;;
 esac
 
-# --relaunch reuses an existing task's endpoint, worktree, project, and kind,
-# so every axis this block resolves for a fresh spawn instead comes from that
-# task's own durable record below. Contradicting it on the command line is a
-# refusal rather than a silently-ignored flag.
+# --relaunch reuses an existing task's worktree, project, kind, and backend -
+# and its recorded endpoint too, except when that endpoint is proven absent and
+# recreated on that same recorded backend - so every axis this block resolves
+# for a fresh spawn instead comes from that task's own durable record below.
+# Contradicting it on the command line is a refusal rather than a
+# silently-ignored flag.
 if [ "$RELAUNCH" -eq 1 ]; then
   [ "$BACKEND_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded backend; --backend cannot override it" >&2; exit 1; }
   [ "$KIND_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded kind; --scout/--secondmate cannot override it" >&2; exit 1; }
