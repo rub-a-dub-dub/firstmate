@@ -690,8 +690,12 @@ EOF
 # (needs-decision or blocked) while the key is still open, the closing verb
 # (resolved, or the captain-held durable-transfer verb) once it is closed, and
 # nothing at all when no line in the stream ever stated a transition for it.
+# For the shared "default" key alone the closing verb may also be a plain
+# `done` or the configured paused verb, because a plain unkeyed line of either
+# retires that bucket - see the unkeyed-bucket exception in the key-grammar
+# block above.
 #
-# The distinction between the two closing verbs is the whole point: a
+# The distinction between the two explicit closing verbs is the whole point: a
 # `captain-held` close is the VERIFIED handoff to a durable captain-held task
 # (fm-captain-hold.sh complete writes it only after verifying that task), so the
 # structured row staying open afterwards is correct. A `resolved` close claims
