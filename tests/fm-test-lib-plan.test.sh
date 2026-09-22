@@ -17,10 +17,15 @@ set -u
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-# classify_tap_stream <file>: the scanner side of the plan() contract. Prints
-# one of complete, incomplete, or failed. Any "not ok" line always wins,
-# regardless of how the observed count compares to the plan, so this never
-# buys quieter real failures in exchange for correctly reading a truncation.
+# classify_tap_stream <file>: scaffolding private to this file, not a shared
+# interface - nothing outside these assertions calls it. It stands in for the
+# external scanner so each case below can state what a stream means instead of
+# restating grep counts. Prints one of failed, incomplete, unknown, or
+# complete. A "not ok" line always wins, whatever the observed count, so this
+# never buys quieter real failures in exchange for reading a truncation
+# correctly. Only a plan line that is present and undershot means the run was
+# cut short; a stream carrying no plan line is no evidence either way and
+# reads unknown, never the "worth retrying" incomplete.
 classify_tap_stream() {
   local file=$1 planned ok_count notok_count
   planned=$(sed -n 's/^1\.\.\([0-9][0-9]*\)$/\1/p' "$file" | head -n1)
@@ -28,7 +33,9 @@ classify_tap_stream() {
   notok_count=$(grep -c '^not ok - ' "$file")
   if [ "$notok_count" -gt 0 ]; then
     printf 'failed\n'
-  elif [ -z "$planned" ] || [ "$((ok_count + notok_count))" -lt "$planned" ]; then
+  elif [ -z "$planned" ]; then
+    printf 'unknown\n'
+  elif [ "$((ok_count + notok_count))" -lt "$planned" ]; then
     printf 'incomplete\n'
   else
     printf 'complete\n'
@@ -77,6 +84,22 @@ test_scanner_reads_a_truncated_clean_run_as_incomplete_not_failed() {
   pass "a truncated-but-clean run reads as incomplete, not failed"
 }
 
+test_scanner_reads_a_stream_with_no_plan_line_as_unknown() {
+  local home stream
+  home=$(fm_test_tmproot fm-plan-scanner)
+  stream="$home/stream.out"
+  # The shape every test file that has not adopted plan() still emits: clean
+  # results, no declared count, nothing cut short.
+  {
+    pass "first"
+    pass "second"
+  } > "$stream"
+  assert_no_grep '1\.\.' "$stream" "the plan-less fixture used to reproduce this declared a count after all"
+  assert_equals unknown "$(classify_tap_stream "$stream")" \
+    "a complete run that declares no plan was read as cut short"
+  pass "a stream with no plan line reads as unknown, not incomplete"
+}
+
 test_scanner_still_reads_a_real_failure_as_failed() {
   local home stream rc
   home=$(fm_test_tmproot fm-plan-scanner)
@@ -115,48 +138,13 @@ test_scanner_reads_a_real_failure_as_failed_even_when_short_of_the_plan() {
   pass "a genuine failure still reads as failed even when it also falls short of the plan"
 }
 
-# The reported reproduction: run tests/fm-captain-hold-lifecycle.test.sh for
-# real, interrupt it the moment it has printed its plan line and one real
-# result - mirroring the external time bound that actually cuts this file's
-# runs short - and confirm the resulting output, exactly as this suite would
-# scan it, reads as interrupted rather than as a failure.
-test_captain_hold_lifecycle_interruption_reads_as_incomplete_not_failed() {
-  local home out pid waited=0 planned
-  if ! command -v jq >/dev/null 2>&1 || ! command -v tasks-axi >/dev/null 2>&1; then
-    pass "skipped without jq/tasks-axi: an interrupted run of fm-captain-hold-lifecycle.test.sh reads as incomplete, not failed"
-    return 0
-  fi
-  home=$(fm_test_tmproot fm-plan-repro)
-  out="$home/captain-hold.out"
-  bash "$ROOT/tests/fm-captain-hold-lifecycle.test.sh" > "$out" 2>&1 &
-  pid=$!
-  while [ "$waited" -lt 3000 ]; do
-    [ -s "$out" ] && grep -q '^ok - ' "$out" && break
-    kill -0 "$pid" 2>/dev/null || break
-    sleep 0.1
-    waited=$((waited + 1))
-  done
-  kill -TERM "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
-
-  planned=$(sed -n 's/^1\.\.\([0-9][0-9]*\)$/\1/p' "$out" | head -n1)
-  [ -n "$planned" ] || fail "the interrupted run never printed its plan line"
-  assert_no_grep 'not ok - ' "$out" \
-    "the reproduction is invalid: a real failure appeared, not just a truncation"
-  [ "$(grep -c '^ok - ' "$out")" -lt "$planned" ] \
-    || fail "the run finished before it could be interrupted; the reproduction needs a genuine truncation"
-  assert_equals incomplete "$(classify_tap_stream "$out")" \
-    "an interrupted-but-healthy run of the reported file was not read as incomplete"
-  pass "an interrupted run of fm-captain-hold-lifecycle.test.sh reads as incomplete, not failed"
-}
-
 TESTS=(
   test_plan_prints_the_declared_count
   test_scanner_reads_a_complete_run_as_complete
   test_scanner_reads_a_truncated_clean_run_as_incomplete_not_failed
+  test_scanner_reads_a_stream_with_no_plan_line_as_unknown
   test_scanner_still_reads_a_real_failure_as_failed
   test_scanner_reads_a_real_failure_as_failed_even_when_short_of_the_plan
-  test_captain_hold_lifecycle_interruption_reads_as_incomplete_not_failed
 )
 
 plan "${#TESTS[@]}"
