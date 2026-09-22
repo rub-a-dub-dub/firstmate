@@ -1,0 +1,86 @@
+# bearings digest - same-day cluster incident reproduction (real CLI, no test harness)
+
+Fixture home: 26 queued gates - 7 filed 2026-09-20, 19 filed 2026-09-19 (the
+same-day cluster), one of which is cowork-refine-job-unattended-commit-and-timeout,
+named in the body of a live captain hold (enable-nightly-schedule). Default bound
+FM_BEARINGS_GATES=20.
+
+$ FM_HOME=<fixture> bin/fm-bearings-snapshot.sh      # BASE 7ce3cda
+
+gates[20]{id,title,blocked_by,reason,owner,filed}:
+  newer-intake-1,Newer intake item 1,"-","-",(main),2026-09-20
+  newer-intake-2,Newer intake item 2,"-","-",(main),2026-09-20
+  newer-intake-3,Newer intake item 3,"-","-",(main),2026-09-20
+  newer-intake-4,Newer intake item 4,"-","-",(main),2026-09-20
+  newer-intake-5,Newer intake item 5,"-","-",(main),2026-09-20
+  newer-intake-6,Newer intake item 6,"-","-",(main),2026-09-20
+  newer-intake-7,Newer intake item 7,"-","-",(main),2026-09-20
+  sameday-housekeeping-01,Same-day housekeeping 01,"-","-",(main),2026-09-19
+  sameday-housekeeping-02,Same-day housekeeping 02,"-","-",(main),2026-09-19
+  sameday-housekeeping-03,Same-day housekeeping 03,"-","-",(main),2026-09-19
+  sameday-housekeeping-04,Same-day housekeeping 04,"-","-",(main),2026-09-19
+  sameday-housekeeping-05,Same-day housekeeping 05,"-","-",(main),2026-09-19
+  sameday-housekeeping-06,Same-day housekeeping 06,"-","-",(main),2026-09-19
+  sameday-housekeeping-07,Same-day housekeeping 07,"-","-",(main),2026-09-19
+  sameday-housekeeping-08,Same-day housekeeping 08,"-","-",(main),2026-09-19
+  sameday-housekeeping-09,Same-day housekeeping 09,"-","-",(main),2026-09-19
+  sameday-housekeeping-10,Same-day housekeeping 10,"-","-",(main),2026-09-19
+  sameday-housekeeping-11,Same-day housekeeping 11,"-","-",(main),2026-09-19
+  sameday-housekeeping-12,Same-day housekeeping 12,"-","-",(main),2026-09-19
+  sameday-housekeeping-13,Same-day housekeeping 13,"-","-",(main),2026-09-19
+reports: []
+recorded_prs: []
+omitted[7]{surface,reveal}:
+  backlog item bodies,"--fields bodies"
+  task paths,"--fields paths"
+  watch/steer actions,"--fields actions"
+  healthy endpoint detail,"--fields endpoints"
+  full scout-report inventory,"--all-reports"
+  gates showing 20 of 26,"--all-queued"
+  live PR discovery + checks,"--include-prs"
+
+  -> cowork-refine-job-unattended-commit-and-timeout is NOT in the digest.
+     Only the honest count 'gates showing 20 of 26' discloses the loss.
+
+======================================================================
+
+$ FM_HOME=<fixture> bin/fm-bearings-snapshot.sh      # TARGET ff43c1d
+
+gates[21]{id,title,blocked_by,reason,owner,filed}:
+  newer-intake-1,Newer intake item 1,"-","-",(main),2026-09-20
+  newer-intake-2,Newer intake item 2,"-","-",(main),2026-09-20
+  newer-intake-3,Newer intake item 3,"-","-",(main),2026-09-20
+  newer-intake-4,Newer intake item 4,"-","-",(main),2026-09-20
+  newer-intake-5,Newer intake item 5,"-","-",(main),2026-09-20
+  newer-intake-6,Newer intake item 6,"-","-",(main),2026-09-20
+  newer-intake-7,Newer intake item 7,"-","-",(main),2026-09-20
+  sameday-housekeeping-01,Same-day housekeeping 01,"-","-",(main),2026-09-19
+  sameday-housekeeping-02,Same-day housekeeping 02,"-","-",(main),2026-09-19
+  sameday-housekeeping-03,Same-day housekeeping 03,"-","-",(main),2026-09-19
+  sameday-housekeeping-04,Same-day housekeeping 04,"-","-",(main),2026-09-19
+  sameday-housekeeping-05,Same-day housekeeping 05,"-","-",(main),2026-09-19
+  sameday-housekeeping-06,Same-day housekeeping 06,"-","-",(main),2026-09-19
+  sameday-housekeeping-07,Same-day housekeeping 07,"-","-",(main),2026-09-19
+  sameday-housekeeping-08,Same-day housekeeping 08,"-","-",(main),2026-09-19
+  sameday-housekeeping-09,Same-day housekeeping 09,"-","-",(main),2026-09-19
+  sameday-housekeeping-10,Same-day housekeeping 10,"-","-",(main),2026-09-19
+  sameday-housekeeping-11,Same-day housekeeping 11,"-","-",(main),2026-09-19
+  sameday-housekeeping-12,Same-day housekeeping 12,"-","-",(main),2026-09-19
+  sameday-housekeeping-13,Same-day housekeeping 13,"-","-",(main),2026-09-19
+  cowork-refine-job-unattended-commit-and-timeout,Fix the unattended commit + timeout on the scheduled job,"-","-",(main),2026-09-19
+reports: []
+recorded_prs: []
+gates_retained[1]{id,owner}:
+  cowork-refine-job-unattended-commit-and-timeout,(main)
+omitted[8]{surface,reveal}:
+  backlog item bodies,"--fields bodies"
+  task paths,"--fields paths"
+  watch/steer actions,"--fields actions"
+  healthy endpoint detail,"--fields endpoints"
+  full scout-report inventory,"--all-reports"
+  gates showing 21 of 26,"--all-queued"
+  "gates retained past the truncation bound, referenced by a captain hold: cowork-refine-job-unattended-commit-and-timeout","--all-queued"
+  live PR discovery + checks,"--include-prs"
+
+  -> the row the captain is mid-way through is retained past the bound,
+     named in gates_retained[] in full, and disclosed in omitted[].

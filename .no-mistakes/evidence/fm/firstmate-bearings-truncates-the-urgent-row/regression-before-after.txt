@@ -1,0 +1,28 @@
+# Regression proof: the six new retention tests, run against each commit
+
+Each test body is unchanged; only the binary under test differs.
+
+## BASE 7ce3cdac (pre-fix) - each test run individually, all six fail
+not ok - a gate named in a live captain hold vanished behind the bound
+not ok - a secondmate live captain hold lost its gate past the ledger queued bound
+not ok - a captain hold pinned a same-named gate outside its own home
+not ok - a secondmate captain hold lost the row it is structurally blocked on
+not ok - a live captain hold's gate lost its cap slot to a deferred hold
+not ok - the structured retained-gate field did not carry every retained row
+
+## TARGET ff43c1d5 (post-fix) - all six pass
+ok - a gate named in a live captain hold survives the bound
+ok - a secondmate live captain hold pins its gate past the queued bound
+ok - a captain hold never pins another home's same-named gate
+ok - a secondmate blocked hold pins its structural blocker
+ok - gate retention past the bound is capped, ranked live-hold first, and disclosed
+ok - every retained gate is named in the structured field
+
+## Adjacent gate/bound/hold tests at TARGET (no regression)
+ok - newest filed gates are selected before snapshot bounds
+ok - default output is bounded, local-only, and marks omitted surfaces
+ok - queued body prose never hides an item from the board
+ok - a blocked deferred hold stays gated when its date arrives and is revealed by --all-decisions
+ok - revealed deferred holds display their deferral reason while live calls stay unannotated
+ok - working captain holds retain main and secondmate bucket surfaces
+ok - Underway rows carry the durable task name and gates carry their filed date
