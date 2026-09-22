@@ -3161,10 +3161,12 @@ test_covered_pr_matching_paths_filter_still_refuses_zero_runs() {
   pass "fm-pr-merge still refuses a zero-run head when a changed file confirms the paths filter applies"
 }
 
-# A branches-ignore filter is never resolved toward "does not apply": getting
-# an exclusion wrong is the unsafe direction, so this pull request is treated
-# as covered and a zero-run stale head still refuses, exactly as an
-# unreadable workflow listing or run count already does today.
+# A branches-ignore filter that GitHub itself would resolve toward "does not
+# apply" - the excluded branch is this pull request's own base, so no run was
+# ever coming. An exclusion is never evaluated all the same, because getting
+# one wrong is the unsafe direction, so this pull request is treated as
+# covered and its zero-run stale head still refuses, exactly as an unreadable
+# workflow listing or run count already does today.
 test_unevaluable_filter_still_refuses_zero_runs() {
   local case_dir rc head
   head=9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d
@@ -3173,7 +3175,7 @@ test_unevaluable_filter_still_refuses_zero_runs() {
   add_gh_mocks "$case_dir" "$head"
   set_pr_ci_workflow "$case_dir" 'on:
   pull_request:
-    branches-ignore: [release/*]
+    branches-ignore: [main]
 '
   set_pr_run_count "$case_dir" 0
   set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
@@ -3287,6 +3289,32 @@ test_same_indent_branches_sequence_is_read_as_a_filter() {
     "same-indent-branches: the dropped-event gate must not fire when the base branch does not match the branches filter"
   assert_logged_gh_merge "$case_dir" 126 example/repo --squash
   pass "fm-pr-merge reads a branches filter whose block sequence sits at the key's own indentation"
+}
+
+# The same block-sequence branches filter in a CRLF-encoded workflow file, as
+# a Windows-authored repository commits one without autocrlf normalisation.
+# The carriage return belongs to the file's line endings, not to the branch
+# name, so the filter must be read as "main" and exempt a pull request whose
+# base it never covers.
+test_crlf_workflow_branches_filter_is_read_as_a_filter() {
+  local case_dir rc head
+  head=8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b
+  case_dir=$(make_case github-crlf-branches)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head" release-1.0
+  set_pr_ci_workflow "$case_dir" $'on:\r\n  pull_request:\r\n    branches:\r\n    - main\r\n'
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+
+  run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/127 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "crlf-branches: a CRLF-encoded branches filter must be read as the branch name alone"$'\n'"$(cat "$case_dir/stderr")"
+  assert_no_grep 'suspected dropped' "$case_dir/stderr" \
+    "crlf-branches: the dropped-event gate must not fire when the base branch does not match the branches filter"
+  assert_logged_gh_merge "$case_dir" 127 example/repo --squash
+  pass "fm-pr-merge reads a branches filter out of a CRLF-encoded workflow file"
 }
 
 # The head's run count already confirmed zero pull_request-event runs, and only
@@ -3872,6 +3900,7 @@ test_unevaluable_filter_still_refuses_zero_runs
 test_unreadable_changed_files_still_refuses_zero_runs
 test_truncated_changed_file_list_still_refuses_zero_runs
 test_same_indent_branches_sequence_is_read_as_a_filter
+test_crlf_workflow_branches_filter_is_read_as_a_filter
 test_unreadable_head_commit_date_still_refuses_a_zero_run_head
 test_unreadable_workflow_listing_does_not_block_a_green_merge
 test_allow_red_still_waives_only_the_current_failure

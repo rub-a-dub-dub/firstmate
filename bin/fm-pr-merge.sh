@@ -724,7 +724,7 @@ github_workflow_pull_request_filters() {
           if (cur_key != "") {
             v = line
             sub(/^[[:space:]]*-[[:space:]]*/, "", v)
-            gsub(/^[\x27"]+|[\x27"]+$/, "", v)
+            gsub(/^[[:space:]\x27"]+|[[:space:]\x27"]+$/, "", v)
             if (v != "") print cur_key, v
           }
         } else if (here == pr_child) {
@@ -746,7 +746,7 @@ github_workflow_pull_request_filters() {
 # judge with confidence: only literal characters, "/", "-", "_", ".", and the
 # wildcards "*" and "?". A "!" negation, a character class, an extglob form,
 # or anything else this never learned is left for the caller to treat as
-# uncertain rather than guessed at.
+# covering the candidate rather than guessed at.
 github_glob_pattern_simple() {
   case "$1" in
     '') return 1 ;;
@@ -754,55 +754,47 @@ github_glob_pattern_simple() {
   esac
 }
 
-# Whether any pattern in the given list matches the candidate, using the
+# Whether any pattern in the given list covers the candidate, using the
 # shell's own case-statement globbing - which, unlike GitHub's, also lets "*"
 # cross "/". That asymmetry is deliberate and only ever makes this MORE
 # willing to call a branch or path covered by an include filter
 # (branches/paths) than GitHub itself would, never less: a false match here
 # only keeps a pull request under the unconditional per-head run count it
 # would already be under without this heuristic, while a false non-match
-# would wrongly exempt it. Prints "yes" on a confirmed match, "no" when every
-# pattern was simple and none matched, "uncertain" when no simple pattern
-# matched but at least one pattern could not be evaluated. Args: candidate
-# pattern...
-github_glob_matches_any() {
-  local candidate=$1 p any_complex=false
+# would wrongly exempt it. A pattern too complex to evaluate covers the
+# candidate for that same reason, so there is one answer to give and it is
+# given as an exit status: 0 when the candidate is covered, 1 only when every
+# pattern was simple and none of them matched. Args: candidate pattern...
+github_glob_may_match() {
+  local candidate=$1 p
   shift
   for p in "$@"; do
-    if ! github_glob_pattern_simple "$p"; then
-      any_complex=true
-      continue
-    fi
+    github_glob_pattern_simple "$p" || return 0
     # shellcheck disable=SC2254 # $p is meant to expand as a glob pattern here.
     case "$candidate" in
-      $p) printf 'yes\n'; return 0 ;;
+      $p) return 0 ;;
     esac
   done
-  if $any_complex; then printf 'uncertain\n'; else printf 'no\n'; fi
+  return 1
 }
 
-# The same verdict as github_glob_matches_any, but against a newline-separated
+# The same verdict as github_glob_may_match, but against a newline-separated
 # list of candidates (a pull request's changed files) rather than one string:
-# "yes" as soon as any candidate matches any pattern, "uncertain" when none
-# matched but some pattern was left unevaluated against at least one
-# candidate, otherwise "no". A candidate list read as empty is judged the same
-# way with zero candidates, and only ever reaches this function once its
-# reader has confirmed the read itself succeeded. Args: newline-separated
-# candidates, pattern...
-github_glob_matches_any_of() {
-  local candidates=$1 f verdict any_uncertain=false
+# covered as soon as any one candidate is covered, uncovered only once every
+# candidate has been judged and none was. A candidate list read as empty is
+# judged the same way with zero candidates, and only ever reaches this
+# function once its reader has confirmed the read itself succeeded. Args:
+# newline-separated candidates, pattern...
+github_glob_may_match_any_of() {
+  local candidates=$1 f
   shift
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    verdict=$(github_glob_matches_any "$f" "$@")
-    case "$verdict" in
-      yes) printf 'yes\n'; return 0 ;;
-      uncertain) any_uncertain=true ;;
-    esac
+    github_glob_may_match "$f" "$@" && return 0
   done <<CANDIDATES
 $candidates
 CANDIDATES
-  if $any_uncertain; then printf 'uncertain\n'; else printf 'no\n'; fi
+  return 1
 }
 
 # This pull request's changed file paths, read once per merge attempt and
@@ -840,15 +832,13 @@ github_pr_changed_files() {
 # Whether the pull_request trigger in this already-confirmed-present workflow
 # applies to this pull request, given its base branch and changed files. Only
 # an include filter - branches or paths - can ever answer "no" (see
-# github_glob_matches_any for why over-matching one is the safe direction).
+# github_glob_may_match for why over-matching one is the safe direction).
 # Everything this cannot judge confidently counts the pull request as covered:
 # a branches-ignore or paths-ignore exclusion, a glob too complex to evaluate,
 # an unreadable changed-file list. Confidently confirming an EXCLUSION needs
 # the opposite bias from confirming an inclusion, and getting that wrong is
-# the unsafe direction this whole change exists to avoid, so "covered" is the
-# only verdict an unevaluable filter ever produces - it is not spelled
-# differently from a confirmed coverage, because nothing downstream treats the
-# two differently. Sets FM_PR_WORKFLOW_APPLIES to:
+# the unsafe direction this whole change exists to avoid. Sets
+# FM_PR_WORKFLOW_APPLIES to:
 #   yes - nothing confirms that this trigger skips this pull request.
 #   no  - a branches or paths filter is confirmed NOT to cover it.
 # Args: workflow-content base-branch
@@ -869,14 +859,14 @@ FILTERS
 
   FM_PR_WORKFLOW_APPLIES=yes
   if [ "${#branches[@]}" -gt 0 ] \
-    && [ "$(github_glob_matches_any "$base" "${branches[@]}")" = no ]; then
+    && ! github_glob_may_match "$base" "${branches[@]}"; then
     FM_PR_WORKFLOW_APPLIES=no
     return 0
   fi
   if [ "${#paths_incl[@]}" -gt 0 ]; then
     github_pr_changed_files
     if [ "$FM_PR_FILES_STATUS" = ok ] \
-      && [ "$(github_glob_matches_any_of "$FM_PR_FILES" "${paths_incl[@]}")" = no ]; then
+      && ! github_glob_may_match_any_of "$FM_PR_FILES" "${paths_incl[@]}"; then
       FM_PR_WORKFLOW_APPLIES=no
     fi
   fi
