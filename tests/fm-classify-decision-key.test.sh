@@ -134,6 +134,31 @@ test_correlated_terminal_line_does_not_retire_the_default_bucket() {
   pass "a correlation-marked done/failed/paused line leaves the default bucket for its owning library to close explicitly"
 }
 
+test_keyed_terminal_line_does_not_retire_the_default_bucket() {
+  local dir expected
+  dir=$(case_dir keyed-terminal-keeps-default)
+  # A secondmate's own unkeyed captain-facing question, on the very file the
+  # child-outcome / PR-readiness / merge publishers append their keyed `done
+  # [key=...]` reports into (a parent home's state/<mate-id>.status). Those
+  # reports are automated and carry no correlation token, so only the retiring
+  # line's own stated key distinguishes them from the crew moving on.
+  printf 'needs-decision: ship without the migration?\n' > "$dir/ios.status"
+  expected=$(printf 'default\tneeds-decision\tship without the migration?\n')
+  assert_fold "$dir/ios.status" "$expected" "unkeyed needs-decision opens the default bucket"
+
+  printf 'done [key=child-outcome-c7-done-ab12cd34]: child c7 done: shipped\n' >> "$dir/ios.status"
+  printf 'done [key=child-pr-c7]: child c7 PR ready: https://example/pr/1\n' >> "$dir/ios.status"
+  printf 'failed [key=merged-c7]: merge of c7 failed\n' >> "$dir/ios.status"
+  printf 'paused [key=child-outcome-c8-paused-ff00ff00]: child c8 paused\n' >> "$dir/ios.status"
+  assert_fold "$dir/ios.status" "$expected" \
+    "keyed done/failed/paused reports must leave the captain's unkeyed decision open"
+
+  # The crew's own plain terminal line is still the documented route out.
+  printf 'done: shipped\n' >> "$dir/ios.status"
+  assert_fold "$dir/ios.status" "" "a plain done line still retires the unkeyed decision"
+  pass "a keyed done/failed/paused report never retires the unkeyed default bucket, while a plain one still does"
+}
+
 test_resolution_closes_across_positions() {
   local dir
   dir=$(case_dir cross-close)
@@ -320,6 +345,7 @@ test_bare_keyless_line_still_folds_to_default
 test_unkeyed_blocked_retires_after_a_later_terminal_or_paused_line
 test_unkeyed_needs_decision_retires_via_done_despite_a_mismatched_keyed_resolution
 test_correlated_terminal_line_does_not_retire_the_default_bucket
+test_keyed_terminal_line_does_not_retire_the_default_bucket
 test_resolution_closes_across_positions
 test_blocked_is_position_tolerant_like_needs_decision
 test_two_colon_form_decisions_stay_distinct

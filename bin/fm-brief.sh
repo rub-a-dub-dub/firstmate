@@ -297,6 +297,7 @@ When a routed-work phase has a supervisor-actionable material change worth repor
 If its first reportable event is \`working [key=<work-slug>]: {material phase}\`, use the same key on its later \`$PAUSED_VERB\`, \`done\`, \`failed\`, \`needs-decision\`, or \`blocked\` event so the earlier working phase is superseded.
 When a keyed phase ends without another reportable state, append \`resolved [key=<work-slug>]: {why it is no longer active}\`.
 \`resolved\` separately closes an escalated decision or blocker, and only a \`resolved\` line carrying that decision's exact key closes it: a later \`done\` or \`working\` event never does, even when the answer is what started that work.
+That holds for a KEYED escalation. An UNKEYED one leaves the captain no key to close it with, so it instead retires the moment you append any later plain unkeyed \`done\`, \`failed\`, or \`$PAUSED_VERB\` line - key an escalation that must outlive your own later phase lines.
 The main firstmate's answer normally writes that closing line at answer time; when a blocker or wait clears WITHOUT an answer from the main firstmate, append \`resolved: {how it cleared}\` yourself (keyed with \`[key=<slug>]\` if you opened it with one) as your domain resumes.
 Routine internal supervision, heartbeats, retries, and crewmate churn stay inside your own home and must not touch that status file.
 
@@ -403,7 +404,8 @@ The report is the only thing that survives, so anything worth keeping must be in
 5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
 6. If a decision belongs to a human (product choices, destructive actions),
    append \`needs-decision: {summary of options}\` and stop. Firstmate will reply with the decision.
-   A decision or blocker you opened stays open until a \`resolved\` line carrying its exact key lands; a later \`done:\` or \`working:\` line never closes it, even when the answer is what started that work.
+   A decision or blocker you opened WITH a \`[key=<slug>]\` stays open until a \`resolved\` line carrying that exact key lands; a later \`done:\` or \`working:\` line never closes it, even when the answer is what started that work.
+   An UNKEYED one leaves firstmate no key to close it with, so it instead retires the moment you append any later plain unkeyed \`done:\`, \`failed:\`, or \`$PAUSED_VERB:\` line - key a decision that must outlive your own later phase lines.
    Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append \`resolved: {how it cleared}\` yourself (same \`[key=<slug>]\` if you opened it with one) as you resume.
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs; only firstmate
@@ -497,7 +499,8 @@ $RULE1
 6. If a decision belongs above the implementation worker (product choices, destructive actions),
    append \`needs-decision: {summary of options}\` and stop. Firstmate will reply with the decision.
 $ASK_USER_BLOCK
-   A decision or blocker you opened stays open until a \`resolved\` line carrying its exact key lands; a later \`done:\` or \`working:\` line never closes it, even when the answer is what started that work.
+   A decision or blocker you opened WITH a \`[key=<slug>]\` stays open until a \`resolved\` line carrying that exact key lands; a later \`done:\` or \`working:\` line never closes it, even when the answer is what started that work.
+   An UNKEYED one leaves firstmate no key to close it with, so it instead retires the moment you append any later plain unkeyed \`done:\`, \`failed:\`, or \`$PAUSED_VERB:\` line - key a decision that must outlive your own later phase lines.
    Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append \`resolved: {how it cleared}\` yourself (same \`[key=<slug>]\` if you opened it with one) as you resume.
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs; only firstmate

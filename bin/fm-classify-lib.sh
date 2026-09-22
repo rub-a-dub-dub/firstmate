@@ -247,12 +247,18 @@ status_paused_until() {  # <status-line> -> epoch on stdout
 # moving on). A STATED key stays governed by the rule above unconditionally: it
 # names a real captain decision, and only its own resolved/captain-held line
 # ever closes it. Only the unkeyed "default" bucket is retired by a later plain
-# done/failed/paused line on the same task - "plain" excludes any line carrying
-# a correlation token (bracketed "[corr=...]" or the bare `corr=<16 hex>` word
-# bin/fm-pending-reply-lib.sh writes), because that token marks a secondmate's
-# own protocol delivery report, not an ordinary declared state, and that
-# library still owns closing its own escalations explicitly under this same
-# bucket (fm_pending_reply_close_escalation).
+# done/failed/paused line on the same task, and "plain" is read off that
+# retiring line too: it must itself be unkeyed, because a keyed
+# done/failed/paused line is a report about the decision its OWN key names (the
+# scripted `done [key=child-outcome-...]`, `done [key=child-pr-<id>]` and
+# `done [key=merged-<id>]` lines the child-outcome, PR-readiness and merge
+# publishers append straight into a secondmate's parent channel are exactly
+# that) and says nothing about the separate unkeyed bucket. "Plain" also
+# excludes any line carrying a correlation token (bracketed "[corr=...]" or the
+# bare `corr=<16 hex>` word bin/fm-pending-reply-lib.sh writes), because that
+# token marks a secondmate's own protocol delivery report, not an ordinary
+# declared state, and that library still owns closing its own escalations
+# explicitly under this same bucket (fm_pending_reply_close_escalation).
 #
 # Decision key grammar (backward-compatible with the existing "<verb>: <note>"
 # format): an OPTIONAL "[key=<slug>]" token names the decision. Its documented
@@ -529,7 +535,7 @@ _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb
       # above) and only for a PLAIN terminal/paused line - one with no
       # correlation token - never a stated key, which stays governed by the
       # resolve/held case above regardless of what else follows it.
-      if ! _fm_classify_line_has_corr_token "$line"; then
+      if [ "$key" = default ] && ! _fm_classify_line_has_corr_token "$line"; then
         open=$(_fm_decision_drop "$open" default)
         [ -n "$open" ] && open="${open}"$'\n'
       fi
