@@ -3100,7 +3100,7 @@ test_dropped_ci_event_within_grace_window_is_not_actionable() {
   rc=$?
   set -e
   expect_code 1 "$rc" "ci-grace-window: not-yet-arrived CI must not merge"
-  assert_grep 'younger than the delivery grace window' "$case_dir/stderr" \
+  assert_grep 'its delivery is younger than the grace window' "$case_dir/stderr" \
     "ci-grace-window: the grace-window reason was not reported"
   assert_no_grep 'suspected dropped' "$case_dir/stderr" \
     "ci-grace-window: a fresh head must never be reported as a suspected drop"
@@ -3916,7 +3916,7 @@ case "\${1:-} \${2:-}" in
     exit 0
     ;;
   "api graphql") cat "$case_dir/github-outcome"; exit 0 ;;
-  api\\ repos/*/contents/.github/workflows)
+  api\\ repos/*/contents/.github/workflows|api\\ repos/*/contents/.github/workflows\\?*)
     cat "$case_dir/github-workflows-fail-body" >&2
     exit 1
     ;;
