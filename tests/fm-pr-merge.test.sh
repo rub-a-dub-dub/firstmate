@@ -4460,6 +4460,9 @@ test_waive_no_ci_evidence_records_attended_ci_waived_authority() {
     fm-merge-authority-v1 github github.com example/repo 123 attended-ci-waived)
   [ "$(cat "$record")" = "$expected" ] \
     || fail "waive-ci-audit: persisted merge authority was not attended-ci-waived: $(cat "$record")"
+  assert_grep "merge landed: task-x1 $url attended-ci-waived" \
+    "$case_dir/state/.wake-queue" \
+    "waive-ci-audit: the captain-facing durable outcome did not tag attended-ci-waived"
   pass "fm-pr-merge records a used --waive-no-ci-evidence waiver as attended-ci-waived merge authority"
 }
 
