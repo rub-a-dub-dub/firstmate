@@ -1,0 +1,50 @@
+$ bash tests/fm-pr-merge.test.sh   # 124 cases, all ok
+
+ok - fm-pr-merge refuses a GitHub merge call that leaves the PR open and unqueued
+ok - fm-pr-merge refuses with the forge's own output quoted apart from its verdict
+ok - fm-pr-merge refuses a GitHub merge when gh is missing, before recording
+ok - fm-pr-merge refuses a GitHub merge when gh is missing rather than merging blind
+ok - fm-pr-merge refuses to claim a merge when poll recording fails
+ok - fm-pr-merge refuses branch deletion unless --attended-override is passed
+ok - fm-pr-merge refuses before merging when task meta is missing
+ok - fm-pr-merge refuses malformed PR URLs before calling gh-axi
+ok - fm-pr-merge refuses unsafe PR URL segments before recording state
+ok - fm-pr-merge refuses repo override args before recording state
+ok - fm-pr-merge refuses a bundled short-option repo override and refuses -d unless attended
+ok - fm-pr-merge refuses a caller --sha on GitHub because the head comes from the live read
+ok - fm-pr-merge refuses GitLab source-branch deletion unless --attended-override is passed
+ok - fm-pr-merge refuses on each GitLab pre-merge condition independently
+ok - fm-pr-merge refuses an unreadable GitLab merge request state rather than merging blind
+ok - fm-pr-merge refuses a GitLab head commit it cannot validate
+ok - fm-pr-merge refuses before recording anything when glab or jq is absent
+ok - fm-pr-merge refuses a GitLab head override before recording state
+ok - a GitLab merge refused before the forge call reports no outcome
+ok - fm-pr-merge refuses when the backlog exists but cannot be read
+ok - fm-pr-merge refuses when its configured backend cannot be read
+ok - fm-pr-merge refuses when its user backend configuration cannot be read
+ok - fm-pr-merge refuses when its user backend configuration directory cannot be traversed
+ok - fm-pr-merge refuses red GitHub checks and waives only a named --allow-red check
+ok - fm-pr-merge exempts a pull request whose changed files never match a workflow's paths filter
+ok - fm-pr-merge exempts a pull request whose base branch never matches a workflow's branches filter
+ok - fm-pr-merge still refuses a zero-run head when a changed file confirms the paths filter applies
+ok - fm-pr-merge treats a branches-ignore filter as covered rather than exempting the pull request
+ok - fm-pr-merge reads a branches filter whose block sequence sits at the key's own indentation
+ok - fm-pr-merge reads a branches filter out of a CRLF-encoded workflow file
+ok - fm-pr-merge never confirms a skip from a branches filter whose flow sequence spans lines
+ok - fm-pr-merge treats an inline character-class paths filter as covering rather than skipping
+ok - fm-pr-merge never closes a wrapped flow sequence on a character class's bracket
+ok - fm-pr-merge treats a block-sequence character-class filter as covering rather than skipping
+ok - fm-pr-merge treats a "?" quantifier in a paths filter as covering rather than skipping
+ok - fm-pr-merge treats a "?" quantifier in a branches filter as covering rather than skipping
+ok - fm-pr-merge judges a workflow's filters by the copy on the pull request's merge ref
+ok - fm-pr-merge names the workflow and filter when a confirmed skip disarms the dropped-CI gate
+ok - fm-pr-merge judges a workflow-editing pull request by its own merge-ref filter
+ok - fm-pr-merge arms on a workflow-editing pull request whose merge-ref filter covers it
+ok - fm-pr-merge disarms rather than arms when the pull request has no merge ref
+ok - fm-pr-merge reports expired run evidence instead of refusing a head past the retention window
+ok - fm-pr-merge refuses an old head on a freshly opened pull request rather than calling its absence expired
+ok - fm-pr-merge reaches the grace window for a just-opened pull request on an old head
+ok - fm-pr-merge refuses a zero-run head even when the head commit date cannot be read
+ok - fm-pr-merge refuses --allow-red on GitLab
+
+total ok: 124; not ok: 0
