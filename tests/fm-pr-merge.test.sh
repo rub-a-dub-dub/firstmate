@@ -2538,9 +2538,13 @@ test_github_red_checks_refuse_and_allow_red_waives_named() {
 }
 
 # When the base branch advances, GitHub cancels a pull request's in-flight run
-# and re-triggers it, leaving the cancelled run in the rollup beside the passing
-# re-run while reporting the pull request itself CLEAN. The merge must follow the
-# current run rather than the one that re-run replaced.
+# and re-triggers it, and a pipeline that re-attests after a first failed run
+# leaves the same shape: the replaced run stays in the rollup beside the passing
+# re-run while the pull request itself reports CLEAN. The merge must follow the
+# current run rather than the one that re-run replaced. The name and times are
+# the live incident that filed this rule: rub-a-dub-dub/firstmate PR 10 carried
+# a FAILURE of "PR must be raised via no-mistakes" at 05:59:46Z and a SUCCESS
+# re-attestation of the same check at 06:00:27Z on the identical head.
 test_superseded_failed_check_run_no_longer_refuses() {
   local case_dir head
   head=cccccccccccccccccccccccccccccccccccccccc
@@ -2548,8 +2552,8 @@ test_superseded_failed_check_run_no_longer_refuses() {
   mkdir -p "$case_dir/wt"
   add_gh_mocks "$case_dir" "$head"
   write_github_rollup_json "$case_dir" "$head" \
-    "$(check_run ci COMPLETED CANCELLED 2026-01-01T00:00:01Z)" \
-    "$(check_run ci COMPLETED SUCCESS 2026-01-01T00:00:09Z)"
+    "$(check_run 'PR must be raised via no-mistakes' COMPLETED FAILURE 2026-09-20T05:59:46Z)" \
+    "$(check_run 'PR must be raised via no-mistakes' COMPLETED SUCCESS 2026-09-20T06:00:27Z)"
 
   run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/90 \
     > "$case_dir/stdout" 2> "$case_dir/stderr" \
@@ -2592,8 +2596,8 @@ test_current_failed_check_run_still_refuses() {
   mkdir -p "$case_dir/wt"
   add_gh_mocks "$case_dir" "$head"
   write_github_rollup_json "$case_dir" "$head" \
-    "$(check_run ci COMPLETED SUCCESS 2026-01-01T00:00:01Z)" \
-    "$(check_run ci COMPLETED FAILURE 2026-01-01T00:00:09Z)"
+    "$(check_run 'PR must be raised via no-mistakes' COMPLETED SUCCESS 2026-09-20T05:59:46Z)" \
+    "$(check_run 'PR must be raised via no-mistakes' COMPLETED FAILURE 2026-09-20T06:00:27Z)"
 
   set +e
   run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/91 \
@@ -2601,7 +2605,7 @@ test_current_failed_check_run_still_refuses() {
   rc=$?
   set -e
   expect_code 1 "$rc" "github-current-red: a currently failing check must refuse"
-  assert_grep "check 'ci' is not green" "$case_dir/stderr" \
+  assert_grep "check 'PR must be raised via no-mistakes' is not green" "$case_dir/stderr" \
     "github-current-red: the red check was not named"
   assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "github-current-red: gh pr merge ran on a currently failing check"

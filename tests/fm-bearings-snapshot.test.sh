@@ -59,8 +59,27 @@ if [ "${FAKE_GH_MANY:-0}" = 1 ]; then
 JSON
   exit 0
 fi
+if [ "${FAKE_GH_LIVE_PR10_SHAPE:-0}" = 1 ]; then
+  # rub-a-dub-dub/firstmate PR 10's real statusCheckRollup: "PR must be raised
+  # via no-mistakes" has an early FAILURE run that a later re-attestation
+  # SUCCESS superseded at the identical head. The aggregate view must read
+  # this as passing, exactly as bin/fm-pr-merge.sh's merge gate does.
+  cat <<'JSON'
+[{"number":10,"title":"Ship the thing","url":"https://github.com/kunchenguid/firstmate/pull/10","headRefName":"fm/ship-task","reviewDecision":"APPROVED","mergeable":"MERGEABLE","statusCheckRollup":[{"__typename":"CheckRun","completedAt":"2026-09-20T05:59:49Z","conclusion":"FAILURE","name":"PR must be raised via no-mistakes","startedAt":"2026-09-20T05:59:46Z","status":"COMPLETED"},{"__typename":"CheckRun","completedAt":"2026-09-20T06:00:29Z","conclusion":"SUCCESS","name":"PR must be raised via no-mistakes","startedAt":"2026-09-20T06:00:27Z","status":"COMPLETED"},{"__typename":"CheckRun","completedAt":"2026-09-20T05:59:56Z","conclusion":"SUCCESS","name":"Lint","startedAt":"2026-09-20T05:59:46Z","status":"COMPLETED"}]}]
+JSON
+  exit 0
+fi
+if [ "${FAKE_GH_CURRENT_FAILURE_SHAPE:-0}" = 1 ]; then
+  # One check name whose newest run has definitively FAILED while an older run
+  # of the same name is still QUEUED. No green run started after the failure,
+  # so nothing can supersede it and nothing is resolving.
+  cat <<'JSON'
+[{"number":11,"title":"Ship the thing","url":"https://github.com/kunchenguid/firstmate/pull/11","headRefName":"fm/ship-task","reviewDecision":"APPROVED","mergeable":"MERGEABLE","statusCheckRollup":[{"__typename":"CheckRun","completedAt":"2026-09-20T06:00:31Z","conclusion":"FAILURE","name":"ci","startedAt":"2026-09-20T06:00:27Z","status":"COMPLETED"},{"__typename":"CheckRun","conclusion":null,"name":"ci","startedAt":"2026-09-20T05:59:46Z","status":"QUEUED"}]}]
+JSON
+  exit 0
+fi
 cat <<'JSON'
-[{"number":9,"title":"Ship the thing","url":"https://github.com/kunchenguid/firstmate/pull/9","headRefName":"fm/ship-task","reviewDecision":"APPROVED","mergeable":"MERGEABLE","statusCheckRollup":[{"conclusion":"SUCCESS","status":"COMPLETED"}]}]
+[{"number":9,"title":"Ship the thing","url":"https://github.com/kunchenguid/firstmate/pull/9","headRefName":"fm/ship-task","reviewDecision":"APPROVED","mergeable":"MERGEABLE","statusCheckRollup":[{"__typename":"CheckRun","name":"ci","conclusion":"SUCCESS","status":"COMPLETED"}]}]
 JSON
 SH
   cat > "$fb/gh-axi" <<'SH'
@@ -1414,6 +1433,40 @@ test_include_prs_is_the_only_fetch_path() {
     .candidate_prs | any(.[]; .num == "9" and .task == "ship-task" and .checks == "passing" and .review == "APPROVED")
   ' >/dev/null || fail "candidate_prs must carry the fetched PR cross-referenced to its task: $json"
   pass "--include-prs is the only path that fetches, and it enriches correctly"
+}
+
+# Pinned to the live incident that filed this rule: rub-a-dub-dub/firstmate PR
+# 10's head carried a FAILURE run of "PR must be raised via no-mistakes"
+# alongside a later SUCCESS re-attestation of the identical check at the
+# identical head, reproduced here from the real GitHub API response. The
+# aggregate checks column must read this as passing, matching what
+# bin/fm-pr-merge.sh's merge gate would actually do, rather than "failing" on
+# a run nothing still holds against the head.
+test_include_prs_ignores_a_superseded_stale_check_run() {
+  local home fakebin json
+  home=$(make_home live-pr10); write_fixture "$home"
+  fakebin=$(make_fakebin "$home"); : > "$home/net.log"
+  json=$(FAKE_GH_LIVE_PR10_SHAPE=1 run "$home" "$fakebin" --include-prs --json)
+  printf '%s' "$json" | jq -e '
+    .candidate_prs | any(.[]; .num == "10" and .checks == "passing")
+  ' >/dev/null || fail "a superseded stale check run must not read as failing: $json"
+  pass "--include-prs reads a superseded stale check run as passing, not failing"
+}
+
+# The inverse of the superseded-stale case: the newest run of a check name has
+# failed and an older run of the same name is still queued. A green from a run
+# that started before the failure can never supersede it, so the checks column
+# must say failing - "pending" would tell a human or firstmate to wait for
+# something that will never resolve.
+test_include_prs_reads_a_current_failure_as_failing() {
+  local home fakebin json
+  home=$(make_home current-failure); write_fixture "$home"
+  fakebin=$(make_fakebin "$home"); : > "$home/net.log"
+  json=$(FAKE_GH_CURRENT_FAILURE_SHAPE=1 run "$home" "$fakebin" --include-prs --json)
+  printf '%s' "$json" | jq -e '
+    .candidate_prs | any(.[]; .num == "11" and .checks == "failing")
+  ' >/dev/null || fail "a current failed run beside an older queued run must read as failing: $json"
+  pass "--include-prs reads a current failure beside an older queued run as failing"
 }
 
 test_partial_github_failure_degrades() {
@@ -3357,6 +3410,8 @@ test_open_decision_surfaces_end_to_end
 test_report_pointers_surface
 test_queued_item_prose_never_hides_it
 test_include_prs_is_the_only_fetch_path
+test_include_prs_ignores_a_superseded_stale_check_run
+test_include_prs_reads_a_current_failure_as_failing
 test_partial_github_failure_degrades
 test_perl_fallback_bounds_github_call
 test_section_caps_and_expansion_flags
