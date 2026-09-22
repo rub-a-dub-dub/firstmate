@@ -48,6 +48,11 @@
 # before the FM_BEARINGS_GATES bound is applied. Gates without a comparable filed
 # date keep their input order after dated gates. The synthetic (return-catchup)
 # posture row is reserved ahead of that ordering and bound so it always surfaces.
+# A same-day filing cluster leaves that ordering unable to discriminate among its
+# rows, so a gate referenced by the title, hold reason, or body text of a live
+# captain hold is retained past the bound rather than silently dropped behind an
+# honest count; the omitted[] entry names every gate kept this way. This is a
+# textual, not structural, cross-reference: it never changes hold_bucket.
 #
 # Main-home inventory validity comes from the canonical snapshot's main_inventory
 # object (orphan structured in-flight without meta, unstructured current rows).
@@ -153,7 +158,9 @@ Default fields: schema, home, generated, prs, in_flight{id,kind,state,repo,name,
   gates{id,title,blocked_by,reason,owner,filed}, reports{id,path}, recorded_prs{id,url},
   unhealthy_endpoints{...} (only when non-empty), omitted{surface,reveal}.
 Default gates are selected newest filed first before their bound; undated gates
-  retain input order after dated gates.
+  retain input order after dated gates. A gate named in a live captain hold's
+  title, hold reason, or body text is kept past that bound, with omitted[]
+  naming every gate retained this way.
 landed merges this home's Done with registered secondmate homes' Done, bounded by
   a per-home cap (FM_BEARINGS_LANDED_PER_HOME) and an overall cap (FM_BEARINGS_LANDED),
   with omitted[] disclosure. Default selection is balanced across deterministic home
@@ -426,6 +433,9 @@ MODEL=$(printf '%s' "$SNAP" | jq \
      blocked_by:((.unresolved_blocker_ids // []) | if length > 0 then join(",") else "-" end | trunc(120)),
      reason:(hold_gate_reason | trunc(40)), owner:$owner,
      filed:((.since // null) | trunc(40))};
+  def hold_ref_text:
+    ((.title // "") + " " + (.hold_reason // "") + " " + (.body_excerpt // "")
+     + " " + (.blocked_reason // ""));
   def round_robin_landed($n):
     . as $groups
     | [range(0; (($groups | map(length) | max) // 0)) as $i
@@ -580,6 +590,12 @@ MODEL=$(printf '%s' "$SNAP" | jq \
          | select(.captain_actionable != true)
          | select((.hold_bucket == null) or ($all_decisions == 0))
          | as_gate($m.id) ]) as $gates_all
+  | ([ .backlog.records[] | select(.structured and .hold_bucket == "live") | hold_ref_text ]
+     + [ (.secondmate_current.records // [])[] as $m
+         | select($m.provenance.selected == "structured-home")
+         | $m.queued[]?
+         | select(.hold_bucket == "live")
+         | hold_ref_text ]) as $live_hold_texts
   | ([ .scout_reports[]
        | . as $r
        | select(($all_reports == 1) or (($rel_ids | index($r.id)) != null))
@@ -595,7 +611,12 @@ MODEL=$(printf '%s' "$SNAP" | jq \
       | sort_by((.value | filed_epoch) as $epoch
           | if $epoch == null then [1, 0, .key] else [0, -$epoch, .key] end)
       | map(.value);
-    . as $snap
+    ($gates_all | newest_filed_first) as $gates_sorted
+  | ($gates_sorted[:$gates_n]) as $gates_top
+  | ($gates_sorted | map(select(.id as $id | any($live_hold_texts[]; contains($id))))) as $gates_referenced
+  | (($gates_top + ($gates_referenced - $gates_top)) | newest_filed_first) as $gates_capped
+  | (if $all_queued == 1 then $gates_sorted else $gates_capped end) as $gates_shown
+  | . as $snap
   | {
       schema: "fm-bearings.v1",
       home: $home,
@@ -609,9 +630,7 @@ MODEL=$(printf '%s' "$SNAP" | jq \
       decisions_open: (if $all_decisions == 1 then $decisions_all else $decisions_all[:$decisions_n] end),
       landed: ($done | map({id, what:(.title | trunc(70)),
                             artifact:(landed_artifact // "-"),owner:.home_id})),
-      gates: ($return_catchup_gate
-              + ($gates_all | newest_filed_first
-                 | if $all_queued == 1 then . else .[:$gates_n] end)),
+      gates: ($return_catchup_gate + $gates_shown),
       reports: (if $all_reports == 1 then $reports_all else $reports_all[:$reports_n] end),
       recorded_prs: (if $all_recorded_prs == 1 then $recorded_prs_all else $recorded_prs_all[:$recorded_prs_n] end)
     }
@@ -653,7 +672,13 @@ MODEL=$(printf '%s' "$SNAP" | jq \
         (([($snap.secondmate_current.records // [])[] | select(.parent_event.activity_scan.available == false)] | length) as $n | if $n > 0 then {surface:("secondmate parent activity evidence unavailable for \($n) record(s)"), reveal:"inspect the parent status logs"} else empty end),
         (if $all_decisions == 0 and ($decisions_all | length) > $decisions_n then {surface:("decisions_open showing \($decisions_n) of \($decisions_all | length)"), reveal:"--all-decisions"} else empty end),
         (if $all_decisions == 0 and $decisions_marked_deferred > 0 then {surface:("captain holds bucketed blocked, dated, or aged: \($decisions_marked_deferred)"), reveal:"--all-decisions"} else empty end),
-        (if $all_queued == 0 and ($gates_all | length) > $gates_n then {surface:("gates showing \($gates_n) of \($gates_all | length)"), reveal:"--all-queued"} else empty end),
+        (if $all_queued == 0 and ($gates_all | length) > ($gates_shown | length) then {surface:("gates showing \($gates_shown | length) of \($gates_all | length)"), reveal:"--all-queued"} else empty end),
+        (($gates_referenced - $gates_top) as $gates_pinned_extra
+         | if $all_queued == 0 and ($gates_pinned_extra | length) > 0 then
+             {surface:("gates retained past the truncation bound, referenced by a live captain hold: "
+                       + ($gates_pinned_extra | map(.id) | join(","))),
+              reveal:"--all-queued"}
+           else empty end),
         (if $all_reports == 0 and ($reports_all | length) > $reports_n then {surface:("reports showing \($reports_n) of \($reports_all | length)"), reveal:"--all-reports"} else empty end),
         (if $all_recorded_prs == 0 and ($recorded_prs_all | length) > $recorded_prs_n then {surface:("recorded_prs showing \($recorded_prs_n) of \($recorded_prs_all | length)"), reveal:"--all-recorded-prs"} else empty end),
         (if $all_unhealthy == 0 and ($unhealthy_all | length) > $unhealthy_n then {surface:("unhealthy_endpoints showing \($unhealthy_n) of \($unhealthy_all | length)"), reveal:"--all-unhealthy"} else empty end),

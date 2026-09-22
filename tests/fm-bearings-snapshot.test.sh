@@ -2540,6 +2540,46 @@ EOF
   pass "newest filed gates are selected before snapshot bounds"
 }
 
+# Filed-date ordering cannot discriminate within a same-day cluster, so the gate
+# bound alone can silently drop the one row a live captain hold is waiting on.
+# A gate named in a live captain hold's body text must survive the bound even
+# when its filed date ties with every other row in the cluster.
+test_gate_named_in_a_live_captain_hold_survives_the_bound() {
+  local home fakebin json
+  home=$(make_home hold-named-gate)
+  : > "$home/data/secondmates.md"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+- [ ] gate-a - Gate A (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] gate-b - Gate B (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] gate-c - Gate C (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] gate-d - Gate D (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] signing-fix - Fix the unattended commit signing (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] enable-schedule - Enable the nightly job (repo: firstmate) (kind: captain) (since 2026-07-11) (hold: waiting on the fix) (hold-kind: captain)
+  Captain hold set: 2026-07-11T00:00:00Z
+  Waiting on signing-fix before enabling this schedule tonight.
+
+## Done
+EOF
+  fakebin=$(make_fakebin "$home")
+  json=$(FM_BEARINGS_GATES=3 run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    (.gates | any(.id == "signing-fix"))
+      and (.gates | any(.id == "gate-a"))
+      and (.gates | any(.id == "gate-b"))
+      and (.gates | any(.id == "gate-c"))
+      and (.gates | any(.id == "gate-d") | not)
+      and (.gates | length) == 4
+      and (.decisions_open | any(.id == "enable-schedule"))
+      and ([.omitted[].surface] | index("gates showing 4 of 5") != null)
+      and ([.omitted[].surface] | any(startswith("gates retained past the truncation bound")
+                                      and contains("signing-fix")))
+  ' >/dev/null || fail "a gate named in a live captain hold vanished behind the bound: $json"
+  pass "a gate named in a live captain hold survives the bound"
+}
+
 # A captain scanning Underway must be able to tell WHICH task a row is, and the
 # board orders Charted Next by the durable filed date, so both facts have to come
 # out of fleet state rather than being invented at render time.
@@ -3411,6 +3451,7 @@ test_working_captain_holds_keep_their_bucket_surfaces
 test_active_children_project_independent_of_home_captain_hold
 test_nameless_legacy_summary_uses_its_durable_identifier
 test_newest_filed_gates_are_selected_before_snapshot_bounds
+test_gate_named_in_a_live_captain_hold_survives_the_bound
 test_underway_and_gate_rows_carry_the_durable_name_and_filed_date
 test_mixed_secondmate_roles_partial_state_and_captain_readiness
 test_main_captain_readiness_matches_secondmate_projection
