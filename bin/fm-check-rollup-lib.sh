@@ -21,8 +21,9 @@
 # keeps this rule from refusing a pull request GitHub itself considers
 # mergeable, and unlike completedAt it is not reordered by which run happens
 # to finish last (a fast failure can finish after a slow pass that started
-# after it - see the "late-finishing" cases below). Verified directly against
-# a live incident: rub-a-dub-dub/firstmate PR 10's head carried a FAILURE run
+# after it - tests/fm-pr-merge.test.sh's late-finishing cases pin both
+# directions). Verified directly against a live incident:
+# rub-a-dub-dub/firstmate PR 10's head carried a FAILURE run
 # of "PR must be raised via no-mistakes" at 05:59:46 and a SUCCESS re-run of
 # the same check at 06:00:27, and ordering by startedAt is what makes this
 # rule call it green while a completedAt-only reading of a slower stale run
