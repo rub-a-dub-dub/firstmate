@@ -1,0 +1,133 @@
+
+========================= BEFORE THE FIX (wrapper at base commit 74044a4) =========================
+$ FM_BEARINGS_GATES=20 (default)  bin/zz-bearings-base.sh 
+
+schema: fm-bearings.v1
+home: fm-bearings-repro.Datp7E/captains-home
+generated: "2026-09-20T22:00:00Z"
+prs: "not_requested (run: /bearings include PRs)"
+in_flight: []
+secondmates: []
+secondmate_reconcile: []
+decisions_open[1]{id,key,verb,summary,owner}:
+  enable-nightly-schedule,enable-nightly-schedule,captain-hold,"Enable the nightly scheduled job: waiting on the refine-job fix",(main)
+landed: []
+gates[20]{id,title,blocked_by,reason,owner,filed}:
+  newer-item-01,Newer item 01,"-","-",(main),2026-09-21
+  newer-item-02,Newer item 02,"-","-",(main),2026-09-21
+  newer-item-03,Newer item 03,"-","-",(main),2026-09-21
+  newer-item-04,Newer item 04,"-","-",(main),2026-09-21
+  newer-item-05,Newer item 05,"-","-",(main),2026-09-21
+  newer-item-06,Newer item 06,"-","-",(main),2026-09-21
+  newer-item-07,Newer item 07,"-","-",(main),2026-09-21
+  sameday-item-01,Same-day item 01,"-","-",(main),2026-09-20
+  sameday-item-02,Same-day item 02,"-","-",(main),2026-09-20
+  sameday-item-03,Same-day item 03,"-","-",(main),2026-09-20
+  sameday-item-04,Same-day item 04,"-","-",(main),2026-09-20
+  sameday-item-05,Same-day item 05,"-","-",(main),2026-09-20
+  sameday-item-06,Same-day item 06,"-","-",(main),2026-09-20
+  sameday-item-07,Same-day item 07,"-","-",(main),2026-09-20
+  sameday-item-08,Same-day item 08,"-","-",(main),2026-09-20
+  sameday-item-09,Same-day item 09,"-","-",(main),2026-09-20
+  sameday-item-10,Same-day item 10,"-","-",(main),2026-09-20
+  sameday-item-11,Same-day item 11,"-","-",(main),2026-09-20
+  sameday-item-12,Same-day item 12,"-","-",(main),2026-09-20
+  sameday-item-13,Same-day item 13,"-","-",(main),2026-09-20
+reports: []
+recorded_prs: []
+omitted[7]{surface,reveal}:
+  backlog item bodies,"--fields bodies"
+  task paths,"--fields paths"
+  watch/steer actions,"--fields actions"
+  healthy endpoint detail,"--fields endpoints"
+  full scout-report inventory,"--all-reports"
+  gates showing 20 of 26,"--all-queued"
+  live PR discovery + checks,"--include-prs"
+
+========================= AFTER THE FIX (wrapper as shipped) =========================
+$ FM_BEARINGS_GATES=20 (default)  bin/fm-bearings-snapshot.sh 
+
+schema: fm-bearings.v1
+home: fm-bearings-repro.Datp7E/captains-home
+generated: "2026-09-20T22:00:00Z"
+prs: "not_requested (run: /bearings include PRs)"
+in_flight: []
+secondmates: []
+secondmate_reconcile: []
+decisions_open[1]{id,key,verb,summary,owner}:
+  enable-nightly-schedule,enable-nightly-schedule,captain-hold,"Enable the nightly scheduled job: waiting on the refine-job fix",(main)
+landed: []
+gates[21]{id,title,blocked_by,reason,owner,filed}:
+  newer-item-01,Newer item 01,"-","-",(main),2026-09-21
+  newer-item-02,Newer item 02,"-","-",(main),2026-09-21
+  newer-item-03,Newer item 03,"-","-",(main),2026-09-21
+  newer-item-04,Newer item 04,"-","-",(main),2026-09-21
+  newer-item-05,Newer item 05,"-","-",(main),2026-09-21
+  newer-item-06,Newer item 06,"-","-",(main),2026-09-21
+  newer-item-07,Newer item 07,"-","-",(main),2026-09-21
+  sameday-item-01,Same-day item 01,"-","-",(main),2026-09-20
+  sameday-item-02,Same-day item 02,"-","-",(main),2026-09-20
+  sameday-item-03,Same-day item 03,"-","-",(main),2026-09-20
+  sameday-item-04,Same-day item 04,"-","-",(main),2026-09-20
+  sameday-item-05,Same-day item 05,"-","-",(main),2026-09-20
+  sameday-item-06,Same-day item 06,"-","-",(main),2026-09-20
+  sameday-item-07,Same-day item 07,"-","-",(main),2026-09-20
+  sameday-item-08,Same-day item 08,"-","-",(main),2026-09-20
+  sameday-item-09,Same-day item 09,"-","-",(main),2026-09-20
+  sameday-item-10,Same-day item 10,"-","-",(main),2026-09-20
+  sameday-item-11,Same-day item 11,"-","-",(main),2026-09-20
+  sameday-item-12,Same-day item 12,"-","-",(main),2026-09-20
+  sameday-item-13,Same-day item 13,"-","-",(main),2026-09-20
+  cowork-refine-job-unattended-commit-and-timeout,Fix the unattended commit and timeout in the refine job,"-","-",(main),2026-09-20
+reports: []
+recorded_prs: []
+gates_retained[1]{id,owner}:
+  cowork-refine-job-unattended-commit-and-timeout,(main)
+omitted[8]{surface,reveal}:
+  backlog item bodies,"--fields bodies"
+  task paths,"--fields paths"
+  watch/steer actions,"--fields actions"
+  healthy endpoint detail,"--fields endpoints"
+  full scout-report inventory,"--all-reports"
+  gates showing 21 of 26,"--all-queued"
+  "gates retained past the truncation bound, referenced by a captain hold: cowork-refine-job-unattended-commit-and-timeout","--all-queued"
+  live PR discovery + checks,"--include-prs"
+
+========================= SCENARIO B: five retained rows under FM_BEARINGS_GATES=1 =========================
+$ FM_BEARINGS_GATES=1 bin/fm-bearings-snapshot.sh --json | jq "{gates, gates_retained, omitted}"
+
+{
+  "gates": [
+    "top-gate",
+    "cowork-refine-job-unattended-commit-and-timeout",
+    "cowork-refine-job-signing-and-retry-backoff-path",
+    "cowork-refine-job-log-rotation-and-disk-pressure",
+    "cowork-refine-job-secret-rotation-and-key-escrow",
+    "cowork-refine-job-timeout-budget-and-kill-switch"
+  ],
+  "gates_retained": [
+    {
+      "id": "cowork-refine-job-unattended-commit-and-timeout",
+      "owner": "(main)"
+    },
+    {
+      "id": "cowork-refine-job-signing-and-retry-backoff-path",
+      "owner": "(main)"
+    },
+    {
+      "id": "cowork-refine-job-log-rotation-and-disk-pressure",
+      "owner": "(main)"
+    },
+    {
+      "id": "cowork-refine-job-secret-rotation-and-key-escrow",
+      "owner": "(main)"
+    },
+    {
+      "id": "cowork-refine-job-timeout-budget-and-kill-switch",
+      "owner": "(main)"
+    }
+  ],
+  "omitted": [
+    "gates retained past the truncation bound, referenced by a captain hold: cowork-refine-job-unattended-commit-and-timeout,cowork-refine-job-signing-and-retry-backoff-path,cowork-refine-job-log-r…"
+  ]
+}
