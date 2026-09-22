@@ -976,14 +976,22 @@ parse_orca_worktree_result() {
   fi
 }
 
+# Publication is the single point where the replacement record starts naming
+# this incarnation's endpoint, so it releases every unwind that would otherwise
+# tear that endpoint down - whichever of them happens to own it.
+relaunch_release_published_endpoint_ownership() {
+  RELAUNCH_REPLACEMENT_PENDING=0
+  RELAUNCH_RECREATED_ENDPOINT_CLEANUP=0
+  HERDR_PROJECTION_ABORT_CLEANUP=0
+}
+
 spawn_abort_cleanup() {
   local status=$?
   if [ "$SPAWN_META_PUBLISH_STARTED" = 1 ] \
      && [ -n "$SPAWN_META_TMP" ] \
      && [ ! -e "$SPAWN_META_TMP" ] \
      && [ ! -L "$SPAWN_META_TMP" ]; then
-    RELAUNCH_REPLACEMENT_PENDING=0
-    RELAUNCH_RECREATED_ENDPOINT_CLEANUP=0
+    relaunch_release_published_endpoint_ownership
   fi
   if [ "$RELAUNCH_REPLACEMENT_PENDING" = 1 ]; then
     RELAUNCH_REPLACEMENT_PENDING=0
@@ -4057,8 +4065,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
     echo "error: replacement task record for $ID could not be published ($FM_BACKLOG_TRANSITION_ERROR)" >&2
     exit 1
   fi
-  RELAUNCH_REPLACEMENT_PENDING=0
-  RELAUNCH_RECREATED_ENDPOINT_CLEANUP=0
+  relaunch_release_published_endpoint_ownership
   SPAWN_META_PUBLISH_STARTED=0
   SPAWN_META_TMP=
 fi
