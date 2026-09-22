@@ -1,0 +1,149 @@
+fm-crew-state.sh supervisor-facing state line, same five run records, before and after the fix
+Driver: crew-state-pr-detail-driver.sh (drives the real bin/fm-crew-state.sh over throwaway git worktrees with a fake `no-mistakes axi status`)
+
+################################ BEFORE (base 7ce3cda) ################################
+############ fm-crew-state.sh under test: /var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/tmp.DdmDjKn7e3/bin/fm-crew-state.sh
+############ version label: 7ce3cda (base, before the fix)
+
+=== A. live incident: firstmate-lint-debt-blocking-prs (outcome=passed, pr_state=open) ===
+--- run record fm-crew-state reads (no-mistakes axi status) ---
+    run:
+      id: "01RUN"
+      branch: fm/lint-debt-blocking-prs
+      status: completed
+      head: "0508744b2736766c521a60304400d24a4eefaf9f"
+      pr: "https://github.com/o/r/pull/1"
+      pr_state: open
+      findings: none
+    outcome: passed
+--- supervisor-facing output: fm-crew-state.sh lint-debt-blocking-prs ---
+    state: done · source: run-step · run passed: PR merged/closed
+
+=== B. live incident: firstmate-detect-dropped-ci-event (outcome=passed-with-override) ===
+--- run record fm-crew-state reads (no-mistakes axi status) ---
+    run:
+      id: "01RUN"
+      branch: fm/detect-dropped-ci-event
+      status: completed
+      head: "f55e57bc9fddce63e247a7bae44d2b0329313c84"
+      pr: "https://github.com/o/r/pull/2"
+      pr_state: open
+      findings: none
+    outcome: passed-with-override
+--- supervisor-facing output: fm-crew-state.sh detect-dropped-ci-event ---
+    state: unknown · source: run-step · outcome: passed-with-override
+
+=== C. genuinely merged PR (outcome=passed, pr_state=merged) ===
+--- run record fm-crew-state reads (no-mistakes axi status) ---
+    run:
+      id: "01RUN"
+      branch: fm/really-merged
+      status: completed
+      head: "d6ce31e1cef55fd2599db12b70a408a6319471d1"
+      pr: "https://github.com/o/r/pull/3"
+      pr_state: merged
+      findings: none
+    outcome: passed
+--- supervisor-facing output: fm-crew-state.sh really-merged ---
+    state: done · source: run-step · run passed: PR merged/closed
+
+=== D. no PR ever opened (outcome=passed, pr_state=none) ===
+--- run record fm-crew-state reads (no-mistakes axi status) ---
+    run:
+      id: "01RUN"
+      branch: fm/no-pr-opened
+      status: completed
+      head: "d6ce31e1cef55fd2599db12b70a408a6319471d1"
+      pr: ""
+      pr_state: none
+      findings: none
+    outcome: passed
+--- supervisor-facing output: fm-crew-state.sh no-pr-opened ---
+    state: done · source: run-step · run passed: PR merged/closed
+
+=== E. older no-mistakes with no pr_state field at all (outcome=passed) ===
+--- run record fm-crew-state reads (no-mistakes axi status) ---
+    run:
+      id: "01RUN"
+      branch: fm/absent-pr-state
+      status: completed
+      head: "d6ce31e1cef55fd2599db12b70a408a6319471d1"
+      pr: "https://github.com/o/r/pull/5"
+      findings: none
+    outcome: passed
+--- supervisor-facing output: fm-crew-state.sh absent-pr-state ---
+    state: done · source: run-step · run passed: PR merged/closed
+
+################################ AFTER  (target 2105bf7) ################################
+############ fm-crew-state.sh under test: /Users/crossbow/.no-mistakes/worktrees/00644a303d6a/01M33HXRGTB724W7N4DSXWNGX5/bin/fm-crew-state.sh
+############ version label: 2105bf7 no-mistakes(review): correct audit comment's above/below pointers
+
+=== A. live incident: firstmate-lint-debt-blocking-prs (outcome=passed, pr_state=open) ===
+--- run record fm-crew-state reads (no-mistakes axi status) ---
+    run:
+      id: "01RUN"
+      branch: fm/lint-debt-blocking-prs
+      status: completed
+      head: "14c96fc695163a109c998cddecd320e9d334d1b8"
+      pr: "https://github.com/o/r/pull/1"
+      pr_state: open
+      findings: none
+    outcome: passed
+--- supervisor-facing output: fm-crew-state.sh lint-debt-blocking-prs ---
+    state: done · source: run-step · run passed: PR open, not yet merged
+
+=== B. live incident: firstmate-detect-dropped-ci-event (outcome=passed-with-override) ===
+--- run record fm-crew-state reads (no-mistakes axi status) ---
+    run:
+      id: "01RUN"
+      branch: fm/detect-dropped-ci-event
+      status: completed
+      head: "14c96fc695163a109c998cddecd320e9d334d1b8"
+      pr: "https://github.com/o/r/pull/2"
+      pr_state: open
+      findings: none
+    outcome: passed-with-override
+--- supervisor-facing output: fm-crew-state.sh detect-dropped-ci-event ---
+    state: done · source: run-step · run passed (approved past a waived check): PR open, not yet merged
+
+=== C. genuinely merged PR (outcome=passed, pr_state=merged) ===
+--- run record fm-crew-state reads (no-mistakes axi status) ---
+    run:
+      id: "01RUN"
+      branch: fm/really-merged
+      status: completed
+      head: "e1c9e14f909661003dbd526ffdd7c2aa57e0fe27"
+      pr: "https://github.com/o/r/pull/3"
+      pr_state: merged
+      findings: none
+    outcome: passed
+--- supervisor-facing output: fm-crew-state.sh really-merged ---
+    state: done · source: run-step · run passed: PR merged
+
+=== D. no PR ever opened (outcome=passed, pr_state=none) ===
+--- run record fm-crew-state reads (no-mistakes axi status) ---
+    run:
+      id: "01RUN"
+      branch: fm/no-pr-opened
+      status: completed
+      head: "e1c9e14f909661003dbd526ffdd7c2aa57e0fe27"
+      pr: ""
+      pr_state: none
+      findings: none
+    outcome: passed
+--- supervisor-facing output: fm-crew-state.sh no-pr-opened ---
+    state: done · source: run-step · run passed: no PR opened
+
+=== E. older no-mistakes with no pr_state field at all (outcome=passed) ===
+--- run record fm-crew-state reads (no-mistakes axi status) ---
+    run:
+      id: "01RUN"
+      branch: fm/absent-pr-state
+      status: completed
+      head: "3c9579f0bd0eaf10ed802da25f4082a8ad242496"
+      pr: "https://github.com/o/r/pull/5"
+      findings: none
+    outcome: passed
+--- supervisor-facing output: fm-crew-state.sh absent-pr-state ---
+    state: done · source: run-step · run passed: PR merge state unknown
+
