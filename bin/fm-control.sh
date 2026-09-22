@@ -35,8 +35,9 @@
 #              worktree, on the same or a newly chosen harness/model/effort -
 #              so switching harness is one ordinary use of this verb. The
 #              recorded endpoint is adopted when agent-free, or recreated
-#              fresh when it is positively missing rather than merely
-#              agent-free (docs/agent-control.md owns that distinction). An
+#              fresh when its address no longer resolves and the backend
+#              server is itself proven stopped (docs/agent-control.md owns
+#              that distinction). An
 #              explicit `default` model or effort clears that
 #              axis for the replacement. With no explicit axis, a secondmate
 #              re-resolves its durable config/secondmate-harness pin (harness
@@ -833,13 +834,14 @@ do_relaunch() {
   journal_write noted "${CHECKPOINT_LINES[@]}" "$note_line"
 
   journal_write stopping "${CHECKPOINT_LINES[@]}" "$note_line"
-  if [ "$(agent_state)" = missing ]; then
-    # A missing endpoint is strictly safer than an agent-free one: there is
-    # provably no agent, no pane, and no server left to stop. do_exit's own
-    # `missing` refusal exists for the standalone exit verb, where nothing
-    # downstream re-verifies the state; here fm-spawn.sh --relaunch
-    # independently re-derives and re-proves this exact state before
-    # recreating the endpoint (docs/agent-control.md).
+  if [ "$(agent_state)" = missing ] && fm_backend_server_absent "$BACKEND" "$T"; then
+    # A missing address over a STOPPED backend server is strictly safer than an
+    # agent-free endpoint: there is provably no agent, no pane, and no server
+    # left to stop. A missing address over a RUNNING server proves only that
+    # the address stopped resolving, so it falls through to do_exit, whose own
+    # `missing` refusal stops the relaunch before the agent is touched. The
+    # recreate path applies the identical test (bin/fm-spawn.sh --relaunch,
+    # docs/agent-control.md).
     exit_result='already-absent'
   else
     exit_result=$(do_exit)

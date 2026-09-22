@@ -32,7 +32,7 @@ A recorded `harness=` is not always an exact adapter name: a task launched from 
 | --- | --- | --- |
 | `interrupt` | Deliver the harness's verified interrupt sequence while leaving the agent running. | Delivery succeeds while the endpoint still exists and the agent is still alive where the backend can classify that; cancellation is confirmed only from an adapter-owned acknowledgement and otherwise reports `cancel=unconfirmed`. |
 | `exit` | Stop the agent, preserving the endpoint, the worktree, and every uncommitted change. | The backend's recovery-grade classifier reports the agent gone. Already-stopped is idempotent success. |
-| `relaunch` | Replace the agent with a new one in the same worktree, on the exact recorded adapter or an explicitly chosen harness, model, and effort. The endpoint is adopted when the recorded one is agent-free, or recreated fresh when it is positively missing (no server, no pane, no agent to adopt). | The new agent is alive on the (adopted or recreated) endpoint, and the durable record names the harness and endpoint that are actually running. |
+| `relaunch` | Replace the agent with a new one in the same worktree, on the exact recorded adapter or an explicitly chosen harness, model, and effort. The endpoint is adopted when the recorded one is agent-free, or recreated fresh when its address no longer resolves AND the backend's own server is provably stopped, so no agent can be running at any address. | The new agent is alive on the (adopted or recreated) endpoint, and the durable record names the harness and endpoint that are actually running. |
 
 An exit that delivers lifecycle input but cannot prove the agent stopped fails with `exit=unconfirmed`, reports the observed agent state and any interrupt cancellation claim, and never claims that nothing changed.
 Interrupt never rewrites busy state as proof of its own success.
@@ -99,8 +99,10 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
   zellij, orca, and cmux are refused rather than reported as successful blind.
 - An ambiguous or unreadable endpoint state refuses.
   Only a positively classified state acts.
-- `fm-spawn --relaunch` independently refuses unless the recorded endpoint reads positively agent-free (`dead`) or positively absent (`missing` - no server, no pane, no agent), so a replacement can never join a live agent; an ambiguous or unreadable read still refuses, because absence of evidence there is not evidence of absence.
-  A `dead` endpoint is adopted; a `missing` one has no pane left to adopt, so it is recreated fresh through the same endpoint-creation path a first spawn uses, opened directly in the task's recorded worktree rather than in the spawning project.
+- `fm-spawn --relaunch` independently refuses unless the recorded endpoint reads positively agent-free (`dead`) or is absent with its backend server provably stopped, so a replacement can never join a live agent; an ambiguous or unreadable read still refuses, because absence of evidence there is not evidence of absence.
+  `missing` on its own is NOT that proof. It says the recorded address stopped resolving, which a stopped server causes - but so does a renamed tmux session, a window moved out of the recorded one, or a herdr pane a running server cannot find, and in each of those the agent is still alive at a different address.
+  So a `missing` read is accepted only when the backend server is itself confirmed down (`fm_backend_server_absent`, the reboot case); a `missing` read over a running server refuses like any other unproven state, because recreating there would put a second agent in a worktree that already has one.
+  A `dead` endpoint is adopted; an accepted `missing` one has no pane left to adopt, so it is recreated fresh through the same endpoint-creation path a first spawn uses, opened directly in the task's recorded worktree rather than in the spawning project.
   It also requires the shell to be in the recorded worktree: tmux refuses immediately when it is not, while Herdr sends one `cd` to the recorded path and refuses unless a subsequent path read confirms the move.
 
 ## Capability matrix

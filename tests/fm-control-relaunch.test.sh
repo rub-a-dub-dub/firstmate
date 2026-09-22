@@ -56,6 +56,29 @@ make_tmux_stub() {  # <dir>
 #!/usr/bin/env bash
 set -u
 D=$FM_FAKE_DIR
+# Two distinct ways a recorded target stops resolving, which tmux reports
+# differently and which the relaunch guard must tell apart:
+#   $D/no-server  - the whole server is gone (a reboot). Every read fails with
+#                   tmux's own no-server text until a new-session starts one.
+#   $D/no-session - the server is up but the recorded session name is not
+#                   there (e.g. renamed), so only the session-scoped reads fail
+#                   while the server-wide inventory still answers.
+tmux_no_server_error() {
+  printf 'no server running on /tmp/tmux-1000/default\n' >&2
+  exit 1
+}
+if [ -e "$D/no-server" ]; then
+  case "${1:-}" in
+    new-session) rm -f "$D/no-server"; exit 0 ;;
+    list-sessions|list-windows|has-session|display-message|send-keys|capture-pane|kill-window)
+      tmux_no_server_error ;;
+  esac
+fi
+case "${1:-}" in
+  list-sessions) printf '%s\n' "${FM_FAKE_TMUX_SESSION:-fmses}"; exit 0 ;;
+  has-session) exit 0 ;;
+  new-session) exit 0 ;;
+esac
 case "${1:-}" in
   send-keys)
     shift
@@ -110,7 +133,20 @@ case "${1:-}" in
     done
     printf 'fakepane\n'; exit 0 ;;
   capture-pane) printf '╭────╮\n│    │\n╰────╯\n'; exit 0 ;;
-  list-windows) [ -f "$D/windows" ] && cat "$D/windows"; exit 0 ;;
+  list-windows)
+    if [ -e "$D/no-session" ]; then
+      shift
+      target=
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          -t) target=$2; shift 2 ;;
+          *) shift ;;
+        esac
+      done
+      printf "can't find session: %s\n" "$target" >&2
+      exit 1
+    fi
+    [ -f "$D/windows" ] && cat "$D/windows"; exit 0 ;;
   new-window)
     # fm_backend_tmux_create_task's -dP -F '#{window_id}' capture, used only
     # when a missing endpoint's replacement window is created fresh. Record
@@ -387,11 +423,12 @@ test_missing_endpoint_relaunch_recreates_it() {
   dir=$(new_case gone rlmiss)
   add_ship_task "$dir" rlmiss claude
   : > "$dir/fake/windows"
+  : > "$dir/fake/no-server"
   # Seed the spawning project, not add_ship_task's default fixture cwd (which
   # already equals the worktree and would pass trivially): only the recreated
   # window's own -c can move the pane's reported path to the worktree.
   printf '%s' "$dir/proj" > "$dir/fake/cwd"
-  out=$(run_control "$dir" rlmiss relaunch --note "recover after a reboot killed the terminal backend"); rc=$?
+  out=$(TMUX='' run_control "$dir" rlmiss relaunch --note "recover after a reboot killed the terminal backend"); rc=$?
   expect_code 0 "$rc" "a relaunch onto a positively missing endpoint should succeed"$'\n'"$out"
   assert_contains "$out" "relaunched rlmiss harness=claude from=claude" "the outcome should name the transition"
   [ "$(meta_field "$dir" rlmiss window)" != "fmses:fm-rlmiss" ] \
@@ -415,6 +452,7 @@ test_missing_endpoint_relaunch_verifies_the_replacement_on_its_new_endpoint() {
   dir=$(new_case gone-verify rlmiss2)
   add_ship_task "$dir" rlmiss2 claude
   : > "$dir/fake/windows"
+  : > "$dir/fake/no-server"
   printf '%s' "$dir/proj" > "$dir/fake/cwd"
   # Unset for a deterministic session name: fm_backend_tmux_container_ensure
   # reuses the launching shell's own tmux session when TMUX is set, which
@@ -425,6 +463,64 @@ test_missing_endpoint_relaunch_verifies_the_replacement_on_its_new_endpoint() {
   assert_contains "$out" "endpoint=firstmate:fm-rlmiss2" \
     "the outcome should report the recreated endpoint, not the abandoned one"
   pass "fm-control relaunch: a recreated endpoint's liveness is proven on its own new endpoint, not the stale recorded one"
+}
+
+# A `missing` read only proves the recorded ADDRESS stopped resolving. While
+# the backend server is still up the agent may be alive at another address -
+# a renamed session, or a window moved out of the recorded one - so recreating
+# there would put a second agent in a worktree that already has one. Both
+# entry points must keep refusing those, and only those, reads.
+
+test_missing_session_over_a_live_server_still_refuses() {
+  local dir out rc
+  dir=$(new_case renamed-session rlrename)
+  add_ship_task "$dir" rlrename claude
+  : > "$dir/fake/no-session"
+  out=$(TMUX='' run_control "$dir" rlrename relaunch --note "should never reach here"); rc=$?
+  expect_code 1 "$rc" "a relaunch onto a renamed session should refuse"$'\n'"$out"
+  assert_contains "$out" "there is no agent to stop" \
+    "the refusal should come from the stop step, before the agent is touched"
+  [ "$(meta_field "$dir" rlrename window)" = "fmses:fm-rlrename" ] \
+    || fail "a refused relaunch must not rewrite the recorded endpoint"
+  [ "$(cat "$dir/fake/command")" = claude ] \
+    || fail "the agent that may still be running elsewhere must not be reported stopped"
+  assert_no_grep "encode launch-brief" "$dir/fake/literal" \
+    "no replacement may be launched while the old agent may still be alive"
+  pass "fm-control relaunch: a recorded session that no longer resolves refuses while the server is still up"
+}
+
+test_absent_window_over_a_live_server_still_refuses() {
+  local dir out rc
+  dir=$(new_case moved-window rlmoved)
+  add_ship_task "$dir" rlmoved claude
+  # The server answers, and the recorded window is simply not in its inventory
+  # any more - what `tmux move-window` out of the recorded session looks like.
+  : > "$dir/fake/windows"
+  out=$(TMUX='' run_control "$dir" rlmoved relaunch --note "should never reach here"); rc=$?
+  expect_code 1 "$rc" "a relaunch onto a moved-away window should refuse"$'\n'"$out"
+  [ "$(meta_field "$dir" rlmoved window)" = "fmses:fm-rlmoved" ] \
+    || fail "a refused relaunch must not rewrite the recorded endpoint"
+  [ ! -s "$dir/fake/windows" ] \
+    || fail "a refused relaunch must not create a replacement endpoint (created: $(cat "$dir/fake/windows"))"
+  assert_no_grep "encode launch-brief" "$dir/fake/literal" \
+    "no replacement may be launched while the old agent may still be alive"
+  pass "fm-control relaunch: a recorded window absent from a live server's inventory refuses rather than recreating"
+}
+
+test_spawn_relaunch_refuses_a_missing_address_over_a_live_server() {
+  local dir out rc
+  dir=$(new_case live-server rl43)
+  add_ship_task "$dir" rl43 claude
+  : > "$dir/fake/windows"
+  out=$(TMUX='' run_spawn "$dir" rl43 --relaunch --harness claude); rc=$?
+  expect_code 1 "$rc" "recreating over a live server should refuse"$'\n'"$out"
+  assert_contains "$out" "may be alive at another address" \
+    "the refusal should name why an unresolvable address is not proof of absence"
+  [ "$(meta_field "$dir" rl43 window)" = "fmses:fm-rl43" ] \
+    || fail "a refused relaunch must not rewrite the recorded endpoint"
+  [ ! -s "$dir/fake/windows" ] \
+    || fail "a refused relaunch must not create a replacement endpoint (created: $(cat "$dir/fake/windows"))"
+  pass "fm-spawn --relaunch: an unresolvable address over a running server refuses, unlike a stopped one"
 }
 
 test_ambiguous_endpoint_relaunch_still_refuses() {
@@ -447,6 +543,7 @@ test_missing_endpoint_relaunch_removes_its_recreated_endpoint_on_abort() {
   dir=$(new_case gone-abort rlmiss3)
   add_ship_task "$dir" rlmiss3 claude
   : > "$dir/fake/windows"
+  : > "$dir/fake/no-server"
   printf '%s' "$dir/proj" > "$dir/fake/cwd"
   meta="$dir/home/state/rlmiss3.meta"
   real_mv=$(command -v mv)
@@ -466,6 +563,7 @@ test_missing_endpoint_relaunch_keeps_a_recreated_endpoint_its_record_names() {
   dir=$(new_case gone-published rlmiss4)
   add_ship_task "$dir" rlmiss4 claude
   : > "$dir/fake/windows"
+  : > "$dir/fake/no-server"
   printf '%s' "$dir/proj" > "$dir/fake/cwd"
   meta="$dir/home/state/rlmiss4.meta"
   real_mv=$(command -v mv)
@@ -1563,6 +1661,7 @@ test_spawn_relaunch_recreates_a_missing_endpoint() {
   dir=$(new_case recreate rl41)
   add_ship_task "$dir" rl41 claude
   : > "$dir/fake/windows"
+  : > "$dir/fake/no-server"
   printf '%s' "$dir/proj" > "$dir/fake/cwd"
   # Unset for a deterministic session name (see the same note in
   # test_missing_endpoint_relaunch_verifies_the_replacement_on_its_new_endpoint).
@@ -1754,6 +1853,8 @@ test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
 test_missing_endpoint_relaunch_recreates_it
 test_missing_endpoint_relaunch_verifies_the_replacement_on_its_new_endpoint
 test_ambiguous_endpoint_relaunch_still_refuses
+test_missing_session_over_a_live_server_still_refuses
+test_absent_window_over_a_live_server_still_refuses
 test_missing_endpoint_relaunch_removes_its_recreated_endpoint_on_abort
 test_missing_endpoint_relaunch_keeps_a_recreated_endpoint_its_record_names
 test_relaunch_from_linked_home_preserves_recorded_worktree
@@ -1802,6 +1903,7 @@ test_promotion_participates_in_the_lifecycle_lock_before_metadata_resolution
 test_spawn_relaunch_refuses_a_live_agent
 test_spawn_relaunch_recreates_a_missing_endpoint
 test_spawn_relaunch_refuses_an_ambiguous_endpoint
+test_spawn_relaunch_refuses_a_missing_address_over_a_live_server
 test_spawn_relaunch_refuses_a_symlinked_task_record_before_inspection
 test_spawn_relaunch_keeps_its_early_meta_lock_continuous
 test_spawn_relaunch_refuses_a_pending_authoritative_close

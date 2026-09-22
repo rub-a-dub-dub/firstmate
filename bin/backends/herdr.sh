@@ -2353,6 +2353,16 @@ fm_backend_herdr_agent_state() {  # <target>
   esac
 }
 
+# fm_backend_herdr_server_absent: 0 only when the recorded session's server is
+# positively stopped, so no pane in it can hold an agent. The `missing` verdict
+# above is weaker - a running server answering pane_not_found also reads
+# `missing` - so a caller that needs absence of the AGENT rather than absence
+# of the pane must ask this as well.
+fm_backend_herdr_server_absent() {  # <target>
+  fm_backend_herdr_parse_target "$1" || return 1
+  [ "$(fm_backend_herdr_server_running_state "$FM_BACKEND_HERDR_SESSION")" = stopped ]
+}
+
 # Backward-compatible three-state view for callers that only need a yes/no
 # agent verdict. The detailed state contract is owned by fm_backend_agent_state.
 fm_backend_herdr_agent_alive() {  # <target>

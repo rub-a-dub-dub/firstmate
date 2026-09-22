@@ -362,6 +362,24 @@ EOF
   esac
 }
 
+# fm_backend_tmux_server_absent: 0 only when tmux itself is provably not
+# running, so no pane on any session can hold an agent. `missing` from
+# fm_backend_tmux_agent_state is a weaker claim - it also covers a renamed
+# session and a window moved out of the recorded one, where the recorded
+# ADDRESS stopped resolving while the agent kept running somewhere else - so a
+# caller that needs absence of the AGENT rather than absence of the address
+# must ask this as well. Every read that is not a definitive no-server answer,
+# including tmux being unavailable entirely, reports "not absent".
+fm_backend_tmux_server_absent() {
+  local out
+  out=$(LC_ALL=C tmux list-sessions -F '#{session_name}' 2>&1) && return 1
+  case "$out" in
+    *"no server running on "*|*"error connecting to "*" (No such file or directory)"|*"error connecting to "*" (Connection refused)")
+      return 0 ;;
+  esac
+  return 1
+}
+
 # Backward-compatible three-state view for callers that only need a yes/no
 # agent verdict. The detailed state contract is owned by fm_backend_agent_state.
 fm_backend_tmux_agent_alive() {  # <target>
