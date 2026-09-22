@@ -371,3 +371,54 @@ fm_backend_tmux_agent_alive() {  # <target>
     *) printf 'unknown' ;;
   esac
 }
+
+# fm_backend_tmux_endpoint_absent: 0 only when <target>'s window name exists
+# in NO session on this tmux server, so the task's agent cannot be running
+# anywhere on this backend. `missing` from fm_backend_tmux_agent_state is a
+# STRICTLY weaker claim - it only proves the recorded SESSION:WINDOW address
+# stopped resolving, and a `tmux rename-session` on the recorded session or a
+# `tmux move-window` of the recorded window out of it produce exactly that
+# while the agent underneath keeps running unchanged at another address.
+#
+# The window NAME is the task's durable identity here - pinned at creation
+# with automatic-rename/allow-rename off in fm_backend_tmux_create_task - but
+# nothing pins the SESSION name, and tmux has no lock against a deliberate
+# rename-session or move-window either way. So a caller that is about to
+# treat `missing` as license to relaunch a fresh agent onto the recorded
+# endpoint must ask this question first, by scanning every session's own
+# inventory for the window rather than trusting the recorded address alone:
+# recreating over a still-alive agent is the one outcome this guard exists to
+# prevent.
+#
+# Fails closed: any inventory read that fails for a reason other than a
+# proven absent server reports "not absent", so an unreadable or
+# partially-scanned server never licenses a relaunch. Only a definitive
+# no-server answer, or a complete scan across every session that never turns
+# up the window, proves absence.
+fm_backend_tmux_endpoint_absent() {  # <target>
+  local target=$1 window sessions session windows
+  case "$target" in
+    *:*:*|'':*|*:'') return 1 ;;
+    *:*) ;;
+    *) return 1 ;;
+  esac
+  window=${target#*:}
+  [ -n "$window" ] || return 1
+  if ! sessions=$(LC_ALL=C tmux list-sessions -F '#{session_name}' 2>&1); then
+    case "$sessions" in
+      *"no server running on "*|*"error connecting to "*" (No such file or directory)"|*"error connecting to "*" (Connection refused)")
+        return 0 ;;
+    esac
+    return 1
+  fi
+  while IFS= read -r session; do
+    [ -n "$session" ] || continue
+    windows=$(LC_ALL=C tmux list-windows -t "$session" -F '#{window_name}' 2>/dev/null) || return 1
+    if printf '%s\n' "$windows" | grep -Fqx "$window"; then
+      return 1
+    fi
+  done <<EOF
+$sessions
+EOF
+  return 0
+}
