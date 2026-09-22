@@ -115,6 +115,14 @@
 # (bin/fm-merge-authority-lib.sh, bin/fm-merge-outcome-lib.sh); passing it
 # when no such refusal actually fires leaves the ordinary attended authority
 # unchanged.
+# A used waiver also changes what this run itself announces: because the
+# waived head had no check report at all, its verified line drops the
+# ordinary "every required check green" claim, reporting instead that no
+# check is red at that head - naming any check --allow-red waived, so the
+# line stays true when both escapes compose - and that the head's missing
+# CI evidence was waived. The stand-downs above, which concluded no CI
+# evidence was ever obtainable rather than overriding any, keep the
+# ordinary wording.
 # If the pull request remains open and the base branch has an effective
 # merge_queue rule, an attended refusal names the queue's configured merge
 # method and exact --attended-override -- --auto --<method> retry flags. While
