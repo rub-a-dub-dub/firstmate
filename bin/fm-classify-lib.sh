@@ -241,19 +241,21 @@ status_paused_until() {  # <status-line> -> epoch on stdout
 #
 # The one exception is the shared "default" bucket itself (see the key grammar
 # below): an UNKEYED needs-decision/blocked names no specific captain decision to
-# answer, so a captain reading OPEN DECISIONS has no key to close it with - it
-# used to fold as open forever, with no route out, even long after the crew
-# moved past it (a `done:` or `paused:` line is exactly that crew
-# moving on). A STATED key stays governed by the rule above unconditionally: it
-# names a real captain decision, and only its own resolved/captain-held line
-# ever closes it. Only the unkeyed "default" bucket is retired by a later plain
-# done/paused line on the same task, and "plain" is read off that
-# retiring line too: it must itself be unkeyed, because a keyed
-# done/paused line is a report about the decision its OWN key names (the
-# scripted `done [key=child-outcome-...]`, `done [key=child-pr-<id>]` and
-# `done [key=merged-<id>]` lines the child-outcome, PR-readiness and merge
-# publishers append straight into a secondmate's parent channel are exactly
-# that) and says nothing about the separate unkeyed bucket. "Plain" also
+# answer, so the only key a captain reading OPEN DECISIONS can close it with is
+# that shared bucket itself (`--resolve-key default`, which the drain now
+# prints on the row) rather than one naming the decision - it used to fold as
+# open forever with no other route out, even long after the crew moved past it
+# (a `done:` or `paused:` line is exactly that crew moving on). A STATED key
+# stays governed by the rule above unconditionally: it names a real captain
+# decision, and only its own resolved/captain-held line ever closes it. Only
+# the unkeyed "default" bucket is retired by a later plain done/paused line on
+# the same task, and "plain" is read off that retiring line too: it must itself
+# be unkeyed, because a keyed done/paused line is a report about the decision
+# its OWN key names (the scripted `done [key=child-outcome-...]`,
+# `done [key=child-pr-<id>]` and `done [key=merged-<id>]` lines the
+# child-outcome, PR-readiness and merge publishers append straight into a
+# secondmate's parent channel are exactly that) and says nothing about the
+# separate unkeyed bucket. "Plain" also
 # excludes any line carrying a correlation token (bracketed "[corr=...]" or the
 # bare `corr=<16 hex>` word bin/fm-pending-reply-lib.sh writes), because that
 # token marks a secondmate's own protocol delivery report, not an ordinary
