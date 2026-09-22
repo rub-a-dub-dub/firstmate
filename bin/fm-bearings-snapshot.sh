@@ -49,10 +49,12 @@
 # date keep their input order after dated gates. The synthetic (return-catchup)
 # posture row is reserved ahead of that ordering and bound so it always surfaces.
 # A same-day filing cluster leaves that ordering unable to discriminate among its
-# rows, so a gate referenced by the title, hold reason, or body text of a live
-# captain hold is retained past the bound rather than silently dropped behind an
-# honest count; the omitted[] entry names every gate kept this way. This is a
-# textual, not structural, cross-reference: it never changes hold_bucket.
+# rows, so a gate whose id is named as a whole word in the title, hold reason, or
+# body text of a live captain hold is retained past the bound rather than silently
+# dropped behind an honest count; the omitted[] entry names every gate kept this
+# way. Registered secondmate ledgers publish no hold body, so their holds match on
+# title and hold reason only. This is a textual, not structural, cross-reference:
+# it never changes hold_bucket.
 #
 # Main-home inventory validity comes from the canonical snapshot's main_inventory
 # object (orphan structured in-flight without meta, unstructured current rows).
@@ -158,9 +160,10 @@ Default fields: schema, home, generated, prs, in_flight{id,kind,state,repo,name,
   gates{id,title,blocked_by,reason,owner,filed}, reports{id,path}, recorded_prs{id,url},
   unhealthy_endpoints{...} (only when non-empty), omitted{surface,reveal}.
 Default gates are selected newest filed first before their bound; undated gates
-  retain input order after dated gates. A gate named in a live captain hold's
-  title, hold reason, or body text is kept past that bound, with omitted[]
-  naming every gate retained this way.
+  retain input order after dated gates. A gate whose id is named as a whole word
+  in a live captain hold's title, hold reason, or body text (body text for this
+  home's holds; secondmate ledgers publish none) is kept past that bound, with
+  omitted[] naming every gate retained this way.
 landed merges this home's Done with registered secondmate homes' Done, bounded by
   a per-home cap (FM_BEARINGS_LANDED_PER_HOME) and an overall cap (FM_BEARINGS_LANDED),
   with omitted[] disclosure. Default selection is balanced across deterministic home
@@ -434,8 +437,12 @@ MODEL=$(printf '%s' "$SNAP" | jq \
      reason:(hold_gate_reason | trunc(40)), owner:$owner,
      filed:((.since // null) | trunc(40))};
   def hold_ref_text:
-    ((.title // "") + " " + (.hold_reason // "") + " " + (.body_excerpt // "")
-     + " " + (.blocked_reason // ""));
+    ((.title // "") + " " + (.hold_reason // "") + " "
+     + ((.body_lines // []) | join(" ")));
+  def id_word_re($id):
+    "(^|[^A-Za-z0-9_-])"
+    + ($id | gsub("(?<c>[^A-Za-z0-9_])"; "\\\(.c)"))
+    + "($|[^A-Za-z0-9_-])";
   def round_robin_landed($n):
     . as $groups
     | [range(0; (($groups | map(length) | max) // 0)) as $i
@@ -613,7 +620,10 @@ MODEL=$(printf '%s' "$SNAP" | jq \
       | map(.value);
     ($gates_all | newest_filed_first) as $gates_sorted
   | ($gates_sorted[:$gates_n]) as $gates_top
-  | ($gates_sorted | map(select(.id as $id | any($live_hold_texts[]; contains($id))))) as $gates_referenced
+  | ($gates_sorted
+     | map(select((.id // "") as $id
+             | $id != "" and (id_word_re($id) as $re
+                              | any($live_hold_texts[]; test($re)))))) as $gates_referenced
   | (($gates_top + ($gates_referenced - $gates_top)) | newest_filed_first) as $gates_capped
   | (if $all_queued == 1 then $gates_sorted else $gates_capped end) as $gates_shown
   | . as $snap

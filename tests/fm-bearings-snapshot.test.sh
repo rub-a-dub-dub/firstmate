@@ -2543,7 +2543,9 @@ EOF
 # Filed-date ordering cannot discriminate within a same-day cluster, so the gate
 # bound alone can silently drop the one row a live captain hold is waiting on.
 # A gate named in a live captain hold's body text must survive the bound even
-# when its filed date ties with every other row in the cluster.
+# when its filed date ties with every other row in the cluster, and even when the
+# naming sentence sits past the hold body's display-excerpt cutoff. A gate whose
+# id is merely a prefix of the named one is NOT referenced and must not be kept.
 test_gate_named_in_a_live_captain_hold_survives_the_bound() {
   local home fakebin json
   home=$(make_home hold-named-gate)
@@ -2555,10 +2557,11 @@ test_gate_named_in_a_live_captain_hold_survives_the_bound() {
 - [ ] gate-a - Gate A (repo: firstmate) (kind: ship) (since 2026-07-11)
 - [ ] gate-b - Gate B (repo: firstmate) (kind: ship) (since 2026-07-11)
 - [ ] gate-c - Gate C (repo: firstmate) (kind: ship) (since 2026-07-11)
-- [ ] gate-d - Gate D (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] signing - Rotate the release signing key (repo: firstmate) (kind: ship) (since 2026-07-11)
 - [ ] signing-fix - Fix the unattended commit signing (repo: firstmate) (kind: ship) (since 2026-07-11)
 - [ ] enable-schedule - Enable the nightly job (repo: firstmate) (kind: captain) (since 2026-07-11) (hold: waiting on the fix) (hold-kind: captain)
   Captain hold set: 2026-07-11T00:00:00Z
+  The captain spent the evening tracing why the unattended runner refuses to commit anything at all, walked the runner log twice, compared it against last week's clean run, and wrote the whole trail down here so the next session does not have to rediscover any of it from scratch again.
   Waiting on signing-fix before enabling this schedule tonight.
 
 ## Done
@@ -2570,12 +2573,12 @@ EOF
       and (.gates | any(.id == "gate-a"))
       and (.gates | any(.id == "gate-b"))
       and (.gates | any(.id == "gate-c"))
-      and (.gates | any(.id == "gate-d") | not)
+      and (.gates | any(.id == "signing") | not)
       and (.gates | length) == 4
       and (.decisions_open | any(.id == "enable-schedule"))
       and ([.omitted[].surface] | index("gates showing 4 of 5") != null)
-      and ([.omitted[].surface] | any(startswith("gates retained past the truncation bound")
-                                      and contains("signing-fix")))
+      and ([.omitted[].surface]
+           | index("gates retained past the truncation bound, referenced by a live captain hold: signing-fix") != null)
   ' >/dev/null || fail "a gate named in a live captain hold vanished behind the bound: $json"
   pass "a gate named in a live captain hold survives the bound"
 }
