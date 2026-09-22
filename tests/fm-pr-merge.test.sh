@@ -3538,6 +3538,77 @@ test_block_sequence_character_class_filter_is_unevaluable() {
   pass "fm-pr-merge treats a block-sequence character-class filter as covering rather than skipping"
 }
 
+# A paths filter using GitHub's "?" quantifier, the documented idiom for "a .ts
+# or a .tsx file". GitHub reads "?" as zero or one of the PRECEDING character,
+# so this filter covers src/app.ts and GitHub runs CI for this pull request.
+# The shell's globbing reads "?" as exactly one arbitrary character instead,
+# under which neither src/app.ts nor src/app.tsx matches - so evaluating the
+# pattern that way would confirm a skip that never happened and merge a
+# dropped delivery unchecked. A "?" therefore has to be unevaluable, which
+# counts the pull request as covered and leaves the gate armed.
+test_question_mark_quantifier_filter_is_unevaluable_not_a_skip() {
+  local case_dir rc head
+  head=9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d
+  case_dir=$(make_case github-question-mark-paths)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir" 'on:
+  pull_request:
+    paths: ["**/*.tsx?"]
+'
+  set_pr_files "$case_dir" src/app.ts
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/140 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "question-mark-paths: a \"?\" quantifier must be unevaluable, never a confirmed skip"
+  assert_grep 'suspected dropped CI event' "$case_dir/stderr" \
+    "question-mark-paths: the suspected-drop reason was not reported"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "question-mark-paths: gh pr merge ran on a suspected dropped CI event"
+  pass "fm-pr-merge treats a \"?\" quantifier in a paths filter as covering rather than skipping"
+}
+
+# The same divergence reached through a branches filter, which needs no
+# changed-file list at all: GitHub reads "main?" as "mai" plus an optional "n",
+# so it covers this pull request's own base, while the shell demands one more
+# character after "main" and would call it a skip - standing the gate down on
+# the repository's mainline pull requests.
+test_question_mark_quantifier_branches_filter_is_unevaluable() {
+  local case_dir rc head
+  head=9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e
+  case_dir=$(make_case github-question-mark-branches)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir" 'on:
+  pull_request:
+    branches: ["main?"]
+'
+  set_pr_files "$case_dir" src/app.ts
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/141 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "question-mark-branches: a \"?\" quantifier in a branches filter must never confirm a skip"
+  assert_grep 'suspected dropped CI event' "$case_dir/stderr" \
+    "question-mark-branches: the suspected-drop reason was not reported"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "question-mark-branches: gh pr merge ran on a suspected dropped CI event"
+  pass "fm-pr-merge treats a \"?\" quantifier in a branches filter as covering rather than skipping"
+}
+
 # The filters that decide the exemption are the ones on the pull request's
 # MERGE ref - head merged into base, the tree GitHub resolves a pull_request
 # run from - and on no other ref. Here every other ref's copy would cover this
@@ -4378,6 +4449,8 @@ test_multiline_inline_branches_filter_never_confirms_a_skip
 test_inline_character_class_paths_filter_is_unevaluable_not_a_skip
 test_wrapped_flow_sequence_with_a_class_is_not_read_as_closed
 test_block_sequence_character_class_filter_is_unevaluable
+test_question_mark_quantifier_filter_is_unevaluable_not_a_skip
+test_question_mark_quantifier_branches_filter_is_unevaluable
 test_workflow_filters_are_read_from_the_merge_ref
 test_filter_confirmed_stand_down_names_the_workflow_and_filter
 test_workflow_editing_pr_is_judged_by_its_own_merge_ref_filter

@@ -775,13 +775,17 @@ github_workflow_pull_request_trigger() {
 
 # Whether a branches/paths glob pattern is simple enough for this heuristic to
 # judge with confidence: only literal characters, "/", "-", "_", ".", and the
-# wildcards "*" and "?". A "!" negation, a character class, an extglob form,
-# or anything else this never learned is left for the caller to treat as
-# covering the candidate rather than guessed at.
+# wildcard "*". A "?" quantifier, a "!" negation, a character class, an
+# extglob form, or anything else this never learned is left for the caller to
+# treat as covering the candidate rather than guessed at. "?" is excluded
+# because GitHub reads it as zero or one of the PRECEDING character while the
+# shell's globbing below reads it as exactly one arbitrary character: two
+# different languages, and the shell's answer can be the narrower one, which
+# would wrongly exempt a pull request GitHub's own filter covers.
 github_glob_pattern_simple() {
   case "$1" in
     '') return 1 ;;
-    *[!A-Za-z0-9_./*?-]*) return 1 ;;
+    *[!A-Za-z0-9_./*-]*) return 1 ;;
   esac
 }
 
