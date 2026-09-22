@@ -59,7 +59,9 @@
 # retentions are capped at FM_BEARINGS_GATES_PINNED with the live-hold ones
 # claiming that cap first, because the live hold is the one the captain is
 # mid-way through and the deferred hold's own gate row already names its blockers.
-# omitted[] names every gate kept this way plus any retention the cap dropped.
+# gates_retained lists every gate kept this way for a consumer that must keep them
+# all; omitted[] carries the bounded human-readable note plus any retention the cap
+# dropped.
 # The textual half is a heuristic, so it only considers gate ids carrying a - or _:
 # an ordinary prose word can never pin a gate, at the accepted cost that a
 # single-word gate id is retained only when a hold names it structurally.
@@ -171,14 +173,17 @@ Default fields: schema, home, generated, prs, in_flight{id,kind,state,repo,name,
   secondmates{id,state,doing,provenance,freshness,age_seconds,contradiction,reason},
   secondmate_reconcile{id,spawn_gen,host,kind,ids},
   decisions_open{id,key,verb,summary,owner}, landed{id,what,artifact,owner},
-  gates{id,title,blocked_by,reason,owner,filed}, reports{id,path}, recorded_prs{id,url},
+  gates{id,title,blocked_by,reason,owner,filed},
+  gates_retained{id,owner} (only when a bounded run retained a gate),
+  reports{id,path}, recorded_prs{id,url},
   unhealthy_endpoints{...} (only when non-empty), omitted{surface,reveal}.
 Default gates are selected newest filed first before their bound; undated gates
   retain input order after dated gates. A gate that a captain hold in its own home
   names - textually in a live hold's title, hold reason, or body text, or
   structurally by a deferred hold's unresolved blocked-by id - is kept past that
-  bound, capped by FM_BEARINGS_GATES_PINNED with the live-hold retentions first,
-  and omitted[] names every gate retained this way.
+  bound, capped by FM_BEARINGS_GATES_PINNED with the live-hold retentions first.
+  gates_retained names each of those rows in full for a consumer that must carry
+  every one of them; omitted[] reports the same retention as a bounded note.
 landed merges this home's Done with registered secondmate homes' Done, bounded by
   a per-home cap (FM_BEARINGS_LANDED_PER_HOME) and an overall cap (FM_BEARINGS_LANDED),
   with omitted[] disclosure. Default selection is balanced across deterministic home
@@ -685,6 +690,12 @@ MODEL=$(printf '%s' "$SNAP" | jq \
       reports: (if $all_reports == 1 then $reports_all else $reports_all[:$reports_n] end),
       recorded_prs: (if $all_recorded_prs == 1 then $recorded_prs_all else $recorded_prs_all[:$recorded_prs_n] end)
     }
+  # gates_retained is bounded by FM_BEARINGS_GATES_PINNED, which is the whole point
+  # of it: a consumer that must keep every retained row needs the complete list, so
+  # never trunc() this array or drop rows from it.
+  | . + (if $all_queued == 0 and ($gates_pinned | length) > 0 then
+           {gates_retained:($gates_pinned | map({id, owner}))}
+         else {} end)
   | . + (if ($unhealthy_all | length) > 0 then
            {unhealthy_endpoints:(if $all_unhealthy == 1 then $unhealthy_all else $unhealthy_all[:$unhealthy_n] end)}
          else {} end)

@@ -2757,6 +2757,54 @@ EOF
   pass "gate retention past the bound is capped, ranked live-hold first, and disclosed"
 }
 
+# The human-readable retention line in omitted[] is bounded prose, so with realistic
+# ids it cannot name every retained row. A consumer that has to carry them all - the
+# board composer, whose own truncation is by filed date, the ordering that lost them
+# in the first place - reads the complete gates_retained field instead.
+test_every_retained_gate_is_named_in_the_structured_field() {
+  local home fakebin json
+  home=$(make_home retained-field)
+  : > "$home/data/secondmates.md"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+- [ ] top-gate - Newest filed gate (repo: firstmate) (kind: ship) (since 2026-07-12)
+- [ ] cowork-refine-job-unattended-commit-and-timeout - Unattended commit and timeout (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] cowork-refine-job-signing-and-retry-backoff-path - Signing and retry backoff (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] cowork-refine-job-log-rotation-and-disk-pressure - Log rotation and disk pressure (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] cowork-refine-job-secret-rotation-and-key-escrow - Secret rotation and key escrow (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] cowork-refine-job-timeout-budget-and-kill-switch - Timeout budget and kill switch (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] enable-nightly - Enable the nightly job (repo: firstmate) (kind: captain) (since 2026-07-11) (hold: waiting on the refine work) (hold-kind: captain)
+  Captain hold set: 2026-07-11T00:00:00Z
+  Waiting on cowork-refine-job-unattended-commit-and-timeout, cowork-refine-job-signing-and-retry-backoff-path, cowork-refine-job-log-rotation-and-disk-pressure, cowork-refine-job-secret-rotation-and-key-escrow and cowork-refine-job-timeout-budget-and-kill-switch before enabling this schedule.
+
+## Done
+EOF
+  fakebin=$(make_fakebin "$home")
+  json=$(FM_BEARINGS_GATES=1 run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    ["cowork-refine-job-unattended-commit-and-timeout",
+     "cowork-refine-job-signing-and-retry-backoff-path",
+     "cowork-refine-job-log-rotation-and-disk-pressure",
+     "cowork-refine-job-secret-rotation-and-key-escrow",
+     "cowork-refine-job-timeout-budget-and-kill-switch"] as $retained
+    | ([.gates_retained[].id] | sort) == ($retained | sort)
+      and ([.gates_retained[].owner] | unique) == ["(main)"]
+      and ([.gates[].id] | contains($retained))
+      and (.gates | length) == 6
+      and ([.omitted[].surface] | any(startswith("gates retained past the truncation bound")))
+      and ([.omitted[].surface] | any(startswith("gates retained past the bound capped at")) | not)
+  ' >/dev/null || fail "the structured retained-gate field did not carry every retained row: $json"
+  json=$(FM_BEARINGS_GATES=20 run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    (.gates | length) == 6
+      and (has("gates_retained") | not)
+      and ([.omitted[].surface] | any(startswith("gates retained")) | not)
+  ' >/dev/null || fail "a run that retained nothing still published a retained-gate field: $json"
+  pass "every retained gate is named in the structured field"
+}
+
 # A captain scanning Underway must be able to tell WHICH task a row is, and the
 # board orders Charted Next by the durable filed date, so both facts have to come
 # out of fleet state rather than being invented at render time.
@@ -3633,6 +3681,7 @@ test_secondmate_hold_pins_its_gate_past_the_queued_bound
 test_a_captain_hold_never_pins_another_homes_same_named_gate
 test_secondmate_blocked_hold_pins_its_structural_blocker
 test_gate_retention_is_capped_and_discloses_the_cap
+test_every_retained_gate_is_named_in_the_structured_field
 test_underway_and_gate_rows_carry_the_durable_name_and_filed_date
 test_mixed_secondmate_roles_partial_state_and_captain_readiness
 test_main_captain_readiness_matches_secondmate_projection
