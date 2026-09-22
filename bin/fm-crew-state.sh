@@ -713,8 +713,8 @@ if [ "$HAVE_RUN" = 1 ]; then
     # review" and the failed/cancelled arms never assert a landing, so they
     # stay as they were; only passed and passed-with-override previously
     # overclaimed a merge from the outcome name alone. The coarse
-    # ledger-fallback case below and the no-outcome status fallback further
-    # down were audited the same way and likewise left unchanged: "run
+    # ledger-fallback case above and the no-outcome status fallback below
+    # were audited the same way and likewise left unchanged: "run
     # completed"/"ci running"/"validating (...)" assert nothing about a merge.
     if [ -n "$outcome" ]; then
       case "$outcome" in
