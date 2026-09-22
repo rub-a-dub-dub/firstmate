@@ -1468,6 +1468,14 @@ families_for_changed_path() {
       printf '%s\n' watcher-wake-lock
       printf '%s\n' "__script__:fm-procevent-quota.test.sh"
       ;;
+    bin/fm-check-rollup-lib.sh)
+      # The shared current-run check verdict, read by both bin/fm-pr-merge.sh's
+      # merge gate (pr-forge) and bin/fm-bearings-snapshot.sh's PR-checks
+      # digest (snapshot-bearings). Must stay above the bin/fm-check* arm,
+      # which would otherwise select only the gate's family.
+      printf '%s\n' pr-forge
+      printf '%s\n' snapshot-bearings
+      ;;
     bin/fm-pr-*|bin/fm-merge-local.sh|bin/fm-teardown.sh|bin/fm-review-diff.sh|\
     bin/fm-x-*|bin/fm-check*)
       printf '%s\n' pr-forge
