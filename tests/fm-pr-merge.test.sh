@@ -4390,6 +4390,215 @@ test_merge_refuses_when_the_away_record_cannot_be_locked() {
   pass "a merge that cannot lock the away record refuses instead of merging unlocked"
 }
 
+# --waive-no-ci-evidence is the attended escape for the two refusals above
+# (grace and dropped) that --allow-red cannot reach because they sit outside
+# its per-check loop entirely.
+test_waive_no_ci_evidence_merges_grace_and_dropped_heads() {
+  local case_dir head url
+
+  # Grace: within the grace window, waived anyway once attended and certain.
+  head=4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a
+  case_dir=$(make_case github-waive-ci-grace)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir"
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:57:00Z # 180s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+  url=https://github.com/example/repo/pull/121
+
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-no-ci-evidence "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "waive-ci-grace: --waive-no-ci-evidence should merge past the grace-window refusal"$'\n'"$(cat "$case_dir/stderr")"
+  assert_logged_gh_merge "$case_dir" 121 example/repo --squash
+  assert_grep 'attended-ci-waived' "$case_dir/stderr" \
+    "waive-ci-grace: the waiver notice did not name attended-ci-waived"
+
+  # Dropped: past the grace window, the suspected-drop verdict, waived anyway.
+  head=5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+  case_dir=$(make_case github-waive-ci-dropped)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir"
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+  url=https://github.com/example/repo/pull/122
+
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-no-ci-evidence "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "waive-ci-dropped: --waive-no-ci-evidence should merge past the suspected-drop refusal"$'\n'"$(cat "$case_dir/stderr")"
+  assert_logged_gh_merge "$case_dir" 122 example/repo --squash
+  assert_grep 'attended-ci-waived' "$case_dir/stderr" \
+    "waive-ci-dropped: the waiver notice did not name attended-ci-waived"
+
+  pass "fm-pr-merge's attended --waive-no-ci-evidence merges past both the grace and suspected-drop no-evidence refusals"
+}
+
+# The point of the change: a used waiver has to survive as an auditable
+# record, not just a stderr line that scrolls away. bin/fm-merge-authority-lib.sh's
+# persisted state/<task-id>.merge-authority is that record.
+test_waive_no_ci_evidence_records_attended_ci_waived_authority() {
+  local case_dir head url record expected
+  head=5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b
+  case_dir=$(make_case github-waive-ci-audit)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir"
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+  url=https://github.com/example/repo/pull/123
+
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-no-ci-evidence "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "waive-ci-audit: the waived merge should succeed"$'\n'"$(cat "$case_dir/stderr")"
+
+  record="$case_dir/state/task-x1.merge-authority"
+  [ -f "$record" ] || fail "waive-ci-audit: no merge-authority record was persisted"
+  expected=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n' \
+    fm-merge-authority-v1 github github.com example/repo 123 attended-ci-waived)
+  [ "$(cat "$record")" = "$expected" ] \
+    || fail "waive-ci-audit: persisted merge authority was not attended-ci-waived: $(cat "$record")"
+  pass "fm-pr-merge records a used --waive-no-ci-evidence waiver as attended-ci-waived merge authority"
+}
+
+# Passing the flag when it never actually stands in for a refusal must leave
+# the ordinary attended authority untouched - only a used waiver is tagged.
+test_waive_no_ci_evidence_unused_leaves_ordinary_attended_authority() {
+  local case_dir head url record expected
+  head=5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c
+  case_dir=$(make_case github-waive-ci-unused)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  url=https://github.com/example/repo/pull/125
+
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-no-ci-evidence "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "waive-ci-unused: an ordinary green merge should still succeed"$'\n'"$(cat "$case_dir/stderr")"
+  assert_no_grep 'attended-ci-waived' "$case_dir/stderr" \
+    "waive-ci-unused: an unused waiver must not claim it waived anything"
+
+  record="$case_dir/state/task-x1.merge-authority"
+  [ -f "$record" ] || fail "waive-ci-unused: no merge-authority record was persisted"
+  expected=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n' \
+    fm-merge-authority-v1 github github.com example/repo 125 attended)
+  [ "$(cat "$record")" = "$expected" ] \
+    || fail "waive-ci-unused: an unused waiver changed the persisted authority: $(cat "$record")"
+  pass "fm-pr-merge leaves ordinary attended authority alone when --waive-no-ci-evidence never fires"
+}
+
+# Scoped narrowly: a red or missing named check is --allow-red's own refusal,
+# never this escape's, even when the flag is passed alongside it.
+test_waive_no_ci_evidence_never_covers_a_red_check() {
+  local case_dir rc head url
+  head=cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd
+  case_dir=$(make_case github-waive-ci-not-red)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  write_github_red_json "$case_dir" "$head" lint
+  url=https://github.com/example/repo/pull/126
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-no-ci-evidence "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "waive-ci-not-red: --waive-no-ci-evidence must not waive a red check"
+  assert_grep "check 'lint' is not green" "$case_dir/stderr" \
+    "waive-ci-not-red: the red check refusal was not reported"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "waive-ci-not-red: gh pr merge ran with a red check still refusing"
+  pass "fm-pr-merge's --waive-no-ci-evidence never waives a red or missing named check"
+}
+
+test_waive_no_ci_evidence_is_refused_while_away() {
+  local case_dir rc head url
+  head=6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a
+  case_dir=$(make_case github-waive-ci-away)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir"
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+  write_away_record "$case_dir" --grant task-x1
+  url=https://github.com/example/repo/pull/124
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-no-ci-evidence "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "waive-ci-away: --waive-no-ci-evidence must be refused while away"
+  assert_grep '--waive-no-ci-evidence is attended-only' "$case_dir/stderr" \
+    "waive-ci-away: refusal did not name attended-only"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "waive-ci-away: gh pr merge ran despite away --waive-no-ci-evidence"
+  pass "fm-pr-merge refuses --waive-no-ci-evidence while the away-posture record exists"
+}
+
+test_waive_no_ci_evidence_requires_matching_url_and_single_use() {
+  local case_dir rc head url other_url
+  head=afafafafafafafafafafafafafafafafafafafaf
+  url=https://github.com/example/repo/pull/127
+  other_url=https://github.com/example/repo/pull/128
+
+  case_dir=$(make_case github-waive-ci-wrong-url)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-no-ci-evidence "$other_url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "waive-ci-wrong-url: a mismatched PR URL must be refused"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "waive-ci-wrong-url: gh pr merge ran for a mismatched --waive-no-ci-evidence URL"
+
+  case_dir=$(make_case github-waive-ci-equals)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-no-ci-evidence="$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "waive-ci-equals: the equals form must be refused"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "waive-ci-equals: gh pr merge ran for the equals alias"
+
+  case_dir=$(make_case github-waive-ci-duplicate)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$url" \
+    --waive-no-ci-evidence "$url" --waive-no-ci-evidence "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "waive-ci-duplicate: a repeated waiver must be refused"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "waive-ci-duplicate: gh pr merge ran for a duplicated --waive-no-ci-evidence"
+
+  pass "fm-pr-merge accepts --waive-no-ci-evidence only once and only for the exact PR being merged"
+}
+
+test_waive_no_ci_evidence_refused_on_gitlab() {
+  local case_dir rc
+  case_dir=$(make_gitlab_case gitlab-waive-ci)
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$MR_URL" --waive-no-ci-evidence "$MR_URL" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "gitlab-waive-ci: --waive-no-ci-evidence must not apply on GitLab"
+  assert_grep '--waive-no-ci-evidence does not apply to GitLab' "$case_dir/stderr" \
+    "gitlab-waive-ci: refusal did not name GitLab"
+  [ ! -s "$case_dir/glab.log" ] || fail "gitlab-waive-ci: glab ran despite --waive-no-ci-evidence"
+  pass "fm-pr-merge refuses --waive-no-ci-evidence on GitLab"
+}
+
 test_allow_red_refused_on_gitlab() {
   local case_dir rc
   case_dir=$(make_gitlab_case gitlab-allow-red)
@@ -4479,3 +4688,10 @@ test_away_record_cannot_change_between_the_authority_read_and_the_merge
 test_a_grant_revoked_before_the_merge_refuses_it
 test_merge_refuses_when_the_away_record_cannot_be_locked
 test_allow_red_refused_on_gitlab
+test_waive_no_ci_evidence_merges_grace_and_dropped_heads
+test_waive_no_ci_evidence_records_attended_ci_waived_authority
+test_waive_no_ci_evidence_unused_leaves_ordinary_attended_authority
+test_waive_no_ci_evidence_never_covers_a_red_check
+test_waive_no_ci_evidence_is_refused_while_away
+test_waive_no_ci_evidence_requires_matching_url_and_single_use
+test_waive_no_ci_evidence_refused_on_gitlab

@@ -99,6 +99,22 @@
 # own view still proves a landed merge, and every outcome it cannot prove
 # refuses, reporting the failed gh read and naming both failed reads when the
 # gh-axi view could not prove the outcome either.
+# A separate attended --waive-no-ci-evidence <pr-url> may be passed once,
+# naming the exact pull request being merged as its own argument; it waives
+# only the confirmed-absence refusal above (the grace and dropped verdicts of
+# github_check_dropped_ci_event), never a red or missing named check, which
+# --allow-red already owns, and never any other refusal condition in this
+# script. Its argument must equal this invocation's own canonical URL, so a
+# copied flag can never carry over onto a different pull request. Like
+# --allow-red it is refused while the away-posture record exists and never
+# applies on GitLab, where a merge already requires the head pipeline to have
+# succeeded. When it actually waives a refusal that would otherwise have
+# fired, the merge's persisted authority is recorded as attended-ci-waived
+# instead of attended, so the waiver survives in
+# state/<task-id>.merge-authority and in the captain-facing merge outcome
+# (bin/fm-merge-authority-lib.sh, bin/fm-merge-outcome-lib.sh); passing it
+# when no such refusal actually fires leaves the ordinary attended authority
+# unchanged.
 # If the pull request remains open and the base branch has an effective
 # merge_queue rule, an attended refusal names the queue's configured merge
 # method and exact --attended-override -- --auto --<method> retry flags. While
@@ -169,7 +185,7 @@
 # explicit captain instruction and never skips the live green check, the
 # away-grant check, or a captain hold.
 #
-# Usage: fm-pr-merge.sh <task-id> <pr-url> [--attended-override] [--allow-red <check-name>] [-- <extra forge merge args>]
+# Usage: fm-pr-merge.sh <task-id> <pr-url> [--attended-override] [--allow-red <check-name>] [--waive-no-ci-evidence <pr-url>] [-- <extra forge merge args>]
 #
 # On GitLab, this script confirms the MR is actually merged before reporting it;
 # an auto-merge-queued or unconfirmed request leaves the poll armed and records
@@ -240,6 +256,8 @@ PROJECT_URL="https://$FM_PR_HOST/$FM_PR_PATH"
 shift 2
 ATTENDED_OVERRIDE=false
 ALLOW_RED=()
+WAIVE_NO_CI_EVIDENCE=false
+WAIVE_NO_CI_EVIDENCE_URL=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --attended-override)
@@ -260,12 +278,31 @@ while [ "$#" -gt 0 ]; do
       echo "error: --allow-red requires a separate check name argument" >&2
       exit 2
       ;;
+    --waive-no-ci-evidence)
+      [ -n "${2:-}" ] || { echo "error: --waive-no-ci-evidence requires the pull request URL as its argument" >&2; exit 2; }
+      [ "$WAIVE_NO_CI_EVIDENCE" = false ] || { echo "error: --waive-no-ci-evidence may be specified only once" >&2; exit 2; }
+      WAIVE_NO_CI_EVIDENCE=true
+      WAIVE_NO_CI_EVIDENCE_URL=$2
+      shift 2
+      ;;
+    --waive-no-ci-evidence=*)
+      echo "error: --waive-no-ci-evidence requires a separate pull request URL argument" >&2
+      exit 2
+      ;;
     --) shift; break ;;
     *) break ;;
   esac
 done
 if [ "${#ALLOW_RED[@]}" -gt 0 ] && [ "$PROVIDER" = gitlab ]; then
   echo "error: --allow-red does not apply to GitLab, where a merge already requires the head pipeline to have succeeded" >&2
+  exit 2
+fi
+if [ "$WAIVE_NO_CI_EVIDENCE" = true ] && [ "$WAIVE_NO_CI_EVIDENCE_URL" != "$URL" ]; then
+  echo "error: --waive-no-ci-evidence must name the exact pull request being merged ($URL)" >&2
+  exit 2
+fi
+if [ "$WAIVE_NO_CI_EVIDENCE" = true ] && [ "$PROVIDER" = gitlab ]; then
+  echo "error: --waive-no-ci-evidence does not apply to GitLab, where a merge already requires the head pipeline to have succeeded" >&2
   exit 2
 fi
 
@@ -394,6 +431,11 @@ if [ "$PROVIDER" = gitlab ]; then
   done
 fi
 FM_PR_AWAY_POSTURE=false
+# Set true only inside github_verify_mergeable, and only when
+# --waive-no-ci-evidence actually stood in for a refusal that would otherwise
+# have fired (grace or dropped); passing the flag when neither verdict fires
+# leaves this false and the merge's authority ordinary attended.
+FM_PR_NO_CI_EVIDENCE_WAIVED=false
 
 fm_backlog_directory_present "$STATE" "state directory" || {
   echo "error: PR merge refused: $FM_BACKLOG_TRANSITION_ERROR" >&2
@@ -1133,12 +1175,22 @@ FIELDS
           echo "note: no pull_request-event run is recorded for head $live_head and both its commit and this pull request are older than GitHub's Actions run retention window, so that absence is expired evidence rather than a confirmed one and the dropped-CI-event check is disarmed for this merge attempt" >&2
           ;;
         grace)
-          refusals="$refusals  - no pull_request-triggered check has reported for head $live_head yet, and its delivery is younger than the grace window; re-check shortly
+          if [ "$WAIVE_NO_CI_EVIDENCE" = true ]; then
+            FM_PR_NO_CI_EVIDENCE_WAIVED=true
+            echo "notice: --waive-no-ci-evidence accepted head $live_head with no pull_request-triggered check reported yet, younger than the grace window; recorded as attended-ci-waived merge authority" >&2
+          else
+            refusals="$refusals  - no pull_request-triggered check has reported for head $live_head yet, and its delivery is younger than the grace window; re-check shortly, or once attended and certain, merge again with --waive-no-ci-evidence $URL (refused while away; recorded as attended-ci-waived merge authority)
 "
+          fi
           ;;
         dropped)
-          refusals="$refusals  - no pull_request-triggered check has reported for head $live_head, and its delivery is already past the grace window: wait and retry this merge first, because a run still on its way looks identical here once the delivery has aged out of the window, and treat it as a suspected dropped CI event only if a retry still finds none. Neither is ever treated as green
+          if [ "$WAIVE_NO_CI_EVIDENCE" = true ]; then
+            FM_PR_NO_CI_EVIDENCE_WAIVED=true
+            echo "notice: --waive-no-ci-evidence accepted head $live_head as a suspected dropped CI event; recorded as attended-ci-waived merge authority" >&2
+          else
+            refusals="$refusals  - no pull_request-triggered check has reported for head $live_head, and its delivery is already past the grace window: wait and retry this merge first, because a run still on its way looks identical here once the delivery has aged out of the window, and treat it as a suspected dropped CI event only if a retry still finds none. Neither is ever treated as green. Once attended and certain, merge again with --waive-no-ci-evidence $URL (refused while away; recorded as attended-ci-waived merge authority)
 "
+          fi
           ;;
       esac
       ;;
@@ -1467,6 +1519,10 @@ require_current_away_authority() {
     echo "error: --allow-red is attended-only; while the away-posture record exists the green check is absolute" >&2
     return 2
   fi
+  if [ "$FM_PR_AWAY_POSTURE" = true ] && [ "$WAIVE_NO_CI_EVIDENCE" = true ]; then
+    echo "error: --waive-no-ci-evidence is attended-only; while the away-posture record exists the no-CI-evidence refusal is absolute" >&2
+    return 2
+  fi
 }
 
 persist_accepted_merge_authority() {
@@ -1682,6 +1738,12 @@ case "$PROVIDER" in
       "${merge_args[@]+"${merge_args[@]}"}" "$@" 2>&1) || merge_status=$?
     if [ "$merge_status" -eq 0 ]; then
       FM_PR_GITHUB_MERGE_ACCEPTED=true
+      # Only ever true when the away-posture record was absent (attended is
+      # the only authority require_current_away_authority resolves outside
+      # it), so this never collides with a yolo or away-grant authority.
+      if [ "$FM_PR_MERGE_AUTHORITY" = attended ] && [ "$FM_PR_NO_CI_EVIDENCE_WAIVED" = true ]; then
+        FM_PR_MERGE_AUTHORITY=attended-ci-waived
+      fi
       persist_accepted_merge_authority || exit 1
       fm_afk_contract_lock_release || true
       fm_lock_release "$MERGE_CONTROL_LOCK" || true
