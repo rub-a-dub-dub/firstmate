@@ -1,0 +1,45 @@
+SCENARIO: four firstmate ship tasks parked across a machine restart that killed the
+tmux server. Hermetic fixture (stubbed tmux + stubbed harness) driven through the real
+bin/fm-control.sh and bin/fm-spawn.sh. TARGET commit 7b4a132.
+
+firstmate 7b4a132
+
+== Before: four ship tasks parked, each with an intact worktree ==
+  alpha    endpoint=fmses:fm-alpha     worktree=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-control-relaunch.0FplOB/reboot-2481/wt
+  bravo    endpoint=fmses:fm-bravo     worktree=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-control-relaunch.0FplOB/reboot-2481/wt-bravo
+  charlie  endpoint=fmses:fm-charlie   worktree=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-control-relaunch.0FplOB/reboot-2481/wt-charlie
+  delta    endpoint=fmses:fm-delta     worktree=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-control-relaunch.0FplOB/reboot-2481/wt-delta
+
+  (the machine rebooted: no tmux server, none of these windows exist)
+
+== Restart path 1: bin/fm-control.sh <id> relaunch (alpha, bravo, charlie) ==
+
+$ bin/fm-control.sh alpha relaunch --note parked across a reboot; picking the work back up
+  warning: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-control-relaunch.0FplOB/reboot-2481/home/data/alpha/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+  relaunched alpha harness=claude from=claude model=default effort=default backend=tmux endpoint=firstmate:fm-alpha worktree=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-control-relaunch.0FplOB/reboot-2481/wt
+
+$ bin/fm-control.sh bravo relaunch --note parked across a reboot; picking the work back up
+  warning: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-control-relaunch.0FplOB/reboot-2481/home/data/bravo/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+  relaunched bravo harness=claude from=claude model=default effort=default backend=tmux endpoint=firstmate:fm-bravo worktree=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-control-relaunch.0FplOB/reboot-2481/wt-bravo
+
+$ bin/fm-control.sh charlie relaunch --note parked across a reboot; picking the work back up
+  warning: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-control-relaunch.0FplOB/reboot-2481/home/data/charlie/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+  relaunched charlie harness=claude from=claude model=default effort=default backend=tmux endpoint=firstmate:fm-charlie worktree=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-control-relaunch.0FplOB/reboot-2481/wt-charlie
+
+== Restart path 2: bin/fm-spawn.sh <id> --relaunch (delta) ==
+
+$ bin/fm-spawn.sh delta --relaunch --harness claude
+  warning: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-control-relaunch.0FplOB/reboot-2481/home/data/delta/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+  spawned delta harness=claude kind=ship mode=no-mistakes yolo=off window=firstmate:fm-delta worktree=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-control-relaunch.0FplOB/reboot-2481/wt-delta
+
+== After ==
+  alpha    endpoint=firstmate:fm-alpha worktree=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-control-relaunch.0FplOB/reboot-2481/wt journal=complete
+  bravo    endpoint=firstmate:fm-bravo worktree=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-control-relaunch.0FplOB/reboot-2481/wt-bravo journal=complete
+  charlie  endpoint=firstmate:fm-charlie worktree=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-control-relaunch.0FplOB/reboot-2481/wt-charlie journal=complete
+  delta    endpoint=firstmate:fm-delta worktree=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-control-relaunch.0FplOB/reboot-2481/wt-delta journal=n/a (fm-spawn path keeps no control journal)
+
+  git state of each worktree (the work the operator was protecting):
+    alpha    branch=task-alpha  status=clean
+    bravo    branch=task-bravo  status=clean
+    charlie  branch=task-charlie  status=clean
+    delta    branch=task-delta  status=clean

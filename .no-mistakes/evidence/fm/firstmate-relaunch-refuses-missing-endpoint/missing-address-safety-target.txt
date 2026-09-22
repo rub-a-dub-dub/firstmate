@@ -1,0 +1,42 @@
+SCENARIO: a 'missing' recorded address is not by itself proof the agent is gone.
+Three cases on the TARGET commit 7b4a132, same operator command in each.
+
+firstmate 7b4a132
+
+== Case A: the operator renamed the tmux session (tmux rename-session fmses work) ==
+  recorded endpoint : fmses:fm-ren1
+  live on the server: work:fm-ren1 (same agent, new address)
+
+$ bin/fm-control.sh ren1 relaunch --note should not be allowed to join a live agent
+  error: task ren1's recorded endpoint is gone, so there is no agent to stop; reconcile the task before any further control action
+  error: relaunch of ren1 failed while stopping the old agent and its state is 'missing'; the durable record and progress note were retained for recovery
+  [exit 1]
+
+  recorded endpoint after : fmses:fm-ren1
+  agent still reported running as: claude
+  window inventory of the renamed session: [fm-ren1 ]
+
+== Case B: the window was moved to another session (tmux move-window) ==
+  recorded endpoint : fmses:fm-mov1
+  live on the server: work:fm-mov1 (same agent, new address)
+
+$ bin/fm-control.sh mov1 relaunch --note should not be allowed to join a live agent
+  error: task mov1's recorded endpoint is gone, so there is no agent to stop; reconcile the task before any further control action
+  error: relaunch of mov1 failed while stopping the old agent and its state is 'missing'; the durable record and progress note were retained for recovery
+  [exit 1]
+
+  recorded endpoint after : fmses:fm-mov1
+  windows created by this run: [] (empty = no replacement pane was opened)
+  window still holding the agent: work:fm-mov1 
+
+== Case C: the window exists in no session at all, server still up ==
+  recorded endpoint : fmses:fm-swp1
+  server inventory  : (no window named fm-swp1 in any session)
+
+$ bin/fm-control.sh swp1 relaunch --note the only copy of this agent is gone; restart it
+  warning: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-control-relaunch.Malnuo/swept-1053/home/data/swp1/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+  relaunched swp1 harness=claude from=claude model=default effort=default backend=tmux endpoint=firstmate:fm-swp1 worktree=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-control-relaunch.Malnuo/swept-1053/wt
+  [exit 0]
+
+  recorded endpoint after : firstmate:fm-swp1
+  worktree after          : /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-control-relaunch.Malnuo/swept-1053/wt

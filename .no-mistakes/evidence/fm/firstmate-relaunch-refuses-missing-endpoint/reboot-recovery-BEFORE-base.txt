@@ -1,0 +1,44 @@
+SCENARIO: the identical fixture and the identical operator commands, run against the
+BASE commit 2e9903c (before the change).
+
+fatal: not a git repository (or any of the parent directories): .git
+firstmate 
+
+== Before: four ship tasks parked, each with an intact worktree ==
+  alpha    endpoint=fmses:fm-alpha     worktree=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-control-relaunch.RXJWAi/reboot-3839/wt
+  bravo    endpoint=fmses:fm-bravo     worktree=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-control-relaunch.RXJWAi/reboot-3839/wt-bravo
+  charlie  endpoint=fmses:fm-charlie   worktree=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-control-relaunch.RXJWAi/reboot-3839/wt-charlie
+  delta    endpoint=fmses:fm-delta     worktree=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-control-relaunch.RXJWAi/reboot-3839/wt-delta
+
+  (the machine rebooted: no tmux server, none of these windows exist)
+
+== Restart path 1: bin/fm-control.sh <id> relaunch (alpha, bravo, charlie) ==
+
+$ bin/fm-control.sh alpha relaunch --note parked across a reboot; picking the work back up
+  error: task alpha's recorded endpoint is gone, so there is no agent to stop; reconcile the task before any further control action
+  error: relaunch of alpha failed while stopping the old agent and its state is 'missing'; the durable record and progress note were retained for recovery
+
+$ bin/fm-control.sh bravo relaunch --note parked across a reboot; picking the work back up
+  error: task bravo's recorded endpoint is gone, so there is no agent to stop; reconcile the task before any further control action
+  error: relaunch of bravo failed while stopping the old agent and its state is 'missing'; the durable record and progress note were retained for recovery
+
+$ bin/fm-control.sh charlie relaunch --note parked across a reboot; picking the work back up
+  error: task charlie's recorded endpoint is gone, so there is no agent to stop; reconcile the task before any further control action
+  error: relaunch of charlie failed while stopping the old agent and its state is 'missing'; the durable record and progress note were retained for recovery
+
+== Restart path 2: bin/fm-spawn.sh <id> --relaunch (delta) ==
+
+$ bin/fm-spawn.sh delta --relaunch --harness claude
+  error: task delta's endpoint reads 'missing'; a relaunch requires a positively agent-free endpoint (stop the agent first with bin/fm-control.sh delta exit)
+
+== After ==
+  alpha    endpoint=fmses:fm-alpha     worktree=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-control-relaunch.RXJWAi/reboot-3839/wt journal=failed:stopping
+  bravo    endpoint=fmses:fm-bravo     worktree=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-control-relaunch.RXJWAi/reboot-3839/wt-bravo journal=failed:stopping
+  charlie  endpoint=fmses:fm-charlie   worktree=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-control-relaunch.RXJWAi/reboot-3839/wt-charlie journal=failed:stopping
+  delta    endpoint=fmses:fm-delta     worktree=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-control-relaunch.RXJWAi/reboot-3839/wt-delta journal=n/a (fm-spawn path keeps no control journal)
+
+  git state of each worktree (the work the operator was protecting):
+    alpha    branch=task-alpha  status=clean
+    bravo    branch=task-bravo  status=clean
+    charlie  branch=task-charlie  status=clean
+    delta    branch=task-delta  status=clean
