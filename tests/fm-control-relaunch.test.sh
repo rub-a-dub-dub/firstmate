@@ -165,6 +165,17 @@ case "${1:-}" in
             : > "$FM_FAKE_CWD_RACE_READY"
             /bin/sleep 1
           fi
+          # $D/cwd-settle counts down the reads that still report $D/cwd-stale
+          # instead of the pane's real path - the tmux/WSL transient where a
+          # brand-new window names an unrelated checkout until its shell
+          # catches up.
+          if [ -s "$D/cwd-settle" ]; then
+            remaining=$(cat "$D/cwd-settle")
+            if [ "$remaining" -gt 0 ]; then
+              printf '%s' "$((remaining - 1))" > "$D/cwd-settle"
+              cat "$D/cwd-stale"; printf '\n'; exit 0
+            fi
+          fi
           cat "$D/cwd"; printf '\n'; exit 0 ;;
       esac
     done
@@ -540,6 +551,34 @@ test_missing_session_over_a_live_server_still_refuses() {
   assert_no_grep "encode launch-brief" "$dir/fake/literal" \
     "no replacement may be launched while the old agent may still be alive"
   pass "fm-control relaunch: a recorded session that no longer resolves refuses while the server is still up"
+}
+
+# A recreated pane is brand new, and bin/fm-spawn.sh's own fresh-spawn wait
+# documents that such a pane can name an unrelated checkout for a while before
+# its shell catches up. The proof that the endpoint sits in the recorded
+# worktree must outlast that, or the reboot recovery this change exists for
+# fails on exactly those hosts - after the progress note has already been
+# appended, so each retry appends another.
+test_recreated_endpoint_outwaits_a_slow_settling_pane() {
+  local dir out rc
+  dir=$(new_case slow-settle rlslow)
+  add_ship_task "$dir" rlslow claude
+  : > "$dir/fake/windows"
+  : > "$dir/fake/sessions"
+  : > "$dir/fake/no-server"
+  # Longer than the ~5s an adopted endpoint is given, well inside what a
+  # brand-new pane gets.
+  printf '%s' "$dir/proj" > "$dir/fake/cwd-stale"
+  printf '20' > "$dir/fake/cwd-settle"
+  out=$(TMUX='' run_control "$dir" rlslow relaunch --note "recreate a pane whose path lags"); rc=$?
+  expect_code 0 "$rc" "a recreated pane should be waited out, not refused"$'\n'"$out"
+  [ "$(meta_field "$dir" rlslow window)" = "firstmate:fm-rlslow" ] \
+    || fail "the endpoint should have been recreated (got '$(meta_field "$dir" rlslow window)')"
+  [ "$(meta_field "$dir" rlslow worktree)" = "$dir/wt" ] \
+    || fail "the recorded worktree must be reused, never the stale path the pane reported first"
+  [ "$(journal_field "$dir" rlslow phase)" = complete ] \
+    || fail "the transaction journal should end complete"
+  pass "fm-control relaunch: a recreated pane that reports a stale path at first is waited out, not refused"
 }
 
 test_absent_window_found_in_another_session_still_refuses() {
@@ -1960,6 +1999,7 @@ test_missing_endpoint_relaunch_verifies_the_replacement_on_its_new_endpoint
 test_ambiguous_endpoint_relaunch_still_refuses
 test_missing_session_over_a_live_server_still_refuses
 test_absent_window_found_in_another_session_still_refuses
+test_recreated_endpoint_outwaits_a_slow_settling_pane
 test_absent_window_found_nowhere_recreates
 test_multiple_parked_tasks_all_relaunch_after_a_reboot
 test_missing_endpoint_relaunch_removes_its_recreated_endpoint_on_abort

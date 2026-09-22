@@ -3328,12 +3328,25 @@ if [ "$RELAUNCH" -eq 1 ]; then
   # actually sitting in that worktree: an adopted endpoint might have drifted,
   # and a recreated one was born there but is still asked to prove it rather
   # than be taken on trust.
+  # An adopted endpoint has existed for hours, so its path read is settled and
+  # a short budget is right. A recreated one was born milliseconds ago, and a
+  # brand-new pane is exactly what the fresh-spawn wait below documents as
+  # transiently reporting an unrelated stale path before its shell catches up,
+  # so it gets that same budget. Only the wait widens: the read is compared
+  # against a known expected path, so a stale one can delay acceptance but
+  # never produce a false one.
+  relaunch_settle_polls=10
+  relaunch_settle_interval=0.5
+  if [ "$RELAUNCH_RECREATE_ENDPOINT" -eq 1 ]; then
+    relaunch_settle_polls=60
+    relaunch_settle_interval=1
+  fi
   relaunch_wt_real=$(real_path_or_raw "$WT")
   relaunch_seen=
-  for _ in $(seq 1 10); do
+  for _ in $(seq 1 "$relaunch_settle_polls"); do
     relaunch_seen=$(spawn_current_path "$WT_TARGET" || true)
     [ -z "$relaunch_seen" ] || [ "$(real_path_or_raw "$relaunch_seen")" != "$relaunch_wt_real" ] || break
-    sleep 0.5
+    sleep "$relaunch_settle_interval"
   done
   if [ -z "$relaunch_seen" ] || [ "$(real_path_or_raw "$relaunch_seen")" != "$relaunch_wt_real" ]; then
     if [ "$BACKEND" != herdr ]; then
@@ -3345,10 +3358,10 @@ if [ "$RELAUNCH" -eq 1 ]; then
       echo "error: task $ID's endpoint is in '${relaunch_seen:-unknown}' and could not be told to return to its recorded worktree '$WT'; refusing to relaunch an agent outside the copy holding its work" >&2
       exit 1
     }
-    for _ in $(seq 1 10); do
+    for _ in $(seq 1 "$relaunch_settle_polls"); do
       relaunch_seen=$(spawn_current_path "$WT_TARGET" || true)
       [ -z "$relaunch_seen" ] || [ "$(real_path_or_raw "$relaunch_seen")" != "$relaunch_wt_real" ] || break
-      sleep 0.5
+      sleep "$relaunch_settle_interval"
     done
     if [ -z "$relaunch_seen" ] || [ "$(real_path_or_raw "$relaunch_seen")" != "$relaunch_wt_real" ]; then
       echo "error: task $ID's endpoint is in '${relaunch_seen:-unknown}' and did not return to its recorded worktree '$WT' when told to; refusing to relaunch an agent outside the copy holding its work" >&2
