@@ -1,0 +1,39 @@
+==============================================================
+ scenario: ladder
+ tree:     /Users/crossbow/.no-mistakes/worktrees/00644a303d6a/01M33SBEC5HPSW6RQCJFVYF4K3
+==============================================================
+
+--- what the pipeline reports: no-mistakes axi status --run 01RUNDROPPEDCI
+    run:
+      id: "01RUNDROPPEDCI"
+      branch: fm/firstmate-detect-dropped-ci-event
+      status: fixing
+      head: "209b8462512e0693d2f1dbce172ba26be64bbf5c"
+      pr: ""
+      findings: none
+      active_steps[1]{step,active_for,last_activity,agent_pid,round}:
+        review,29m53s,5s,83267,"fix 2"
+
+--- what firstmate reads back for this crew: bin/fm-crew-state.sh dropped-ci
+    state: working · source: run-step · validating (fixing) · activity: recent
+
+--- crossing 1: the pane has been quiet 250s, threshold is 240s
+  [watcher stdout - the wake reason firstmate's captain is handed]
+    (nothing - the watcher kept running; no supervision turn spent)
+  [state/.watch-triage.log - the watcher's own account of the decision]
+    [2026-09-21T22:50:03-0700] absorbed non-terminal stale (live no-mistakes run reports recent activity, idle 251s): firstmate:fm-dropped-ci
+
+--- crossing 2: the pane has been quiet 250s, threshold is 240s
+  [watcher stdout - the wake reason firstmate's captain is handed]
+    (nothing - the watcher kept running; no supervision turn spent)
+  [state/.watch-triage.log - the watcher's own account of the decision]
+    [2026-09-21T22:50:28-0700] absorbed non-terminal stale (live no-mistakes run reports recent activity, idle 251s): firstmate:fm-dropped-ci
+
+--- crossing 3: the pane has been quiet 250s, threshold is 240s
+  [watcher stdout - the wake reason firstmate's captain is handed]
+    (nothing - the watcher kept running; no supervision turn spent)
+  [state/.watch-triage.log - the watcher's own account of the decision]
+    [2026-09-21T22:50:53-0700] absorbed non-terminal stale (live no-mistakes run reports recent activity, idle 251s): firstmate:fm-dropped-ci
+
+--- durable wake queue after three crossings (what a drain replays)
+    (empty - no wake recorded, no handling turn owed)

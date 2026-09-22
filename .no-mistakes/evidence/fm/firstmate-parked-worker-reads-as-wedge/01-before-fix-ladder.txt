@@ -1,0 +1,45 @@
+==============================================================
+ scenario: ladder
+ tree:     /tmp/nm-base-tree
+==============================================================
+
+--- what the pipeline reports: no-mistakes axi status --run 01RUNDROPPEDCI
+    run:
+      id: "01RUNDROPPEDCI"
+      branch: fm/firstmate-detect-dropped-ci-event
+      status: fixing
+      head: "63f062ca19bbc71fef8518551487f68c767db827"
+      pr: ""
+      findings: none
+      active_steps[1]{step,active_for,last_activity,agent_pid,round}:
+        review,29m53s,5s,83267,"fix 2"
+
+--- what firstmate reads back for this crew: bin/fm-crew-state.sh dropped-ci
+    state: working · source: run-step · validating (fixing)
+
+--- crossing 1: the pane has been quiet 250s, threshold is 240s
+  [watcher stdout - the wake reason firstmate's captain is handed]
+    stale: firstmate:fm-dropped-ci (idle 251s, possible wedge, escalation 1)
+  [state/.watch-triage.log - the watcher's own account of the decision]
+    (empty)
+  [cost] a supervision handling turn is now owed; draining it as the captain would
+        drained 1 queued wake(s)
+
+--- crossing 2: the pane has been quiet 250s, threshold is 240s
+  [watcher stdout - the wake reason firstmate's captain is handed]
+    stale: firstmate:fm-dropped-ci (idle 251s, possible wedge, escalation 2)
+  [state/.watch-triage.log - the watcher's own account of the decision]
+    (empty)
+  [cost] a supervision handling turn is now owed; draining it as the captain would
+        drained 1 queued wake(s)
+
+--- crossing 3: the pane has been quiet 250s, threshold is 240s
+  [watcher stdout - the wake reason firstmate's captain is handed]
+    stale: firstmate:fm-dropped-ci (idle 251s, possible wedge, escalation 3, demand-deep-inspection: same pane has wedge-escalated 3 times in a row - do not re-absorb on the run-step/pane state alone)
+  [state/.watch-triage.log - the watcher's own account of the decision]
+    (empty)
+  [cost] a supervision handling turn is now owed; draining it as the captain would
+        drained 1 queued wake(s)
+
+--- durable wake queue after three crossings (what a drain replays)
+    (empty - no wake recorded, no handling turn owed)

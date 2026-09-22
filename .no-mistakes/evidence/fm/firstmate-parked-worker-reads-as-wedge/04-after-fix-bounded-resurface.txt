@@ -1,0 +1,29 @@
+==============================================================
+ scenario: resurface
+ tree:     /Users/crossbow/.no-mistakes/worktrees/00644a303d6a/01M33SBEC5HPSW6RQCJFVYF4K3
+==============================================================
+
+--- what the pipeline reports: no-mistakes axi status --run 01RUNDROPPEDCI
+    run:
+      id: "01RUNDROPPEDCI"
+      branch: fm/firstmate-detect-dropped-ci-event
+      status: fixing
+      head: "937939ec025a52bf5c9428dfa9cdc11b2de61796"
+      pr: ""
+      findings: none
+      active_steps[1]{step,active_for,last_activity,agent_pid,round}:
+        review,29m53s,5s,83267,"fix 2"
+
+--- what firstmate reads back for this crew: bin/fm-crew-state.sh dropped-ci
+    state: working · source: run-step · validating (fixing) · activity: recent
+
+--- a deferral held for 500s, with FM_PAUSE_RESURFACE_SECS=240
+
+[watcher stdout - the wake reason firstmate's captain is handed]
+    stale: firstmate:fm-dropped-ci (idle 501s, its no-mistakes run has reported activity for 501s, rechecked on a long cadence not a wedge; confirm the run is still making real progress)
+
+[durable wake queue - what a later drain replays]
+    1790056319	1	stale	firstmate:fm-dropped-ci	stale: firstmate:fm-dropped-ci (idle 501s, its no-mistakes run has reported activity for 501s, rechecked on a long cadence not a wedge; confirm the run is still making real progress)
+
+[wedge escalation counter]
+    (none - the recheck did not advance the escalation ladder)
