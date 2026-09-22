@@ -80,18 +80,18 @@ FM_CHECK_ROLLUP_JQ_DEFS='
         {name:$name, kind:$kind, ok:$group[0].ok, pending:(($group[0].ok|not) and $group[0].pending_state)}
       else
         ([$group[] | select(.ok | not)]) as $reds
+        | ([$group[] | select(.ok) | .at | select(. != null)] | max) as $newest_green
+        | ([$reds[]
+            | select(.completed)
+            | select($newest_green == null or .at == null or .at >= $newest_green)]) as $standing
         | if ($reds | length) == 0 then
             {name:$name, kind:$kind, ok:true, pending:false}
+          elif ($standing | length) > 0 then
+            {name:$name, kind:$kind, ok:false, pending:false}
           elif any($reds[]; .completed | not) then
             {name:$name, kind:$kind, ok:false, pending:true}
           else
-            ([$group[] | select(.ok) | .at | select(. != null)] | max) as $newest_green
-            | if $newest_green != null
-                and (all($reds[]; .at != null))
-                and (([$reds[] | .at] | max) < $newest_green)
-              then {name:$name, kind:$kind, ok:true, pending:false}
-              else {name:$name, kind:$kind, ok:false, pending:false}
-              end
+            {name:$name, kind:$kind, ok:true, pending:false}
           end
       end;
   def check_rollup_verdicts:
