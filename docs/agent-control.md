@@ -32,7 +32,7 @@ A recorded `harness=` is not always an exact adapter name: a task launched from 
 | --- | --- | --- |
 | `interrupt` | Deliver the harness's verified interrupt sequence while leaving the agent running. | Delivery succeeds while the endpoint still exists and the agent is still alive where the backend can classify that; cancellation is confirmed only from an adapter-owned acknowledgement and otherwise reports `cancel=unconfirmed`. |
 | `exit` | Stop the agent, preserving the endpoint, the worktree, and every uncommitted change. | The backend's recovery-grade classifier reports the agent gone. Already-stopped is idempotent success. |
-| `relaunch` | Replace the agent with a new one in the same worktree, on the exact recorded adapter or an explicitly chosen harness, model, and effort. The endpoint is adopted when the recorded one is agent-free, or recreated fresh when its address no longer resolves AND the backend's own server is provably stopped, so no agent can be running at any address. | The new agent is alive on the (adopted or recreated) endpoint, and the durable record names the harness and endpoint that are actually running. |
+| `relaunch` | Replace the agent with a new one in the same worktree, on the exact recorded adapter or an explicitly chosen harness, model, and effort. The endpoint is adopted when the recorded one is agent-free, or recreated fresh when its address no longer resolves AND the task's endpoint is then found nowhere on the whole backend, so no agent of its can be running at any address. | The new agent is alive on the (adopted or recreated) endpoint, and the durable record names the harness and endpoint that are actually running. |
 
 An exit that delivers lifecycle input but cannot prove the agent stopped fails with `exit=unconfirmed`, reports the observed agent state and any interrupt cancellation claim, and never claims that nothing changed.
 Interrupt never rewrites busy state as proof of its own success.
@@ -68,8 +68,9 @@ It is not deterministic across the verified adapters: codex, grok, and gemini re
 3. **Record the note.**
    A ship or scout relaunch requires `--note`, because the replacement inherits the local copy but none of the conversation; the note is appended to the instructions it reads.
    A secondmate relaunch does not require one and never rewrites its standing charter.
-4. **Stop the old agent** through the `exit` verb, with its postcondition - skipped when the recorded endpoint already reads `missing`, since there is provably no agent left to stop.
-5. **Launch the replacement** through its single owner, `bin/fm-spawn.sh --relaunch`, which reuses the recorded worktree and either adopts the recorded endpoint or, if it is `missing`, recreates one fresh through the same creation path a first spawn uses, clears the previous harness's per-task wiring, and arms a fresh busy generation.
+4. **Stop the old agent** through the `exit` verb, with its postcondition - skipped only when the recorded endpoint reads `missing` AND a sweep of the whole backend finds the task's endpoint nowhere on it, since there is then provably no agent left to stop.
+   A `missing` endpoint that the sweep still finds under another address is not skipped: it falls through to `exit`, which refuses, so the relaunch stops before the agent is touched.
+5. **Launch the replacement** through its single owner, `bin/fm-spawn.sh --relaunch`, which reuses the recorded worktree and either adopts the recorded endpoint or, if it is `missing` and the same backend-wide sweep comes back empty, recreates one fresh through the same creation path a first spawn uses, clears the previous harness's per-task wiring, and arms a fresh busy generation.
 
 Switching harness is therefore one ordinary relaunch rather than a separate mechanism.
 
@@ -99,9 +100,11 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
   zellij, orca, and cmux are refused rather than reported as successful blind.
 - An ambiguous or unreadable endpoint state refuses.
   Only a positively classified state acts.
-- `fm-spawn --relaunch` independently refuses unless the recorded endpoint reads positively agent-free (`dead`) or is absent with its backend server provably stopped, so a replacement can never join a live agent; an ambiguous or unreadable read still refuses, because absence of evidence there is not evidence of absence.
-  `missing` on its own is NOT that proof. It says the recorded address stopped resolving, which a stopped server causes - but so does a renamed tmux session, a window moved out of the recorded one, or a herdr pane a running server cannot find, and in each of those the agent is still alive at a different address.
-  So a `missing` read is accepted only when the backend server is itself confirmed down (`fm_backend_server_absent`, the reboot case); a `missing` read over a running server refuses like any other unproven state, because recreating there would put a second agent in a worktree that already has one.
+- `fm-spawn --relaunch` independently refuses unless the recorded endpoint reads positively agent-free (`dead`), or is `missing` and then found nowhere on the whole backend, so a replacement can never join a live agent; an ambiguous or unreadable read still refuses, because absence of evidence there is not evidence of absence.
+  `missing` on its own is NOT that proof. It says the recorded address stopped resolving - which a reboot causes, but so does a renamed tmux session or a window moved out of the recorded one, and in those the agent is still alive at a different address.
+  So a `missing` read is accepted only once `fm_backend_endpoint_absent` sweeps the backend's entire surface - every tmux session's window inventory, not merely the recorded session - and does not find the task's endpoint under any address.
+  That asks "could this task's agent still be alive" directly, rather than through the weaker proxy of whether a backend server happens to be running, which could not answer it: recreating the first of several parked tasks starts a server, and a firstmate running inside tmux always has one.
+  A `missing` read whose endpoint the sweep still finds refuses like any other unproven state, because recreating there would put a second agent in a worktree that already has one.
   A `dead` endpoint is adopted; an accepted `missing` one has no pane left to adopt, so it is recreated fresh through the same endpoint-creation path a first spawn uses, opened directly in the task's recorded worktree rather than in the spawning project.
   It also requires the shell to be in the recorded worktree: tmux refuses immediately when it is not, while Herdr sends one `cd` to the recorded path and refuses unless a subsequent path read confirms the move.
 

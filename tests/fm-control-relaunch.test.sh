@@ -56,28 +56,65 @@ make_tmux_stub() {  # <dir>
 #!/usr/bin/env bash
 set -u
 D=$FM_FAKE_DIR
-# Two distinct ways a recorded target stops resolving, which tmux reports
-# differently and which the relaunch guard must tell apart:
-#   $D/no-server  - the whole server is gone (a reboot). Every read fails with
-#                   tmux's own no-server text until a new-session starts one.
-#   $D/no-session - the server is up but the recorded session name is not
-#                   there (e.g. renamed), so only the session-scoped reads fail
-#                   while the server-wide inventory still answers.
+# The server's shape, so the relaunch guard's backend-wide sweep can be told
+# apart from the recorded address simply going stale:
+#   $D/sessions      - every session on the server, one per line.
+#   $D/win.<session> - that session's window inventory. A session with no such
+#                      file shares the default $D/windows inventory.
+#   $D/no-server     - the whole server is gone (a reboot). Every read fails
+#                      with tmux's own no-server text until new-session starts
+#                      one, which is exactly how recreating one parked task
+#                      brings the server back for the rest.
+#   $D/no-session    - names the one session that is no longer there (e.g.
+#                      renamed), so reads scoped to it fail while the
+#                      server-wide inventory still answers.
 tmux_no_server_error() {
   printf 'no server running on /tmp/tmux-1000/default\n' >&2
   exit 1
 }
+tmux_target_session() {  # <target>
+  local t=${1#=}
+  t=${t%%:*}
+  printf '%s' "$t"
+}
 if [ -e "$D/no-server" ]; then
   case "${1:-}" in
-    new-session) rm -f "$D/no-server"; exit 0 ;;
+    new-session)
+      rm -f "$D/no-server"
+      shift
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          -s) printf '%s\n' "$2" >> "$D/sessions"; shift 2 ;;
+          *) shift ;;
+        esac
+      done
+      exit 0 ;;
     list-sessions|list-windows|has-session|display-message|send-keys|capture-pane|kill-window)
       tmux_no_server_error ;;
   esac
 fi
 case "${1:-}" in
-  list-sessions) printf '%s\n' "${FM_FAKE_TMUX_SESSION:-fmses}"; exit 0 ;;
-  has-session) exit 0 ;;
-  new-session) exit 0 ;;
+  list-sessions) [ -f "$D/sessions" ] && cat "$D/sessions"; exit 0 ;;
+  has-session)
+    shift
+    target=
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -t) target=$2; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    grep -qxF "$(tmux_target_session "$target")" "$D/sessions" 2>/dev/null
+    exit $? ;;
+  new-session)
+    shift
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -s) grep -qxF "$2" "$D/sessions" 2>/dev/null || printf '%s\n' "$2" >> "$D/sessions"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    exit 0 ;;
 esac
 case "${1:-}" in
   send-keys)
@@ -134,17 +171,22 @@ case "${1:-}" in
     printf 'fakepane\n'; exit 0 ;;
   capture-pane) printf '╭────╮\n│    │\n╰────╯\n'; exit 0 ;;
   list-windows)
-    if [ -e "$D/no-session" ]; then
-      shift
-      target=
-      while [ $# -gt 0 ]; do
-        case "$1" in
-          -t) target=$2; shift 2 ;;
-          *) shift ;;
-        esac
-      done
-      printf "can't find session: %s\n" "$target" >&2
+    shift
+    target=
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -t) target=$2; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    session=$(tmux_target_session "$target")
+    if [ -e "$D/no-session" ] && [ "$(cat "$D/no-session")" = "$session" ]; then
+      printf "can't find session: %s\n" "$session" >&2
       exit 1
+    fi
+    if [ -f "$D/win.$session" ]; then
+      cat "$D/win.$session"
+      exit 0
     fi
     [ -f "$D/windows" ] && cat "$D/windows"; exit 0 ;;
   new-window)
@@ -206,15 +248,22 @@ new_case() {
   printf 'claude' > "$dir/fake/command"
   printf 'claude' > "$dir/fake/becomes"
   printf '%s\n' "fm-$id" > "$dir/fake/windows"
+  printf 'fmses\n' > "$dir/fake/sessions"
   make_tmux_stub "$dir"
   printf '%s\n' "$dir"
 }
 
-# add_ship_task <case-dir> <id> [harness]
+# add_ship_task <case-dir> <id> [harness] [worktree]
+# A second and later task in the same case dir shares its project, so only the
+# first initializes the repo; each still gets its own worktree.
 add_ship_task() {
   local dir=$1 id=$2 harness=${3:-claude}
-  local home="$dir/home" proj="$dir/proj" wt="$dir/wt"
-  fm_git_worktree "$proj" "$wt" "task-$id"
+  local home="$dir/home" proj="$dir/proj" wt=${4:-$dir/wt}
+  if [ -d "$proj" ]; then
+    git -C "$proj" worktree add --quiet -b "task-$id" "$wt"
+  else
+    fm_git_worktree "$proj" "$wt" "task-$id"
+  fi
   mkdir -p "$home/data/$id"
   cat > "$home/data/$id/brief.md" <<EOF
 # Task
@@ -475,7 +524,11 @@ test_missing_session_over_a_live_server_still_refuses() {
   local dir out rc
   dir=$(new_case renamed-session rlrename)
   add_ship_task "$dir" rlrename claude
-  : > "$dir/fake/no-session"
+  # `tmux rename-session -t fmses work`: the recorded session name is gone, but
+  # the task's own window - and the agent in it - moved with it, intact.
+  printf 'fmses' > "$dir/fake/no-session"
+  printf 'work\n' > "$dir/fake/sessions"
+  printf 'fm-rlrename\n' > "$dir/fake/win.work"
   out=$(TMUX='' run_control "$dir" rlrename relaunch --note "should never reach here"); rc=$?
   expect_code 1 "$rc" "a relaunch onto a renamed session should refuse"$'\n'"$out"
   assert_contains "$out" "there is no agent to stop" \
@@ -489,22 +542,72 @@ test_missing_session_over_a_live_server_still_refuses() {
   pass "fm-control relaunch: a recorded session that no longer resolves refuses while the server is still up"
 }
 
-test_absent_window_over_a_live_server_still_refuses() {
+test_absent_window_found_in_another_session_still_refuses() {
   local dir out rc
   dir=$(new_case moved-window rlmoved)
   add_ship_task "$dir" rlmoved claude
-  # The server answers, and the recorded window is simply not in its inventory
-  # any more - what `tmux move-window` out of the recorded session looks like.
+  # `tmux move-window` out of the recorded session: the recorded address no
+  # longer resolves, but the window - and its agent - is alive under another.
   : > "$dir/fake/windows"
+  printf 'fmses\nwork\n' > "$dir/fake/sessions"
+  printf 'fm-rlmoved\n' > "$dir/fake/win.work"
   out=$(TMUX='' run_control "$dir" rlmoved relaunch --note "should never reach here"); rc=$?
   expect_code 1 "$rc" "a relaunch onto a moved-away window should refuse"$'\n'"$out"
   [ "$(meta_field "$dir" rlmoved window)" = "fmses:fm-rlmoved" ] \
     || fail "a refused relaunch must not rewrite the recorded endpoint"
+  [ "$(cat "$dir/fake/win.work")" = "fm-rlmoved" ] \
+    || fail "the endpoint still holding the agent must be left exactly as it was"
   [ ! -s "$dir/fake/windows" ] \
     || fail "a refused relaunch must not create a replacement endpoint (created: $(cat "$dir/fake/windows"))"
   assert_no_grep "encode launch-brief" "$dir/fake/literal" \
     "no replacement may be launched while the old agent may still be alive"
-  pass "fm-control relaunch: a recorded window absent from a live server's inventory refuses rather than recreating"
+  pass "fm-control relaunch: a recorded window that the backend-wide sweep still finds elsewhere refuses"
+}
+
+test_absent_window_found_nowhere_recreates() {
+  local dir out rc
+  dir=$(new_case swept-clean rlswept)
+  add_ship_task "$dir" rlswept claude
+  # The server answers and the task's window is in no session's inventory at
+  # all, so nothing on this backend can still be running its agent. Absence of
+  # a server is NOT required: recreating the first of several parked tasks
+  # starts one, and a firstmate inside tmux always has one.
+  : > "$dir/fake/windows"
+  out=$(TMUX='' run_control "$dir" rlswept relaunch --note "recover a task whose window is gone server-wide"); rc=$?
+  expect_code 0 "$rc" "a window absent from every session should recreate"$'\n'"$out"
+  [ "$(meta_field "$dir" rlswept window)" = "firstmate:fm-rlswept" ] \
+    || fail "the endpoint should have been recreated (got '$(meta_field "$dir" rlswept window)')"
+  [ "$(meta_field "$dir" rlswept worktree)" = "$dir/wt" ] \
+    || fail "the recorded worktree must be reused, never reallocated"
+  [ "$(journal_field "$dir" rlswept phase)" = complete ] \
+    || fail "the transaction journal should end complete"
+  pass "fm-control relaunch: a window the backend-wide sweep finds nowhere is recreated, with no server absence required"
+}
+
+# The intent's own scenario: several tasks parked across a reboot. Recreating
+# the first one necessarily starts a tmux server, so a gate that asked only
+# "is a server running" would restore exactly one task and refuse the rest.
+test_multiple_parked_tasks_all_relaunch_after_a_reboot() {
+  local dir out rc id
+  dir=$(new_case reboot-fleet rlfleetA)
+  add_ship_task "$dir" rlfleetA claude
+  add_ship_task "$dir" rlfleetB claude "$dir/wt-rlfleetB"
+  add_ship_task "$dir" rlfleetC claude "$dir/wt-rlfleetC"
+  # A reboot: no server, and no task's window survives anywhere.
+  : > "$dir/fake/windows"
+  : > "$dir/fake/sessions"
+  : > "$dir/fake/no-server"
+  for id in rlfleetA rlfleetB rlfleetC; do
+    out=$(TMUX='' run_control "$dir" "$id" relaunch --note "restart $id after the reboot"); rc=$?
+    expect_code 0 "$rc" "parked task $id should relaunch after the reboot"$'\n'"$out"
+    [ "$(meta_field "$dir" "$id" window)" = "firstmate:fm-$id" ] \
+      || fail "$id should have been recreated (got '$(meta_field "$dir" "$id" window)')"
+    [ "$(journal_field "$dir" "$id" phase)" = complete ] \
+      || fail "$id's transaction journal should end complete"
+  done
+  [ -s "$dir/fake/sessions" ] \
+    || fail "recreating the first task should have started the server the rest then share"
+  pass "fm-control relaunch: every task parked across a reboot restarts, not just the one that restarts the server"
 }
 
 test_spawn_relaunch_refuses_a_missing_address_over_a_live_server() {
@@ -512,15 +615,17 @@ test_spawn_relaunch_refuses_a_missing_address_over_a_live_server() {
   dir=$(new_case live-server rl43)
   add_ship_task "$dir" rl43 claude
   : > "$dir/fake/windows"
+  printf 'fmses\nwork\n' > "$dir/fake/sessions"
+  printf 'fm-rl43\n' > "$dir/fake/win.work"
   out=$(TMUX='' run_spawn "$dir" rl43 --relaunch --harness claude); rc=$?
-  expect_code 1 "$rc" "recreating over a live server should refuse"$'\n'"$out"
-  assert_contains "$out" "may be alive at another address" \
+  expect_code 1 "$rc" "recreating an endpoint that still exists elsewhere should refuse"$'\n'"$out"
+  assert_contains "$out" "still exists elsewhere" \
     "the refusal should name why an unresolvable address is not proof of absence"
   [ "$(meta_field "$dir" rl43 window)" = "fmses:fm-rl43" ] \
     || fail "a refused relaunch must not rewrite the recorded endpoint"
   [ ! -s "$dir/fake/windows" ] \
     || fail "a refused relaunch must not create a replacement endpoint (created: $(cat "$dir/fake/windows"))"
-  pass "fm-spawn --relaunch: an unresolvable address over a running server refuses, unlike a stopped one"
+  pass "fm-spawn --relaunch: an unresolvable address whose endpoint still exists elsewhere refuses"
 }
 
 test_ambiguous_endpoint_relaunch_still_refuses() {
@@ -1854,7 +1959,9 @@ test_missing_endpoint_relaunch_recreates_it
 test_missing_endpoint_relaunch_verifies_the_replacement_on_its_new_endpoint
 test_ambiguous_endpoint_relaunch_still_refuses
 test_missing_session_over_a_live_server_still_refuses
-test_absent_window_over_a_live_server_still_refuses
+test_absent_window_found_in_another_session_still_refuses
+test_absent_window_found_nowhere_recreates
+test_multiple_parked_tasks_all_relaunch_after_a_reboot
 test_missing_endpoint_relaunch_removes_its_recreated_endpoint_on_abort
 test_missing_endpoint_relaunch_keeps_a_recreated_endpoint_its_record_names
 test_relaunch_from_linked_home_preserves_recorded_worktree

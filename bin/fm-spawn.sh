@@ -38,13 +38,13 @@
 #   positional, and batch pairs are all refused alongside it; only harness,
 #   model, and effort may change, which is what makes a harness switch one
 #   ordinary relaunch. It refuses unless the recorded endpoint reads dead
-#   (positively agent-free), or missing with the backend's own server proven
-#   stopped, on a backend with a recovery-grade agent-state classifier (tmux
-#   or herdr); any other read - including a missing address over a server that
-#   is still running, which proves only that the address stopped resolving -
-#   still refuses. A dead endpoint is adopted as before; an accepted missing
-#   one is recreated fresh with the same endpoint-creation path a first spawn
-#   uses,
+#   (positively agent-free), or missing with the task's endpoint then found
+#   nowhere on the whole backend, on a backend with a recovery-grade
+#   agent-state classifier (tmux or herdr); any other read - including a
+#   missing address whose endpoint still exists under another one, which proves
+#   only that the recorded address stopped resolving - still refuses. A dead
+#   endpoint is adopted as before; an accepted missing one is recreated fresh
+#   with the same endpoint-creation path a first spawn uses,
 #   born directly in the task's recorded worktree, never a new one. It clears
 #   the previous harness's per-task wiring before arming the new incarnation.
 #   The replacement still never starts outside the copy holding the work: every
@@ -1387,21 +1387,20 @@ if [ "$RELAUNCH" -eq 1 ]; then
   }
   RELAUNCH_STATE=$(fm_backend_agent_state "$BACKEND" "$RELAUNCH_TARGET")
   # `missing` says the recorded ADDRESS no longer resolves, which is not by
-  # itself proof that no agent exists: a renamed tmux session, a window moved
-  # out of the recorded one, or a herdr pane a running server cannot find all
-  # read `missing` while the agent keeps running somewhere else. Recreating
-  # there would be the one outcome the guard exists to prevent - two agents in
-  # one worktree. So the endpoint is recreated only when the backend's own
-  # server is provably down (fm_backend_server_absent), which is the reboot
-  # case this path is for and the only `missing` that proves no agent can be
-  # running at any address. Every other `missing`, like every ambiguous or
-  # unreadable read, still refuses: absence of evidence is not evidence of
-  # absence.
+  # itself proof that no agent exists: a renamed tmux session or a window moved
+  # out of the recorded one both read `missing` while the agent keeps running
+  # somewhere else. Recreating there would be the one outcome the guard exists
+  # to prevent - two agents in one worktree. So the endpoint is recreated only
+  # once fm_backend_endpoint_absent has swept the backend's whole surface and
+  # found this task's endpoint nowhere on it, which answers "could its agent
+  # still be alive" directly. Every `missing` that fails that sweep, like every
+  # ambiguous or unreadable read, still refuses: absence of evidence is not
+  # evidence of absence.
   case "$RELAUNCH_STATE" in
     dead) ;;
     missing)
-      fm_backend_server_absent "$BACKEND" "$RELAUNCH_TARGET" || {
-        echo "error: task $ID's recorded endpoint '$RELAUNCH_TARGET' does not resolve, but $BACKEND is still running, so its agent may be alive at another address; reconcile the task before any relaunch" >&2
+      fm_backend_endpoint_absent "$BACKEND" "$RELAUNCH_TARGET" || {
+        echo "error: task $ID's recorded endpoint '$RELAUNCH_TARGET' does not resolve, but an endpoint named for it still exists elsewhere on $BACKEND, so its agent may be alive there; reconcile the task before any relaunch" >&2
         exit 1
       }
       RELAUNCH_RECREATE_ENDPOINT=1

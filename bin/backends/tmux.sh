@@ -362,22 +362,53 @@ EOF
   esac
 }
 
-# fm_backend_tmux_server_absent: 0 only when tmux itself is provably not
-# running, so no pane on any session can hold an agent. `missing` from
-# fm_backend_tmux_agent_state is a weaker claim - it also covers a renamed
-# session and a window moved out of the recorded one, where the recorded
-# ADDRESS stopped resolving while the agent kept running somewhere else - so a
-# caller that needs absence of the AGENT rather than absence of the address
-# must ask this as well. Every read that is not a definitive no-server answer,
-# including tmux being unavailable entirely, reports "not absent".
-fm_backend_tmux_server_absent() {
-  local out
-  out=$(LC_ALL=C tmux list-sessions -F '#{session_name}' 2>&1) && return 1
-  case "$out" in
-    *"no server running on "*|*"error connecting to "*" (No such file or directory)"|*"error connecting to "*" (Connection refused)")
-      return 0 ;;
+# fm_backend_tmux_endpoint_absent: 0 only when the recorded window exists in NO
+# session on the server, so the task's agent cannot be running anywhere on this
+# backend. `missing` from fm_backend_tmux_agent_state is a weaker claim - it
+# says only that the recorded ADDRESS stopped resolving, which a renamed
+# session or a window moved out of the recorded one also produce while the
+# agent keeps running under another address - so a caller about to CREATE a
+# replacement must ask this instead.
+#
+# The window NAME is the task's identity here, and it is pinned at creation
+# (automatic-rename/allow-rename off in fm_backend_tmux_create_task), so
+# scanning every session's inventory for it answers "is this task's agent still
+# alive somewhere" directly rather than through the much weaker proxy of
+# whether any tmux server happens to be running. That proxy could not answer it
+# at all in the two cases this path exists for: recreating one parked task
+# starts a server, which would then block every other parked task, and a
+# firstmate running inside tmux always has one.
+#
+# Fails closed: a server that cannot be inventoried, a session whose windows
+# cannot be listed, or tmux being unavailable entirely all report "not absent".
+# Only a definitive no-server answer, or a complete scan that never saw the
+# window, proves absence.
+fm_backend_tmux_endpoint_absent() {  # <target>
+  local target=$1 window sessions session windows
+  case "$target" in
+    *:*:*|'':*|*:'') return 1 ;;
+    *:*) ;;
+    *) return 1 ;;
   esac
-  return 1
+  window=${target#*:}
+  [ -n "$window" ] || return 1
+  if ! sessions=$(LC_ALL=C tmux list-sessions -F '#{session_name}' 2>&1); then
+    case "$sessions" in
+      *"no server running on "*|*"error connecting to "*" (No such file or directory)"|*"error connecting to "*" (Connection refused)")
+        return 0 ;;
+    esac
+    return 1
+  fi
+  while IFS= read -r session; do
+    [ -n "$session" ] || continue
+    windows=$(LC_ALL=C tmux list-windows -t "=$session" -F '#{window_name}' 2>/dev/null) || return 1
+    if printf '%s\n' "$windows" | grep -Fqx "$window"; then
+      return 1
+    fi
+  done <<EOF
+$sessions
+EOF
+  return 0
 }
 
 # Backward-compatible three-state view for callers that only need a yes/no
