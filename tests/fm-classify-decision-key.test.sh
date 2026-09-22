@@ -81,6 +81,59 @@ test_bare_keyless_line_still_folds_to_default() {
   pass "a keyless needs-decision still opens and closes the default key"
 }
 
+test_unkeyed_blocked_retires_after_a_later_terminal_or_paused_line() {
+  local dir
+  dir=$(case_dir unkeyed-blocked-retires)
+  printf 'blocked: no-mistakes axi run refuses to push the rebased branch\n' > "$dir/t.status"
+  assert_fold "$dir/t.status" \
+    "$(printf 'default\tblocked\tno-mistakes axi run refuses to push the rebased branch\n')" \
+    "unkeyed blocked opens the default bucket"
+
+  # The blocker cleared hours earlier (moved to a fresh branch); the task then
+  # kept reporting normally - exactly instance 1 in the captain's report.
+  printf 'working: moved the work to a fresh branch\ndone: PR checks green at 14/14\npaused: captain-held\n' \
+    >> "$dir/t.status"
+  assert_fold "$dir/t.status" "" \
+    "a later working/done/paused sequence retires the unkeyed blocked line"
+  pass "an unkeyed blocked line retires once a later done or paused line follows it"
+}
+
+test_unkeyed_needs_decision_retires_via_done_despite_a_mismatched_keyed_resolution() {
+  local dir
+  dir=$(case_dir unkeyed-needs-decision-retires)
+  printf 'needs-decision: how should the worker proceed\n' > "$dir/t.status"
+  printf 'needs-decision [key=route]: pick the deployment route\n' >> "$dir/t.status"
+  assert_fold "$dir/t.status" \
+    "$(printf 'default\tneeds-decision\thow should the worker proceed\nroute\tneeds-decision\tpick the deployment route\n')" \
+    "both the unkeyed and the keyed decision open"
+
+  # Firstmate answered in chat; the worker's own resolved line names a
+  # DIFFERENT stated key, so it never matches the unkeyed "default" bucket -
+  # exactly the third instance in the captain's report, which widened the
+  # defect beyond blocked: lines to needs-decision: too.
+  printf 'resolved [key=skills-directory-stale]: unrelated answer\n' >> "$dir/t.status"
+  printf 'done: shipped\n' >> "$dir/t.status"
+  assert_fold "$dir/t.status" "$(printf 'route\tneeds-decision\tpick the deployment route\n')" \
+    "the unkeyed decision retires via the done line while the keyed one stays open"
+  pass "an unkeyed needs-decision retires via a later done line even when an unrelated key was resolved, and a keyed needs-decision in the same log still folds as open"
+}
+
+test_correlated_terminal_line_does_not_retire_the_default_bucket() {
+  local dir
+  dir=$(case_dir corr-protects-default)
+  # bin/fm-pending-reply-lib.sh still owns closing a legacy unkeyed escalation
+  # explicitly (it matches the exact open note before appending its own
+  # resolved [key=default] line), so an ordinary correlation-marked delivery
+  # report must not retire that bucket out from under it.
+  printf 'blocked: pending-reply-missed: task=hibit pending-reply-id=abc request=legacy close\n' \
+    > "$dir/t.status"
+  printf 'done corr=0123456789abcdef: delayed legacy reply\n' >> "$dir/t.status"
+  assert_fold "$dir/t.status" \
+    "$(printf 'default\tblocked\tpending-reply-missed: task=hibit pending-reply-id=abc request=legacy close\n')" \
+    "a done line carrying a correlation token must not retire the default bucket"
+  pass "a correlation-marked done/failed/paused line leaves the default bucket for its owning library to close explicitly"
+}
+
 test_resolution_closes_across_positions() {
   local dir
   dir=$(case_dir cross-close)
@@ -264,6 +317,9 @@ test_incremental_agrees_with_full_fold_across_appends() {
 
 test_stated_key_is_honored_in_both_positions
 test_bare_keyless_line_still_folds_to_default
+test_unkeyed_blocked_retires_after_a_later_terminal_or_paused_line
+test_unkeyed_needs_decision_retires_via_done_despite_a_mismatched_keyed_resolution
+test_correlated_terminal_line_does_not_retire_the_default_bucket
 test_resolution_closes_across_positions
 test_blocked_is_position_tolerant_like_needs_decision
 test_two_colon_form_decisions_stay_distinct
