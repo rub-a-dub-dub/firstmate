@@ -1,0 +1,14 @@
+Tampering is still refused after the fix, and the refusal wake now names what
+actually differed. Same fixture and the same real bin/fm-watch.sh poll as the
+reboot transcript; state paths trimmed to the file name for readability.
+
+=== tamper 1: sidecar replaced by a byte-identical copy (new inode) ===
+  check: rejected unauthenticated state checks: task-a.check.sh (data file inode)
+  (watcher exit 0)
+
+=== tamper 2: trailing bytes appended to the sidecar in place (same inode) ===
+  check: rejected unauthenticated state checks: task-a.check.sh (data file content)
+  (watcher exit 0)
+
+  => a new inode with identical bytes, and a byte change the sidecar parser
+     would otherwise admit, both still refuse the poll rather than running it.

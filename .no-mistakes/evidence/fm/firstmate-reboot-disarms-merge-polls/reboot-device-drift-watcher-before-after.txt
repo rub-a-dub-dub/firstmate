@@ -1,0 +1,49 @@
+Armed merge poll across a macOS reboot (device renumbering), driven end to end
+through the real operator entry points: bin/fm-pr-check.sh arms the poll, the
+registration's recorded device component is then rewritten to a different
+number (exactly what a reboot leaves behind: same inode, same bytes, new
+device), and bin/fm-watch.sh runs its next poll against a PR that has merged
+upstream. Only the recorded device number is changed; no live file is touched.
+
+################################################################
+# BEFORE  (base 7ce3cda - bin/fm-pr-lib.sh, bin/fm-watch.sh)
+################################################################
+$ bin/fm-pr-check.sh task-a https://github.com/o/r/pull/1
+  armed: state/task-a.check.sh
+
+  armed merge poll registered device:inode bindings
+    sidecar      16777230:524922159
+    check script 16777230:524922160
+
+--- simulated macOS reboot: the volume is renumbered, inodes and bytes unchanged ---
+  registration still records   sidecar 999999:524922159   check 999999:524922160
+  a live stat now reports      sidecar 16777230:524922159   check 16777230:524922160
+  content hashes: unchanged (the files were never touched)
+
+$ bin/fm-watch.sh   # next watcher poll, PR is MERGED upstream
+  check: rejected unauthenticated state checks: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-pr-check-security.oa5FSu/demo-reboot-45295/home/state/task-a.check.sh
+  (watcher exit 0)
+
+  => the merge is NEVER detected. The armed poll is silently disarmed and the
+     wake blames an authentication failure, which reads like tampering.
+
+################################################################
+# AFTER   (target 21b0273)
+################################################################
+$ bin/fm-pr-check.sh task-a https://github.com/o/r/pull/1
+  armed: state/task-a.check.sh
+
+  armed merge poll registered device:inode bindings
+    sidecar      16777230:524922988
+    check script 16777230:524922989
+
+--- simulated macOS reboot: the volume is renumbered, inodes and bytes unchanged ---
+  registration still records   sidecar 999999:524922988   check 999999:524922989
+  a live stat now reports      sidecar 16777230:524922988   check 16777230:524922989
+  content hashes: unchanged (the files were never touched)
+
+$ bin/fm-watch.sh   # next watcher poll, PR is MERGED upstream
+  check: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-pr-check-security.1M0mZu/demo-reboot-53548/home/state/task-a.check.sh: merged
+  (watcher exit 0)
+
+  => the merge is detected and reported normally; no rejection wake at all.

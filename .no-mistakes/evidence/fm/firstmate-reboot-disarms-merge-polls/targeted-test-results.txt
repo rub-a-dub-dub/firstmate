@@ -1,0 +1,26 @@
+Targeted test runs (tests/fm-pr-check-security.test.sh), each case invoked
+individually. The suite's own bounded-watcher alarm is 10s and this host was
+running at load average ~90 on 10 cores, so cases were run one at a time.
+
+--- the change's own cases, against the target commit (21b0273) -------------
+ok - a device-only identity drift after a simulated reboot leaves the armed poll authorized
+ok - an inode swap with identical bytes still refuses the armed poll and names the inode mismatch
+ok - a sidecar content change the parser admits still refuses the armed poll and names the content mismatch
+ok - a file that stats but cannot be hashed is reported as unreadable, not as tampering
+ok - a content change on a retiring poll's check still refuses and names the content mismatch
+ok - a device-only identity drift does not block finishing a crash-interrupted retirement
+
+--- the two regression cases, against the base commit (7ce3cda bin/) --------
+not ok - a device-only identity drift left an armed poll unauthorized
+not ok - a device-only identity drift left a crash-recovered receipt unauthorized
+
+    (both fail before the fix and pass after it)
+
+--- pre-existing neighbours on the same identity/retirement paths -----------
+ok - a second pr= or a malformed pr_head= leaves the merge poll unauthorized
+ok - a relaunch append after pr= leaves the merge poll authorized
+ok - a captain-hold complete append after pr= leaves the merge poll authorized
+ok - queue, receipt, and every fixed-path removal crash point recover without loss or repeated execution
+ok - queue failure and untrusted receipts preserve canonical poll evidence
+ok - teardown removes safe poll artifacts and refuses directory-shaped check files without traversal
+ok - live poll and custom-check artifacts require private single-link files
