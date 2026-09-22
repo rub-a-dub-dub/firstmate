@@ -2583,6 +2583,45 @@ EOF
   pass "a gate named in a live captain hold survives the bound"
 }
 
+# A registered secondmate publishes its queued rows with live captain holds sorted
+# last and then truncated, so a busy ledger drops exactly the hold that names the
+# urgent gate. The pinning text has to come from the summary's captain-hold
+# decisions, which keep backlog order under their own separate bound.
+test_secondmate_hold_pins_its_gate_past_the_queued_bound() {
+  local home mate fakebin json
+  home=$(make_home mate-hold-named-gate)
+  : > "$home/data/secondmates.md"
+  mate="$TMP_ROOT/mate-hold-named-gate-home"
+  make_valid_secondmate_home hold-text-mate "$mate"
+  append_secondmate_registry "$home" hold-text-mate "$mate"
+  cat > "$mate/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+- [ ] mate-gate-a - Mate gate A (repo: sample) (kind: ship) (since 2026-07-11)
+- [ ] mate-gate-b - Mate gate B (repo: sample) (kind: ship) (since 2026-07-11)
+- [ ] mate-gate-c - Mate gate C (repo: sample) (kind: ship) (since 2026-07-11)
+- [ ] mate-signing-fix - Fix the mate commit signing (repo: sample) (kind: ship) (since 2026-07-11)
+- [ ] mate-enable - Enable the mate nightly job (repo: sample) (kind: captain) (since 2026-07-11) (hold: waiting on mate-signing-fix) (hold-kind: captain)
+  Captain hold set: 2026-07-11T00:00:00Z
+
+## Done
+EOF
+  fakebin=$(make_fakebin "$home")
+  json=$(FM_SNAPSHOT_SECONDMATE_QUEUED=4 FM_BEARINGS_GATES=2 run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    (.gates | any(.id == "mate-signing-fix" and .owner == "hold-text-mate"))
+      and ([.gates[].id] | contains(["mate-gate-a", "mate-gate-b"]))
+      and (.gates | any(.id == "mate-gate-c") | not)
+      and (.gates | length) == 3
+      and (.decisions_open | any(.id == "hold-text-mate/mate-enable"))
+      and ([.omitted[].surface] | index("gates showing 3 of 4") != null)
+      and ([.omitted[].surface]
+           | index("gates retained past the truncation bound, referenced by a live captain hold: mate-signing-fix") != null)
+  ' >/dev/null || fail "a secondmate live captain hold lost its gate past the ledger queued bound: $json"
+  pass "a secondmate live captain hold pins its gate past the queued bound"
+}
+
 # A captain scanning Underway must be able to tell WHICH task a row is, and the
 # board orders Charted Next by the durable filed date, so both facts have to come
 # out of fleet state rather than being invented at render time.
@@ -3455,6 +3494,7 @@ test_active_children_project_independent_of_home_captain_hold
 test_nameless_legacy_summary_uses_its_durable_identifier
 test_newest_filed_gates_are_selected_before_snapshot_bounds
 test_gate_named_in_a_live_captain_hold_survives_the_bound
+test_secondmate_hold_pins_its_gate_past_the_queued_bound
 test_underway_and_gate_rows_carry_the_durable_name_and_filed_date
 test_mixed_secondmate_roles_partial_state_and_captain_readiness
 test_main_captain_readiness_matches_secondmate_projection

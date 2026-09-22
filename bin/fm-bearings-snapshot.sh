@@ -598,11 +598,11 @@ MODEL=$(printf '%s' "$SNAP" | jq \
          | select((.hold_bucket == null) or ($all_decisions == 0))
          | as_gate($m.id) ]) as $gates_all
   | ([ .backlog.records[] | select(.structured and .hold_bucket == "live") | hold_ref_text ]
-     + [ (.secondmate_current.records // [])[] as $m
-         | select($m.provenance.selected == "structured-home")
-         | $m.queued[]?
-         | select(.hold_bucket == "live")
-         | hold_ref_text ]) as $live_hold_texts
+     + [ (.secondmate_current.records // [])[]
+         | .decisions_open[]?
+         | select(.source == "backlog" and .verb == "captain-hold")
+         | select(live_captain_call)
+         | ((.summary // "") + " " + (.reason // "")) ]) as $live_hold_texts
   | ([ .scout_reports[]
        | . as $r
        | select(($all_reports == 1) or (($rel_ids | index($r.id)) != null))
