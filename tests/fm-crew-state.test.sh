@@ -1019,6 +1019,23 @@ test_terminal_passed_with_override_reads_done_not_unknown() {
   pass "terminal passed-with-override run is classified done, never unknown"
 }
 
+# A run record without the pr_state field proves nothing about the PR either
+# way; the detail must say so rather than assert a landing or its absence.
+test_terminal_passed_absent_pr_state_reads_unknown() {
+  reset_fakes
+  local d; d=$(new_case passed-no-pr-state)
+  make_repo_on_branch "$d/wt" fm/feat-passed-no-pr-state
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-passed-no-pr-state.meta" "window=fm:fm-feat-passed-no-pr-state" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-passed-no-pr-state)"
+  local out; out=$(run_crew_state "$d" feat-passed-no-pr-state)
+  assert_contains "$out" "state: done" "a passed run without pr_state still reads done"
+  assert_contains "$out" "PR merge state unknown" "an absent pr_state must read unknown"
+  assert_not_contains "$out" "no PR opened" "an absent pr_state must not claim no PR was opened"
+  assert_not_contains "$out" "PR merged" "an absent pr_state must not claim a merge"
+  pass "terminal passed run without pr_state reports the merge state as unknown"
+}
+
 test_terminal_failed() {
   reset_fakes
   local d; d=$(new_case failed)
@@ -2750,6 +2767,7 @@ test_top_level_fixing_done_log_stays_working
 test_terminal_passed
 test_terminal_passed_open_pr_reads_honest_detail
 test_terminal_passed_with_override_reads_done_not_unknown
+test_terminal_passed_absent_pr_state_reads_unknown
 test_terminal_failed
 test_terminal_failed_ci_orphan_after_green_reads_done
 test_terminal_failed_ci_orphan_status_only_reads_done
