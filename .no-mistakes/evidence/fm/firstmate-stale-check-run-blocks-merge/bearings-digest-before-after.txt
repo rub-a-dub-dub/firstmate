@@ -1,0 +1,19 @@
+BEARINGS PR-CHECKS DIGEST - the aggregate view a human or firstmate reads
+Command: bin/fm-bearings-snapshot.sh --include-prs   (surfaced to the captain as /bearings)
+
+Fixture rollup = rub-a-dub-dub/firstmate PR 10's real statusCheckRollup:
+  CheckRun 'PR must be raised via no-mistakes'  FAILURE  startedAt 2026-09-20T05:59:46Z
+  CheckRun 'PR must be raised via no-mistakes'  SUCCESS  startedAt 2026-09-20T06:00:27Z  (re-attestation, identical head)
+  CheckRun 'Lint'                               SUCCESS  startedAt 2026-09-20T05:59:46Z
+
+--- BEFORE (base 7ce3cdac: the digest counted any non-green run anywhere in the rollup as failing) ---
+candidate_prs[1]{num,repo,task,url,review,mergeable,checks}:
+  "10",kunchenguid/firstmate,ship-task,"https://github.com/kunchenguid/firstmate/pull/10",APPROVED,MERGEABLE,failing
+
+--- AFTER (dcbafcd: both readers share bin/fm-check-rollup-lib.sh's latest-run-per-check-name verdict) ---
+candidate_prs[1]{num,repo,task,url,review,mergeable,checks}:
+  "10",kunchenguid/firstmate,ship-task,"https://github.com/kunchenguid/firstmate/pull/10",APPROVED,MERGEABLE,passing
+
+--- AFTER, inverse shape (no loosening): newest run of 'ci' FAILED 06:00:27Z, older run still QUEUED 05:59:46Z ---
+candidate_prs[1]{num,repo,task,url,review,mergeable,checks}:
+  "11",kunchenguid/firstmate,ship-task,"https://github.com/kunchenguid/firstmate/pull/11",APPROVED,MERGEABLE,failing

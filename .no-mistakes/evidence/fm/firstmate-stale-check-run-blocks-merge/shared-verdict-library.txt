@@ -1,0 +1,12 @@
+SHARED VERDICT LIBRARY - bin/fm-check-rollup-lib.sh, exercised directly through jq
+Input: PR 10's superseded pair + a green check + an in-progress check + a red legacy status context.
+
+$ jq -c "$FM_CHECK_ROLLUP_JQ_DEFS"'[check_rollup_verdicts]' pr10.json
+[{"name":"Lint","ok":true,"pending":false},{"name":"PR must be raised via no-mistakes","ok":true,"pending":false},{"name":"Slow suite","ok":false,"pending":true},{"name":"legacy/build","ok":false,"pending":false}]
+
+Emitted object keys (must be exactly name, ok, pending):
+[["name","ok","pending"]]
+
+Red set the merge gate refuses on (github_checks_not_green):
+Slow suite
+legacy/build

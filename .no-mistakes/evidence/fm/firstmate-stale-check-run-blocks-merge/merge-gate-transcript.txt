@@ -1,0 +1,20 @@
+MERGE GATE - bin/fm-pr-merge.sh, which judges EVERY non-green check (not just required ones)
+The gate's verdict now comes from the same bin/fm-check-rollup-lib.sh the digest above reads,
+so the two agree by construction.
+
+$ bin/fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/10
+  rollup: PR 10's real shape - FAILURE 05:59:46Z superseded by SUCCESS 06:00:27Z of the SAME check name at the SAME head
+armed: state/task-x1.check.sh
+verified: https://github.com/example/repo/pull/10 is open and mergeable, with every required check green at head cccccccccccccccccccccccccccccccccccccccc
+verified: https://github.com/example/repo/pull/10 is merged (state=MERGED, merged=true, isInMergeQueue=false)
+exit status: 0
+gh merge call attempted: pr merge 10 --repo example/repo --match-head-commit cccccccccccccccccccccccccccccccccccccccc --squash
+
+$ bin/fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/11
+  rollup: inverse shape - SUCCESS 05:59:46Z then FAILURE 06:00:27Z of the SAME check name (the gate must still refuse)
+armed: state/task-x1.check.sh
+error: refusing to merge https://github.com/example/repo/pull/11
+  - check 'PR must be raised via no-mistakes' is not green
+error: these checks are not green: PR must be raised via no-mistakes
+exit status: 1
+gh merge call attempted: (none)
