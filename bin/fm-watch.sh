@@ -113,7 +113,9 @@
 #                          payload names what to check. These three kinds are
 #                          joined with `;` when more than one surfaces in a cycle
 #   check: rejected unauthenticated state checks: <paths>
-#                          unsafe state checks were refused without execution
+#                          unsafe state checks were refused without execution;
+#                          each path carries a parenthesised mismatch reason
+#                          when the refusal identified one
 #   check: rejected unauthenticated PR poll retirement receipts: <paths>
 #                          invalid pending retirements were preserved without
 #                          running a check or removing poll artifacts
@@ -2117,7 +2119,17 @@ while :; do
           fm_custom_check_snapshot_cleanup
         else
           fm_custom_check_snapshot_cleanup
-          rejected_checks="$rejected_checks $c"
+          # FM_PR_POLL_REJECT_REASON is set by the just-attempted
+          # fm_pr_poll_snapshot_capture above whenever the rejection was a
+          # content or inode mismatch on the armed poll's own files; it stays
+          # empty for every other rejection reason, including a genuine
+          # custom-check trust failure, so the message below only ever adds
+          # detail it actually has.
+          if [ -n "$FM_PR_POLL_REJECT_REASON" ]; then
+            rejected_checks="$rejected_checks $c ($FM_PR_POLL_REJECT_REASON)"
+          else
+            rejected_checks="$rejected_checks $c"
+          fi
           continue
         fi
       fi
