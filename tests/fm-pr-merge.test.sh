@@ -363,6 +363,7 @@ set_pr_ci_workflow() {
 # date. Args: case_dir iso8601
 set_pr_created() {
   local case_dir=$1 created=$2
+  # shellcheck disable=SC2016  # $c is jq's --arg variable, not a shell expansion.
   "$JQ_BIN" --arg c "$created" '.createdAt = $c' \
     "$case_dir/github-view.json" > "$case_dir/github-view.json.tmp"
   mv "$case_dir/github-view.json.tmp" "$case_dir/github-view.json"
@@ -374,6 +375,7 @@ set_pr_created() {
 # empty argument here reproduces. Args: case_dir sha
 set_merge_ref() {
   local case_dir=$1 ref=$2
+  # shellcheck disable=SC2016  # $r is jq's --arg variable, not a shell expansion.
   "$JQ_BIN" --arg r "$ref" \
     '.potentialMergeCommit = (if $r == "" then null else {oid: $r} end)' \
     "$case_dir/github-view.json" > "$case_dir/github-view.json.tmp"
