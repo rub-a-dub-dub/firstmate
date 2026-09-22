@@ -12,7 +12,7 @@
 # first runs the LEDGER-FIRST parent delivery: a direct child whose status
 # ledger ends in a whole `done:` or `failed:` line has stated its own outcome,
 # so that line is published on the parent channel at once through
-# bin/fm-parent-channel-lib.sh as
+# bin/fm-parent-channel-lib.sh from this unstamped payload:
 #   <state> [key=child-outcome-<child>-<state>-<fp8>]: child <child> <state>: <note> [pr=<url>] [mode=<mode>] [yolo=<posture>] [report=data/<child>/report.md]
 # carrying the child's recorded PR, delivery mode, merge posture, and scout
 # report pointer, without consulting fm-crew-state.sh and without waiting for
@@ -313,8 +313,10 @@ meta_incarnation() { # <meta>
 
 # The task's delivered PR. Recorded meta pr= is the only authoritative source;
 # the fallback scrape accepts only a preferred terminal line in a mode's
-# ready-signal shape (`done: PR <url>` or `done: PR <url> checks green`), so a
-# PR a worker merely mentioned in prose is never claimed as the delivery.
+# ready-signal shape (`done: PR <url>` or `done: PR <url> checks green`,
+# optionally carrying an emission-time tag this scrape steps over without
+# reading), so a PR a worker merely mentioned in prose is never claimed as the
+# delivery.
 # A scout never delivers a PR, so it never carries one.
 pr_for_task() { # <meta> [preferred-line]
   local meta=$1 preferred=${2:-} value
@@ -322,7 +324,7 @@ pr_for_task() { # <meta> [preferred-line]
   value=$(meta_field "$meta" pr)
   if [ -z "$value" ] && [ -n "$preferred" ]; then
     value=$(printf '%s\n' "$preferred" \
-      | sed -nE 's|^done: PR (https?://[^[:space:])"]+/pull/[0-9]+)( checks green)?$|\1|p' \
+      | sed -nE 's|^done( \[at=[^]]*\])?: PR (https?://[^[:space:])"]+/pull/[0-9]+)( checks green)?$|\2|p' \
       | head -1 || true)
   fi
   clean_field "$value"
@@ -353,18 +355,27 @@ notice_parent_report_failed() { # <record> <fingerprint> <payload>
 
 # The whole terminal line a child's ledger CURRENTLY states, or non-zero when
 # the ledger is absent, unusable, still being appended (no trailing newline
-# yet), or does not currently declare a done or failed state.
-# The outcome is read through status_current_state_line, the same current-state
-# notion bin/fm-crew-state.sh reports from, rather than from the bare last line:
-# a decision-closing resolved: or an informational note: appended after the
-# outcome does not retract it. Deriving the two differently is what lets this
-# path disown a terminal ledger that crew-state still reports as done, so the
-# inactive fallback below delivers the same outcome a second time.
+# yet, 2), or does not currently declare a done or failed state (1). The
+# no-trailing-newline race is detected against last_status_line's bounded
+# read: when the fresh full-file snapshot's tail is exactly that line plus
+# the marker with no separating newline, the writer is still mid-append.
+# Once that race is ruled out, the returned line is derived through
+# status_current_state_line - the same current-state notion bin/fm-crew-state.sh
+# reports from - rather than the bare last event: a decision-closing
+# resolved: or an informational note: appended after the outcome does not
+# retract it. Deriving the two differently is what lets this path disown a
+# terminal ledger that crew-state still reports as done, so the inactive
+# fallback below delivers the same outcome a second time.
 child_terminal_ledger_line() { # <status>
   local status=$1 snapshot last marker='__FM_LEDGER_SNAPSHOT_END__'
   [ -f "$status" ] && [ ! -L "$status" ] && [ -s "$status" ] || return 1
+  last=$(last_status_line "$status")
   snapshot=$(cat "$status"; printf '%s' "$marker") || return 1
-  case "$snapshot" in *$'\n'"$marker") ;; *) return 1 ;; esac
+  case "$snapshot" in
+    *$'\n'"$marker") ;;
+    "$last$marker"|*$'\n'"$last$marker") return 2 ;;
+    *) return 1 ;;
+  esac
   last=$(status_current_state_line "$status") || return 1
   case "$(status_line_verb "$last")" in
     done|failed) printf '%s\n' "$last" ;;
@@ -410,6 +421,12 @@ report_child_ledger_locked() { # <id> <meta>
   pr=$(pr_for_task "$meta" "$last")
   incarnation=$(meta_incarnation "$meta")
   fingerprint=$(sha256_text "$incarnation|$id|$state|ledger|$last")
+  # $last is the current declared line (child_terminal_ledger_line's own
+  # status_current_state_line read), which is not always the file's literal
+  # last line - a trailing resolved:/note: can follow it. So the predecessor
+  # is found by locating $last's own position in the file rather than
+  # last_status_line's "event before the absolute last line", which would
+  # name the wrong line whenever something trails the terminal declaration.
   previous=$(grep -v '^[[:space:]]*$' "$status" 2>/dev/null \
     | awk -v t="$last" '$0 == t { print prev } { prev = $0 }' | tail -1 || true)
   predecessor_head=$(sha256_text "$previous")
@@ -488,17 +505,19 @@ reconcile_direct_child_locked() { # <id> <meta> <secondmate-id-or-empty> <timeou
   last=$(last_status_line "$status")
   status_line_verb "$last" | grep -Fx captain-held >/dev/null 2>&1 && return 0
   # A ledger that states its own outcome is the ledger-first path's to deliver.
-  if [ -n "$self" ] && child_terminal_ledger_line "$status" >/dev/null; then
-    return 0
+  if [ -n "$self" ]; then
+    child_terminal_ledger_line "$status" >/dev/null
+    case "$?" in 0|2) return 0 ;; esac
   fi
   age=$(last_activity_age "$meta" "$status" "$turn")
   [ "$age" -ge "$FM_INACTIVE_RECONCILE_SECS" ] || return 0
-  state_line=$(fm_run_timed "$timeout" env FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+  state_line=$(fm_run_timed "$timeout" env FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_CREW_STATE_NO_FORGE=1 \
     "$CREW_STATE_BIN" "$id" 2>/dev/null) || state_rc=$?
   [ "$state_rc" -ne 124 ] || return 3
   last=$(last_status_line "$status")
-  if [ -n "$self" ] && child_terminal_ledger_line "$status" >/dev/null; then
-    return 0
+  if [ -n "$self" ]; then
+    child_terminal_ledger_line "$status" >/dev/null
+    case "$?" in 0|2) return 0 ;; esac
   fi
   case "$state_line" in
     'state: done '*) state='done' ;;
