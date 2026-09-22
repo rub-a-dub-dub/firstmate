@@ -4467,6 +4467,55 @@ test_waive_no_ci_evidence_records_attended_ci_waived_authority() {
   pass "fm-pr-merge records a used --waive-no-ci-evidence waiver as attended-ci-waived merge authority"
 }
 
+# The other half of that record is what the success line itself says. A waived
+# head had zero checks report, so the ordinary "every required check green"
+# claim would be false exactly where the waiver was used; the stand-down paths,
+# where no CI was ever expected, keep saying it.
+test_waive_no_ci_evidence_success_line_does_not_claim_green() {
+  local case_dir head url
+
+  head=5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d
+  case_dir=$(make_case github-waive-ci-verified-line)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir"
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+  url=https://github.com/example/repo/pull/126
+
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-no-ci-evidence "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "waive-ci-verified-line: the waived merge should succeed"$'\n'"$(cat "$case_dir/stderr")"
+  assert_grep "verified: $url is open and mergeable, with no check red at head $head and its missing CI evidence waived" \
+    "$case_dir/stderr" \
+    "waive-ci-verified-line: the waived success line did not report a waived head with no check red"
+  assert_no_grep 'every required check green' "$case_dir/stderr" \
+    "waive-ci-verified-line: a waived head with no check reported was announced as every required check green"
+
+  # The expired stand-down concluded no CI evidence was ever obtainable, not
+  # that any was overridden, so its success line is unchanged.
+  head=5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e
+  case_dir=$(make_case github-waive-ci-standdown-line)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir"
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-06-01T00:00:00Z # 214 days before "now"
+  set_pr_created "$case_dir" 2025-06-01T00:00:00Z
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+  url=https://github.com/example/repo/pull/127
+
+  run_pr_merge "$case_dir" task-x1 "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "waive-ci-standdown-line: the expired stand-down merge should succeed"$'\n'"$(cat "$case_dir/stderr")"
+  assert_grep "verified: $url is open and mergeable, with every required check green at head $head" \
+    "$case_dir/stderr" \
+    "waive-ci-standdown-line: the expired stand-down success line was rewritten"
+
+  pass "fm-pr-merge's waived success line reports a waived head instead of claiming every required check green"
+}
+
 # Passing the flag when it never actually stands in for a refusal must leave
 # the ordinary attended authority untouched - only a used waiver is tagged.
 test_waive_no_ci_evidence_unused_leaves_ordinary_attended_authority() {
@@ -4702,6 +4751,7 @@ test_merge_refuses_when_the_away_record_cannot_be_locked
 test_allow_red_refused_on_gitlab
 test_waive_no_ci_evidence_merges_grace_and_dropped_heads
 test_waive_no_ci_evidence_records_attended_ci_waived_authority
+test_waive_no_ci_evidence_success_line_does_not_claim_green
 test_waive_no_ci_evidence_unused_leaves_ordinary_attended_authority
 test_waive_no_ci_evidence_never_covers_a_red_check
 test_waive_no_ci_evidence_is_refused_while_away

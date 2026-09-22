@@ -1237,9 +1237,14 @@ EOF
     [ -z "$uncovered" ] || printf 'error: these checks are not green: %s\n' "$uncovered" >&2
     return 1
   fi
-  [ -z "$waived_notice" ] || printf '%s\n' "$waived_notice" >&2
-  printf 'verified: %s is open and mergeable, with every required check green at head %s\n' \
-    "$URL" "$live_head" >&2
+  if [ -n "$waived_notice" ]; then
+    printf '%s\n' "$waived_notice" >&2
+    printf 'verified: %s is open and mergeable, with no check red at head %s and its missing CI evidence waived\n' \
+      "$URL" "$live_head" >&2
+  else
+    printf 'verified: %s is open and mergeable, with every required check green at head %s\n' \
+      "$URL" "$live_head" >&2
+  fi
   FM_PR_MERGE_HEAD=$live_head
   FM_PR_GITHUB_BASE=$base
 }
