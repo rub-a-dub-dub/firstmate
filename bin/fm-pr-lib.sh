@@ -290,9 +290,6 @@ fm_pr_identity_matches() {
   FM_PR_IDENTITY_MISMATCH=
   live_identity=$(fm_pr_file_identity "$path") || { FM_PR_IDENTITY_MISMATCH=unreadable; return 1; }
   live_hash=$(fm_pr_sha256 "$path") || { FM_PR_IDENTITY_MISMATCH=unreadable; return 1; }
-  if [ "$live_identity" = "$expected_identity" ] && [ "$live_hash" = "$expected_hash" ]; then
-    return 0
-  fi
   live_inode=${live_identity#*:}
   expected_inode=${expected_identity#*:}
   if [ "$live_inode" = "$expected_inode" ] && [ "$live_hash" = "$expected_hash" ]; then
