@@ -1,0 +1,12 @@
+===== BEFORE: bin/fm-wake-drain.sh (what the captain reads) =====
+$ FM_STATE_OVERRIDE=<state> bin/fm-wake-drain.sh
+STATUS OUTCOME BACKSTOP (newest captain-facing task event has no covering branch outcome):
+spend-unattended-op-read-hangs done: pull request went green
+OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+firstmate-detect-dropped-ci-event blocked: no-mistakes axi run refuses to push the rebased branch to its internal gate mirror
+firstmate-unreplayable-backlog-close blocked: escape-the-branch remedy did not work either
+ios-shell [key=api-shape] needs-decision: pick REST or RPC
+release-cut blocked: waiting on release credentials
+spend-unattended-op-read-hangs needs-decision: how should the worker proceed with the stale skills directory?
+OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+

@@ -1,0 +1,21 @@
+===== AFTER: bin/fm-wake-drain.sh (what the captain reads) =====
+$ FM_STATE_OVERRIDE=<state> bin/fm-wake-drain.sh
+STATUS OUTCOME BACKSTOP (newest captain-facing task event has no covering branch outcome):
+spend-unattended-op-read-hangs done: pull request went green
+OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+ios-shell [key=api-shape] needs-decision: pick REST or RPC
+release-cut [key=default] blocked: waiting on release credentials
+OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+
+===== AFTER: the footer's own command, filled in from the row above =====
+$ bin/fm-send.sh release-cut --resolve-key default 'credentials rotated, go'
+(exit 0)
+
+--- state/release-cut.status after the send ---
+blocked: waiting on release credentials
+resolved [key=default]: answered: credentials rotated, go
+
+===== AFTER: drain again - the answered row is gone =====
+OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+ios-shell [key=api-shape] needs-decision: pick REST or RPC
+OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'

@@ -1,0 +1,27 @@
+Host-level flake observed while running the wake-drain suites (NOT caused by this change)
+=========================================================================================
+
+Symptom: bin/fm-wake-drain.sh intermittently prints
+  "STATUS PRESENTATION INCOMPLETE: status snapshot could not be read."
+which makes tests/fm-wake-drain-outcome-backstop.test.sh and
+tests/fm-wake-drain-open-decisions-cursor.test.sh fail at a RANDOM case each run.
+
+Root cause on this machine (macOS 27.0, build 26A428): /usr/bin/stat segfaults
+intermittently when invoked from inside the drain's nested subshells. It still
+writes the correct value to stdout, but exits 139 (SIGSEGV), so
+_fm_open_decisions_file_ident() -> status_presentation_snapshot() returns 1.
+
+Instrumented run (60 drains over a one-file state dir, identity reader wrapped):
+  IDENT-FAIL rc=139 out=[16777230:525709237] err=[] uname=[Darwin]   x27
+
+Raw drain loop, 40 iterations over a single-task state dir:
+  sandboxed:     2/40 drains printed PRESENTATION INCOMPLETE
+  unsandboxed:   1/40 drains printed PRESENTATION INCOMPLETE
+Standalone stress of the same command: 0 failures in 3000 invocations.
+
+Pre-existing: the same suites fail the same way with the base commit's
+bin/ files (2e9903c) checked back in --
+  tests/fm-wake-drain-outcome-backstop.test.sh   @base: 4/4 runs failed, each at a different case
+  tests/fm-wake-drain-open-decisions-cursor.test.sh @base: 2/3 runs failed, each at a different case
+At the target commit (093f04d) both suites also produce fully green runs on retry
+(outcome-backstop: 18/18 cases green on run 2 of 6; cursor suite: green on run 3 of 3).
