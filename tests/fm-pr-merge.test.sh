@@ -4493,6 +4493,33 @@ test_waive_no_ci_evidence_success_line_does_not_claim_green() {
   assert_no_grep 'every required check green' "$case_dir/stderr" \
     "waive-ci-verified-line: a waived head with no check reported was announced as every required check green"
 
+  # Both attended escapes on one invocation: the waived head reported nothing,
+  # and --allow-red covered a red check the rollup did report, so the line has
+  # to name that check rather than claim no check is red.
+  head=5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f
+  case_dir=$(make_case github-waive-ci-with-allow-red)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  write_github_red_json "$case_dir" "$head" lint
+  set_pr_ci_workflow "$case_dir"
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+  url=https://github.com/example/repo/pull/128
+
+  run_pr_merge "$case_dir" task-x1 "$url" --allow-red lint \
+    --waive-no-ci-evidence "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "waive-ci-allow-red-line: both attended escapes together should merge"$'\n'"$(cat "$case_dir/stderr")"
+  assert_logged_gh_merge "$case_dir" 128 example/repo --squash
+  assert_grep "verified: $url is open and mergeable, with no check red at head $head other than waived lint, and its missing CI evidence waived" \
+    "$case_dir/stderr" \
+    "waive-ci-allow-red-line: the success line did not name the red check --allow-red waived"
+  assert_no_grep "with no check red at head $head and" "$case_dir/stderr" \
+    "waive-ci-allow-red-line: a head with a red allow-red'd check was announced as having no check red"
+  assert_no_grep 'every required check green' "$case_dir/stderr" \
+    "waive-ci-allow-red-line: a waived head with a red check was announced as every required check green"
+
   # The expired stand-down concluded no CI evidence was ever obtainable, not
   # that any was overridden, so its success line is unchanged.
   head=5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e

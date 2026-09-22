@@ -1092,7 +1092,7 @@ github_check_dropped_ci_event() {
 # Sets FM_PR_MERGE_HEAD to the verified head on success.
 github_verify_mergeable() {
   local json fields line red name covered
-  local total=0 named=0 refusals='' waived_notice=''
+  local total=0 named=0 refusals='' waived_notice='' waived_red=''
   local state='' draft='' mergeable='' merge_state='' live_head='' base=''
   local created='' merge_ref=''
 
@@ -1222,11 +1222,13 @@ FIELDS
         [ "$check" = "$name" ] && covered=1
       done
     fi
-    [ "$covered" -eq 1 ] || {
+    if [ "$covered" -eq 1 ]; then
+      waived_red="${waived_red:+$waived_red, }$name"
+    else
       refusals="$refusals  - check '$name' is not green
 "
       uncovered="${uncovered:+$uncovered, }$name"
-    }
+    fi
   done <<EOF
 $red
 EOF
@@ -1239,8 +1241,8 @@ EOF
   fi
   if [ -n "$waived_notice" ]; then
     printf '%s\n' "$waived_notice" >&2
-    printf 'verified: %s is open and mergeable, with no check red at head %s and its missing CI evidence waived\n' \
-      "$URL" "$live_head" >&2
+    printf 'verified: %s is open and mergeable, with no check red at head %s%s and its missing CI evidence waived\n' \
+      "$URL" "$live_head" "${waived_red:+ other than waived $waived_red,}" >&2
   else
     printf 'verified: %s is open and mergeable, with every required check green at head %s\n' \
       "$URL" "$live_head" >&2
