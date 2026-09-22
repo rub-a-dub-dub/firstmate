@@ -276,7 +276,7 @@ status_paused_until() {  # <status-line> -> epoch on stdout
 # so a summary merely MENTIONING "[key=x]" cannot open or close that decision.
 # A line with no token in either position uses the key "default", preserving
 # the historical one-open-decision-per-task behavior (a bare "resolved:" closes
-# "default", and so now does a later plain done/failed/paused line - see above).
+# "default", and so now does a later plain done/paused line - see above).
 # A stated key whose slug fails the charset below is rejected (the folds skip
 # the line), never rewritten to "default".
 # The parsers are pure reads of a single line. Status metadata may contain any
