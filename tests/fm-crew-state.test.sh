@@ -378,6 +378,38 @@ outcome: passed
 EOF
 }
 
+# The 2026-09-20 firstmate-lint-debt-blocking-prs incident shape: outcome
+# passed with pr_state open, still holding for the captain's merge word.
+run_passed_pr_open() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: completed
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: "https://github.com/o/r/pull/1"
+  pr_state: open
+  findings: none
+outcome: passed
+EOF
+}
+
+# The 2026-09-20 firstmate-detect-dropped-ci-event incident shape: a real
+# terminal outcome the reader had no arm for.
+run_passed_with_override() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: completed
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: "https://github.com/o/r/pull/1"
+  pr_state: open
+  findings: none
+outcome: passed-with-override
+EOF
+}
+
 run_failed() {  # <branch>
   cat <<EOF
 run:
@@ -953,6 +985,38 @@ test_terminal_passed() {
   assert_contains "$out" "state: done" "passed run -> done"
   assert_contains "$out" "source: run-step" "passed -> run-step source"
   pass "terminal passed run is authoritative"
+}
+
+# Pins the 2026-09-20 firstmate-lint-debt-blocking-prs fix: outcome=passed
+# must not assert a merge that pr_state disproves.
+test_terminal_passed_open_pr_reads_honest_detail() {
+  reset_fakes
+  local d; d=$(new_case passed-open)
+  make_repo_on_branch "$d/wt" fm/feat-passed-open
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-passed-open.meta" "window=fm:fm-feat-passed-open" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_passed_pr_open fm/feat-passed-open)"
+  local out; out=$(run_crew_state "$d" feat-passed-open)
+  assert_contains "$out" "state: done" "passed run with an open PR still reads done"
+  assert_contains "$out" "PR open, not yet merged" "an open PR's detail must not claim it merged"
+  assert_not_contains "$out" "PR merged" "an open PR must never be reported as merged"
+  pass "terminal passed run with an open PR reads its honest pr_state, not a guessed merge"
+}
+
+# Pins the 2026-09-20 firstmate-detect-dropped-ci-event fix: an unmapped
+# terminal outcome must not degrade to unknown when the run plainly finished.
+test_terminal_passed_with_override_reads_done_not_unknown() {
+  reset_fakes
+  local d; d=$(new_case passed-override)
+  make_repo_on_branch "$d/wt" fm/feat-passed-override
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-passed-override.meta" "window=fm:fm-feat-passed-override" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_passed_with_override fm/feat-passed-override)"
+  local out; out=$(run_crew_state "$d" feat-passed-override)
+  assert_contains "$out" "state: done" "passed-with-override is a real terminal outcome, not unknown"
+  assert_not_contains "$out" "state: unknown" "a finished run must never read as unknown"
+  assert_contains "$out" "PR open, not yet merged" "passed-with-override still reads its honest pr_state"
+  pass "terminal passed-with-override run is classified done, never unknown"
 }
 
 test_terminal_failed() {
@@ -2684,6 +2748,8 @@ test_ci_fixing_after_green_stays_working
 test_top_level_fixing_ci_running_after_green_stays_working
 test_top_level_fixing_done_log_stays_working
 test_terminal_passed
+test_terminal_passed_open_pr_reads_honest_detail
+test_terminal_passed_with_override_reads_done_not_unknown
 test_terminal_failed
 test_terminal_failed_ci_orphan_after_green_reads_done
 test_terminal_failed_ci_orphan_status_only_reads_done
