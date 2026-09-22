@@ -92,15 +92,6 @@ case "${1:-}" in
         'export TRACEPARENT='*)
           [ -z "${FM_FAKE_TRACE_EXPORTED:-}" ] || : > "$FM_FAKE_TRACE_EXPORTED"
           ;;
-        "cd -- '"*)
-          # fm_backend_tmux_send_text_line's recreated-endpoint cd (bin/fm-spawn.sh):
-          # simulate the shell actually moving there, so the worktree-detection
-          # poll that follows sees the recorded worktree instead of the fixed
-          # fixture cwd.
-          p=${payload#"cd -- '"}
-          p=${p%\'}
-          printf '%s' "$p" > "$D/cwd"
-          ;;
       esac
     fi
     exit 0 ;;
@@ -124,17 +115,39 @@ case "${1:-}" in
     # fm_backend_tmux_create_task's -dP -F '#{window_id}' capture, used only
     # when a missing endpoint's replacement window is created fresh. Record
     # the created window's name so a later list-windows (the liveness check
-    # on the NEW endpoint) finds it instead of reading missing forever.
+    # on the NEW endpoint) finds it instead of reading missing forever, and
+    # model a real new window's cwd: tmux opens the pane in -c's directory, so
+    # that is what pane_current_path reports from the first read on.
     shift
     wname=
+    wcwd=
     while [ $# -gt 0 ]; do
       case "$1" in
         -n) wname=$2; shift 2 ;;
+        -c) wcwd=$2; shift 2 ;;
         *) shift ;;
       esac
     done
     [ -z "$wname" ] || printf '%s\n' "$wname" >> "$D/windows"
+    [ -z "$wcwd" ] || printf '%s' "$wcwd" > "$D/cwd"
     printf '%s\n' "${FM_FAKE_NEW_WINDOW_ID:-@99}"
+    exit 0 ;;
+  kill-window)
+    # fm_backend_tmux_kill targets "=<session>:=<window>"; drop that window so
+    # a later list-windows reflects its removal.
+    shift
+    target=
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -t) target=$2; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    wname=${target##*:=}
+    if [ -n "$wname" ] && [ -f "$D/windows" ]; then
+      remaining=$(grep -vxF -- "$wname" "$D/windows" || true)
+      if [ -n "$remaining" ]; then printf '%s\n' "$remaining" > "$D/windows"; else : > "$D/windows"; fi
+    fi
     exit 0 ;;
 esac
 exit 0
@@ -363,10 +376,9 @@ test_missing_endpoint_relaunch_recreates_it() {
   dir=$(new_case gone rlmiss)
   add_ship_task "$dir" rlmiss claude
   : > "$dir/fake/windows"
-  # A freshly created endpoint starts in the spawning project, not the
-  # recorded worktree, unlike add_ship_task's default fixture cwd (which
-  # already equals the worktree, and would pass trivially even without the
-  # fix's active cd).
+  # Seed the spawning project, not add_ship_task's default fixture cwd (which
+  # already equals the worktree and would pass trivially): only the recreated
+  # window's own -c can move the pane's reported path to the worktree.
   printf '%s' "$dir/proj" > "$dir/fake/cwd"
   out=$(run_control "$dir" rlmiss relaunch --note "recover after a reboot killed the terminal backend"); rc=$?
   expect_code 0 "$rc" "a relaunch onto a positively missing endpoint should succeed"$'\n'"$out"
@@ -379,8 +391,10 @@ test_missing_endpoint_relaunch_recreates_it() {
     || fail "the transaction journal should end complete"
   assert_no_grep "/exit" "$dir/fake/literal" \
     "there was no agent left to stop; nothing should have been sent to exit one"
-  assert_grep "cd -- '$dir/wt'" "$dir/fake/keys" \
-    "the recreated endpoint should have been told to enter the recorded worktree"
+  [ "$(cat "$dir/fake/cwd")" = "$dir/wt" ] \
+    || fail "the recreated endpoint should have been opened directly in the recorded worktree (got '$(cat "$dir/fake/cwd")')"
+  assert_no_grep "cd -- " "$dir/fake/keys" \
+    "an endpoint born in the recorded worktree needs no keystroke to get there"
   assert_grep "encode launch-brief" "$dir/fake/literal" "the replacement should have been launched"
   pass "fm-control relaunch: a positively missing endpoint is recreated fresh, in the recorded worktree, with no agent to stop first"
 }
@@ -415,6 +429,25 @@ test_ambiguous_endpoint_relaunch_still_refuses() {
   [ "$(meta_field "$dir" rlamb window)" = "fmses:fm-rlamb" ] \
     || fail "a refused relaunch must not touch the recorded endpoint"
   pass "fm-control relaunch: an endpoint whose process cannot be attributed still refuses, unlike a positively missing one"
+}
+
+test_missing_endpoint_relaunch_removes_its_recreated_endpoint_on_abort() {
+  local dir out rc meta real_mv
+  dir=$(new_case gone-abort rlmiss3)
+  add_ship_task "$dir" rlmiss3 claude
+  : > "$dir/fake/windows"
+  printf '%s' "$dir/proj" > "$dir/fake/cwd"
+  meta="$dir/home/state/rlmiss3.meta"
+  real_mv=$(command -v mv)
+  make_mv_failure_stub "$dir"
+  out=$(FM_REAL_MV="$real_mv" FM_FAKE_META_PUBLISH_MV_FAIL="$meta" TMUX='' \
+    run_control "$dir" rlmiss3 relaunch --note "abort after the endpoint is recreated"); rc=$?
+  expect_code 1 "$rc" "a failed metadata publication should fail closed"$'\n'"$out"
+  [ "$(meta_field "$dir" rlmiss3 window)" = "fmses:fm-rlmiss3" ] \
+    || fail "a failed publication should retain the prior durable record"
+  [ ! -s "$dir/fake/windows" ] \
+    || fail "an endpoint recreated by this relaunch is its own until publication names it; an abort must not strand it (left: $(cat "$dir/fake/windows"))"
+  pass "fm-control relaunch: an abort before publication removes the endpoint it recreated, leaving none the durable record cannot name"
 }
 
 test_relaunch_from_linked_home_preserves_recorded_worktree() {
@@ -1507,8 +1540,10 @@ test_spawn_relaunch_recreates_a_missing_endpoint() {
     || fail "a missing endpoint should be recreated through the ordinary fresh-endpoint path (got '$(meta_field "$dir" rl41 window)')"
   [ "$(meta_field "$dir" rl41 worktree)" = "$dir/wt" ] \
     || fail "the recorded worktree must be reused, never a new one"
-  assert_grep "cd -- '$dir/wt'" "$dir/fake/keys" \
-    "the recreated endpoint should have been sent directly to the recorded worktree"
+  [ "$(cat "$dir/fake/cwd")" = "$dir/wt" ] \
+    || fail "the recreated endpoint should have been opened directly in the recorded worktree (got '$(cat "$dir/fake/cwd")')"
+  assert_no_grep "cd -- " "$dir/fake/keys" \
+    "an endpoint born in the recorded worktree needs no keystroke to get there"
   pass "fm-spawn --relaunch: a positively missing endpoint is recreated in the recorded worktree, not adopted"
 }
 
@@ -1687,6 +1722,7 @@ test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
 test_missing_endpoint_relaunch_recreates_it
 test_missing_endpoint_relaunch_verifies_the_replacement_on_its_new_endpoint
 test_ambiguous_endpoint_relaunch_still_refuses
+test_missing_endpoint_relaunch_removes_its_recreated_endpoint_on_abort
 test_relaunch_from_linked_home_preserves_recorded_worktree
 test_relaunch_preserves_durable_task_metadata
 test_relaunch_serializes_concurrent_durable_metadata_publication

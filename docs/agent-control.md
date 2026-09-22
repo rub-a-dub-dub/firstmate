@@ -100,8 +100,8 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
 - An ambiguous or unreadable endpoint state refuses.
   Only a positively classified state acts.
 - `fm-spawn --relaunch` independently refuses unless the recorded endpoint reads positively agent-free (`dead`) or positively absent (`missing` - no server, no pane, no agent), so a replacement can never join a live agent; an ambiguous or unreadable read still refuses, because absence of evidence there is not evidence of absence.
-  A `dead` endpoint is adopted; a `missing` one has no pane left to adopt, so it is recreated fresh through the same endpoint-creation path a first spawn uses, still in the task's recorded worktree.
-  It also requires the shell to be in the recorded worktree: tmux refuses immediately when an adopted endpoint is not, a recreated endpoint is sent there directly since it starts fresh in the spawning project, and Herdr sends one `cd` to the recorded path either way and refuses unless a subsequent path read confirms the move.
+  A `dead` endpoint is adopted; a `missing` one has no pane left to adopt, so it is recreated fresh through the same endpoint-creation path a first spawn uses, opened directly in the task's recorded worktree rather than in the spawning project.
+  It also requires the shell to be in the recorded worktree: tmux refuses immediately when it is not, while Herdr sends one `cd` to the recorded path and refuses unless a subsequent path read confirms the move.
 
 ## Capability matrix
 

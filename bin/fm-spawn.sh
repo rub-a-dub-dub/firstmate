@@ -43,11 +43,12 @@
 #   (tmux or herdr); any other read, including an ambiguous or unreadable one,
 #   still refuses. A dead endpoint is adopted as before; a missing one is
 #   recreated fresh with the same endpoint-creation path a first spawn uses,
-#   still in the task's recorded worktree, never a new one. It clears the
-#   previous harness's per-task wiring before arming the new incarnation. The
-#   replacement still never starts outside the copy holding the work: a
-#   recreated or Herdr-drifted shell is told once to enter the recorded
-#   worktree, and only a shell that will not go refuses.
+#   born directly in the task's recorded worktree, never a new one. It clears
+#   the previous harness's per-task wiring before arming the new incarnation.
+#   The replacement still never starts outside the copy holding the work: every
+#   endpoint, adopted or recreated, must read back as sitting in the recorded
+#   worktree, and a Herdr shell that has drifted out of it is told once to
+#   return, with only a shell that will not go refusing.
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
 #   positional harness arg still works for back-compat.
 #   --model <name> and --effort <low|medium|high|xhigh|max|ultra> are concrete profile
@@ -943,6 +944,8 @@ RELAUNCH_REPLACEMENT_BUSY_GEN=
 RELAUNCH_REPLACEMENT_HARNESS=
 RELAUNCH_REPLACEMENT_STATE=
 RELAUNCH_REPLACEMENT_WT=
+RELAUNCH_RECREATED_ENDPOINT_CLEANUP=0
+RELAUNCH_RECREATED_ENDPOINT_TARGET=
 CONFIG_INHERIT_LOCK=
 CONFIG_INHERIT_LOCK_HELD=0
 
@@ -997,6 +1000,16 @@ spawn_abort_cleanup() {
           --gen "$RELAUNCH_REPLACEMENT_BUSY_GEN"; then
         echo "warning: could not retire replacement busy generation after aborted relaunch of $ID" >&2
       fi
+    fi
+  fi
+  # An endpoint recreated for a `missing` relaunch is owned by this process
+  # until publication names it: the surviving durable record still points at
+  # the absent one, so nothing else could ever account for it.
+  if [ "$RELAUNCH_RECREATED_ENDPOINT_CLEANUP" = 1 ]; then
+    RELAUNCH_RECREATED_ENDPOINT_CLEANUP=0
+    if [ -n "$RELAUNCH_RECREATED_ENDPOINT_TARGET" ] \
+       && ! fm_backend_kill "$BACKEND" "$RELAUNCH_RECREATED_ENDPOINT_TARGET" 2>/dev/null; then
+      echo "warning: could not remove the endpoint recreated for the aborted relaunch of $ID ($RELAUNCH_RECREATED_ENDPOINT_TARGET); remove it by hand before retrying" >&2
     fi
   fi
   if [ "$HERDR_PROJECTION_ABORT_CLEANUP" = 1 ] \
@@ -2798,6 +2811,14 @@ else
   # creation path a first spawn uses - never a second, parallel one - while
   # WT above still keeps this a replacement in the recorded worktree, not a
   # new task.
+  #
+  # A fresh spawn's endpoint is born in the project because `treehouse get`
+  # has yet to allocate its worktree; a recreated one already knows the
+  # recorded worktree and is born IN it, so it is provably in the copy holding
+  # the work from its first breath - no keystroke to deliver, no shell startup
+  # to outwait.
+  SPAWN_ENDPOINT_CWD=$PROJ_ABS
+  [ "$RELAUNCH_RECREATE_ENDPOINT" -ne 1 ] || SPAWN_ENDPOINT_CWD=$WT
 case "$BACKEND" in
   tmux)
     SES=$(fm_backend_tmux_container_ensure)
@@ -2808,7 +2829,7 @@ case "$BACKEND" in
     # treehouse cd's into the worktree. WT_TARGET carries that stable id for the
     # rename-critical worktree-detection steps below; the persisted window= handle
     # stays $T (the name form), which is safe now that rename is disabled.
-    WID=$(fm_backend_tmux_create_task "$SES" "$W" "$PROJ_ABS") || exit 1
+    WID=$(fm_backend_tmux_create_task "$SES" "$W" "$SPAWN_ENDPOINT_CWD") || exit 1
     WT_TARGET="$WID"
     ;;
   herdr)
@@ -2860,7 +2881,7 @@ case "$BACKEND" in
           FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_projection_reclaim_task \
             "$HERDR_SES" "$HERDR_PRESENTATION_JOURNAL" "$ID" "$HERDR_LABEL_HOME" \
             "$HERDR_RECOVERY_WORKSPACE_ID" "$HERDR_RECOVERY_TAB_ID" "$HERDR_RECOVERY_PANE_ID" \
-            "$HERDR_PARENT_LABEL" "$W" "$PROJ_ABS"
+            "$HERDR_PARENT_LABEL" "$W" "$SPAWN_ENDPOINT_CWD"
           HERDR_RECLAIM_STATUS=$?
           set -e
           case "$HERDR_RECLAIM_STATUS" in
@@ -2967,7 +2988,7 @@ case "$BACKEND" in
       HERDR_SEEDED_DEFAULT_TAB_ID=${HERDR_CONTAINER_RAW#*$'\t'}
       HERDR_SES=${CONTAINER%%:*}
       HERDR_WORKSPACE_ID=${CONTAINER#*:}
-      HERDR_TASK_IDS=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_create_task "$CONTAINER" "$W" "$PROJ_ABS" "$HERDR_SEEDED_DEFAULT_TAB_ID") || exit 1
+      HERDR_TASK_IDS=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_create_task "$CONTAINER" "$W" "$SPAWN_ENDPOINT_CWD" "$HERDR_SEEDED_DEFAULT_TAB_ID") || exit 1
       read -r HERDR_TAB_ID HERDR_PANE_ID <<EOF
 $HERDR_TASK_IDS
 EOF
@@ -3028,6 +3049,10 @@ EOF
     T="$ORCA_TERMINAL"
     ;;
 esac
+  if [ "$RELAUNCH_RECREATE_ENDPOINT" -eq 1 ] && [ "$HERDR_PROJECTION_ABORT_CLEANUP" != 1 ]; then
+    RELAUNCH_RECREATED_ENDPOINT_CLEANUP=1
+    RELAUNCH_RECREATED_ENDPOINT_TARGET=$T
+  fi
 fi
 if [ "$KIND" = secondmate ]; then
   FM_INHERITABLE_CONFIG=trace-context \
@@ -3280,22 +3305,12 @@ if [ "$RELAUNCH" -eq 1 ]; then
   # No worktree is acquired: the recorded one is reused as-is, whether this
   # incarnation adopted its recorded endpoint or - RELAUNCH_RECREATE_ENDPOINT -
   # had that endpoint recreated fresh because the previous one was positively
-  # missing. What must be proven is that the endpoint's shell is actually
-  # sitting in that worktree: an adopted endpoint might have drifted, while a
-  # recreated one starts fresh in the spawning project and has never been
-  # there at all.
+  # missing. What must be proven either way is that the endpoint's shell is
+  # actually sitting in that worktree: an adopted endpoint might have drifted,
+  # and a recreated one was born there but is still asked to prove it rather
+  # than be taken on trust.
   relaunch_wt_real=$(real_path_or_raw "$WT")
   relaunch_seen=
-  if [ "$RELAUNCH_RECREATE_ENDPOINT" -eq 1 ]; then
-    # A freshly created endpoint starts in the spawning project, not the
-    # recorded worktree; send it there directly instead of polling for drift
-    # a brand-new pane can never resolve on its own.
-    relaunch_cd_path=${WT//\'/\'\\\'\'}
-    spawn_send_text_line "$WT_TARGET" "cd -- '$relaunch_cd_path'" || {
-      echo "error: task $ID's recreated endpoint could not be told to enter its recorded worktree '$WT'; refusing to relaunch an agent outside the copy holding its work" >&2
-      exit 1
-    }
-  fi
   for _ in $(seq 1 10); do
     relaunch_seen=$(spawn_current_path "$WT_TARGET" || true)
     [ -z "$relaunch_seen" ] || [ "$(real_path_or_raw "$relaunch_seen")" != "$relaunch_wt_real" ] || break
@@ -4043,6 +4058,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
     exit 1
   fi
   RELAUNCH_REPLACEMENT_PENDING=0
+  RELAUNCH_RECREATED_ENDPOINT_CLEANUP=0
   SPAWN_META_PUBLISH_STARTED=0
   SPAWN_META_TMP=
 fi
