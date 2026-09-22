@@ -2,7 +2,7 @@
 # Shared "what does the current run of each named check say" rule.
 # Usage: . bin/fm-check-rollup-lib.sh; splice "$FM_CHECK_ROLLUP_JQ_DEFS" ahead
 # of a jq program that reads a live pull-request JSON's .statusCheckRollup,
-# then call check_rollup_verdicts to get one {name, kind, ok, pending} object
+# then call check_rollup_verdicts to get one {name, ok, pending} object
 # per reported check.
 #
 # ONE OWNER for the check-rollup verdict. bin/fm-pr-merge.sh's merge gate and
@@ -66,7 +66,6 @@ FM_CHECK_ROLLUP_JQ_DEFS='
         {
           kind: "status_context",
           name: (.context // ""),
-          completed: true,
           ok: (.state == "SUCCESS"),
           pending_state: ((.state != "SUCCESS") and (.state != "FAILURE") and (.state != "ERROR")),
           group: ["status_context", (.context // ""), $i]
@@ -77,7 +76,7 @@ FM_CHECK_ROLLUP_JQ_DEFS='
     | ($group[0].kind) as $kind
     | ($group[0].name) as $name
     | if $kind == "status_context" then
-        {name:$name, kind:$kind, ok:$group[0].ok, pending:(($group[0].ok|not) and $group[0].pending_state)}
+        {name:$name, ok:$group[0].ok, pending:(($group[0].ok|not) and $group[0].pending_state)}
       else
         ([$group[] | select(.ok | not)]) as $reds
         | ([$group[] | select(.ok) | .at | select(. != null)] | max) as $newest_green
@@ -85,13 +84,13 @@ FM_CHECK_ROLLUP_JQ_DEFS='
             | select(.completed)
             | select($newest_green == null or .at == null or .at >= $newest_green)]) as $standing
         | if ($reds | length) == 0 then
-            {name:$name, kind:$kind, ok:true, pending:false}
+            {name:$name, ok:true, pending:false}
           elif ($standing | length) > 0 then
-            {name:$name, kind:$kind, ok:false, pending:false}
+            {name:$name, ok:false, pending:false}
           elif any($reds[]; .completed | not) then
-            {name:$name, kind:$kind, ok:false, pending:true}
+            {name:$name, ok:false, pending:true}
           else
-            {name:$name, kind:$kind, ok:true, pending:false}
+            {name:$name, ok:true, pending:false}
           end
       end;
   def check_rollup_verdicts:
