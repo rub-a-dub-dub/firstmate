@@ -6,10 +6,12 @@
 #   . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 #
 # It provides the boilerplate every test file used to re-roll: ok/not-ok
-# reporters, a self-cleaning temp root, fakebin/PATH-shim helpers, deterministic
-# git identity and fixture builders, state/<id>.meta writers, and the common
-# string/exit-code/file assertions. Shared fake-toolchain and spawn-world
-# builders live in tests/fixtures.sh; wake-queue mocks in wake-helpers.sh;
+# reporters, an optional TAP plan-line reporter for a suite whose runs can be
+# cut short by an external time bound, a self-cleaning temp root,
+# fakebin/PATH-shim helpers, deterministic git identity and fixture builders,
+# state/<id>.meta writers, and the common string/exit-code/file assertions.
+# Shared fake-toolchain and spawn-world builders live in tests/fixtures.sh;
+# wake-queue mocks in wake-helpers.sh;
 # secondmate-lifecycle mocks in secondmate-helpers.sh. Suite-specific fakes
 # that encode a single test's terminal or lifecycle assumptions still belong
 # with the tests that own them.
@@ -77,6 +79,19 @@ fail() {
 
 pass() {
   printf 'ok - %s\n' "$1"
+}
+
+# plan <n>: print the TAP plan line declaring how many ok/not-ok results this
+# script's run will report. A scanner reading a script cut short by an
+# external time bound - a real risk for this suite's slower files - sees only
+# a run of "ok" lines followed by silence, identical in text to a genuinely
+# complete pass. Comparing the ok/not-ok count actually observed against this
+# declared count turns that guesswork into a mechanical check: fewer results
+# than planned means the run was interrupted, not that it failed, while any
+# "not ok" line still reports a real failure regardless of the count. A
+# caller prints this once, before running its planned tests.
+plan() {
+  printf '1..%s\n' "$1"
 }
 
 # --- self-cleaning temp root ------------------------------------------------
