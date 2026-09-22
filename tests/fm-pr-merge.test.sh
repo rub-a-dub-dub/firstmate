@@ -61,6 +61,9 @@ make_case() {
   : > "$case_dir/github-workflow-content-b64"
   : > "$case_dir/github-pr-run-count"
   : > "$case_dir/github-commit-date"
+  # Empty by default: a case that never calls set_pr_files never needs its
+  # workflow's paths filter, if any, evaluated against real changed files.
+  : > "$case_dir/github-pr-files"
   # No worktree/project on disk; fm-pr-check.sh tolerates a worktree it cannot
   # stat and simply skips the pr_head lookup via `gh` in that case, so give it
   # one that resolves for cases that want pr_head recorded.
@@ -69,12 +72,12 @@ make_case() {
 
 # Live GitHub JSON for the pre-merge verify, plus gh-axi for the
 # post-merge fallback view. Merge itself is `gh pr merge --match-head-commit`.
-# Args: case_dir head_sha
+# Args: case_dir head_sha [base_branch]
 write_github_live_json() {
-  local case_dir=$1 head=$2
+  local case_dir=$1 head=$2 base=${3:-main}
   printf '%s\n' "$head" > "$case_dir/github-head"
   cat > "$case_dir/github-view.json" <<JSON
-{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"main","statusCheckRollup":[{"__typename":"CheckRun","name":"ci","status":"COMPLETED","conclusion":"SUCCESS"}]}
+{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"$base","statusCheckRollup":[{"__typename":"CheckRun","name":"ci","status":"COMPLETED","conclusion":"SUCCESS"}]}
 JSON
 }
 
@@ -132,8 +135,8 @@ assert_logged_gh_merge() {
 }
 
 add_gh_mocks() {
-  local case_dir=$1 head=$2
-  write_github_live_json "$case_dir" "$head"
+  local case_dir=$1 head=$2 base=${3:-main}
+  write_github_live_json "$case_dir" "$head" "$base"
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
@@ -231,6 +234,16 @@ case "${1:-} ${2:-}" in
     exit 0
     ;;
   api\ *)
+    case "$*" in
+      *pulls/*/files*)
+        if [ -f "${FM_TEST_GH_PR_FILES_FAIL:-}" ]; then
+          echo 'gh: Bad gateway (HTTP 502)' >&2
+          exit 1
+        fi
+        cat "$FM_TEST_GH_PR_FILES"
+        exit 0
+        ;;
+    esac
     if [ -f "${FM_TEST_GH_RULES_FAIL_BODY:-}" ]; then
       cat "$FM_TEST_GH_RULES_FAIL_BODY" >&2
       exit 1
@@ -329,6 +342,15 @@ set_workflows_404() {
 set_pr_run_count() {
   local case_dir=$1 count=$2
   printf '%s\n' "$count" > "$case_dir/github-pr-run-count"
+}
+
+# This pull request's changed file paths, as github_pr_changed_files reads
+# them, lazily, only when some workflow's pull_request trigger declares a
+# paths or paths-ignore filter. Args: case_dir path...
+set_pr_files() {
+  local case_dir=$1
+  shift
+  printf '%s\n' "$@" > "$case_dir/github-pr-files"
 }
 
 # The head commit's date read fails outright, the way a 502 or a secondary rate
@@ -511,6 +533,7 @@ run_pr_merge() {
   FM_TEST_GH_WORKFLOWS_LISTING="$case_dir/github-workflows-listing" \
   FM_TEST_GH_WORKFLOW_CONTENT_B64="$case_dir/github-workflow-content-b64" \
   FM_TEST_GH_PR_RUN_COUNT="$case_dir/github-pr-run-count" \
+  FM_TEST_GH_PR_FILES="$case_dir/github-pr-files" \
   FM_TEST_GH_COMMIT_DATE="$case_dir/github-commit-date" \
   FM_TEST_GH_COMMIT_FAIL="$case_dir/github-commit-fail" \
   FM_TEST_GH_VIEW_JSON="$case_dir/github-view.json" \
@@ -3029,6 +3052,128 @@ test_dropped_ci_event_past_grace_window_refuses_as_suspected_drop() {
   pass "fm-pr-merge never treats a suspected dropped CI event as green, even with --allow-red"
 }
 
+# A workflow's pull_request trigger is filtered to a paths this pull request
+# never touches. GitHub was never going to run it, so its zero-run, stale head
+# must not be refused as a suspected drop: absence here is expected exactly as
+# it is for a repository with no PR CI at all.
+test_paths_filtered_workflow_with_untouched_paths_is_exempt() {
+  local case_dir rc head
+  head=9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a
+  case_dir=$(make_case github-paths-filter-exempt)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir" 'on:
+  pull_request:
+    paths:
+      - "src/**"
+'
+  set_pr_files "$case_dir" README.md
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+
+  run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/120 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "paths-filter-exempt: a workflow whose paths filter excludes every changed file must not arm the dropped-event gate"$'\n'"$(cat "$case_dir/stderr")"
+  assert_no_grep 'suspected dropped' "$case_dir/stderr" \
+    "paths-filter-exempt: the dropped-event gate must never fire when no changed file matches the paths filter"
+  assert_logged_gh_merge "$case_dir" 120 example/repo --squash
+  pass "fm-pr-merge exempts a pull request whose changed files never match a workflow's paths filter"
+}
+
+# A workflow's pull_request trigger is filtered to a base branch this pull
+# request is not targeting. GitHub was never going to run it there either.
+test_branches_filtered_workflow_not_covering_base_is_exempt() {
+  local case_dir rc head
+  head=9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b
+  case_dir=$(make_case github-branches-filter-exempt)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head" release-1.0
+  set_pr_ci_workflow "$case_dir" 'on:
+  pull_request:
+    branches: [main]
+'
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+
+  run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/121 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "branches-filter-exempt: a workflow whose branches filter excludes this pull request's base must not arm the dropped-event gate"$'\n'"$(cat "$case_dir/stderr")"
+  assert_no_grep 'suspected dropped' "$case_dir/stderr" \
+    "branches-filter-exempt: the dropped-event gate must never fire when the base branch does not match the branches filter"
+  assert_logged_gh_merge "$case_dir" 121 example/repo --squash
+  pass "fm-pr-merge exempts a pull request whose base branch never matches a workflow's branches filter"
+}
+
+# The mirror image of the two exemptions above: the pull request's changed
+# files DO match the workflow's paths filter, so the trigger genuinely
+# applies, and a zero-run stale head must still refuse exactly as it does with
+# no filter at all.
+test_covered_pr_matching_paths_filter_still_refuses_zero_runs() {
+  local case_dir rc head
+  head=9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c
+  case_dir=$(make_case github-paths-filter-covered)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir" 'on:
+  pull_request:
+    paths:
+      - "src/**"
+'
+  set_pr_files "$case_dir" README.md src/foo.go
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/122 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "paths-filter-covered: a stale zero-run head covered by a matching paths filter must refuse"
+  assert_grep 'suspected dropped CI event' "$case_dir/stderr" \
+    "paths-filter-covered: the suspected-drop reason was not reported"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "paths-filter-covered: gh pr merge ran on a suspected dropped CI event"
+  pass "fm-pr-merge still refuses a zero-run head when a changed file confirms the paths filter applies"
+}
+
+# A branches-ignore filter is never resolved toward "does not apply": getting
+# an exclusion wrong is the unsafe direction, so this pull request is treated
+# as covered and a zero-run stale head still refuses, exactly as an
+# unreadable workflow listing or run count already does today.
+test_unevaluable_filter_still_refuses_zero_runs() {
+  local case_dir rc head
+  head=9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d
+  case_dir=$(make_case github-unevaluable-filter-covered)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir" 'on:
+  pull_request:
+    branches-ignore: [release/*]
+'
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/123 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "unevaluable-filter-covered: a stale zero-run head behind a branches-ignore filter must refuse"
+  assert_grep 'suspected dropped CI event' "$case_dir/stderr" \
+    "unevaluable-filter-covered: the suspected-drop reason was not reported"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "unevaluable-filter-covered: gh pr merge ran on a suspected dropped CI event"
+  pass "fm-pr-merge treats a branches-ignore filter as covered rather than exempting the pull request"
+}
+
 # The head's run count already confirmed zero pull_request-event runs, and only
 # then does the commit-date read fail. Both readable ages refuse, so the date
 # can never do more than choose the wording - an unreadable one must not hand
@@ -3605,6 +3750,10 @@ test_zero_indented_sequence_trigger_arms_the_dropped_event_gate
 test_pr_ci_configured_with_a_run_present_merges_normally
 test_dropped_ci_event_within_grace_window_is_not_actionable
 test_dropped_ci_event_past_grace_window_refuses_as_suspected_drop
+test_paths_filtered_workflow_with_untouched_paths_is_exempt
+test_branches_filtered_workflow_not_covering_base_is_exempt
+test_covered_pr_matching_paths_filter_still_refuses_zero_runs
+test_unevaluable_filter_still_refuses_zero_runs
 test_unreadable_head_commit_date_still_refuses_a_zero_run_head
 test_unreadable_workflow_listing_does_not_block_a_green_merge
 test_allow_red_still_waives_only_the_current_failure

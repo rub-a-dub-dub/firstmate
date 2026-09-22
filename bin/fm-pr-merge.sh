@@ -18,20 +18,35 @@
 # it reports - because the rollup is the very surface that collapsed "no CI
 # configured" and "the checks never arrived" into one green-looking string.
 # The rule has two
-# steps. First, repo-level: does any workflow declare a pull_request trigger
-# (github_repo_has_pr_ci_workflow)? A declared trigger ARMS the rule; a
-# repository that declares none genuinely has no PR CI, absence of checks
-# there is expected, and it merges exactly as it did before this gate existed.
-# pull_request_target deliberately does NOT arm it, even though it is also a
-# pull-request trigger: GitHub records such a run under the
-# pull_request_target event and against the BASE branch's SHA, so it can never
-# appear in step two's head-SHA-filtered pull_request count no matter how that
-# query is widened. Absence is therefore expected by construction for a
-# repository whose only PR trigger is pull_request_target, which is exactly
-# what step one exists to exempt; arming on it would instead trap every one of
-# that repository's pull requests in a refusal its green, running CI can never
-# clear. Second, per-head: the current head must show at
-# least one Actions run whose event is pull_request
+# steps. First, per-pull-request: does any workflow's pull_request trigger
+# actually apply to THIS pull request (github_repo_has_pr_ci_workflow)? A
+# workflow's trigger is read once at the repository level, but a declared
+# trigger's own base-branch and path filters are then judged against this
+# pull request's base branch and changed files
+# (github_workflow_applies_to_pr), because a trigger whose filters never fire
+# for this pull request - a paths filter none of this pull request's files
+# touch, a branches filter that excludes this pull request's base - produces
+# no run by construction, and GitHub was never going to check it. An
+# applicable trigger ARMS the rule; a repository with no pull_request-
+# triggered workflow at all, or one where every such workflow's filters
+# confirm none of them cover this pull request, genuinely has no PR CI for
+# this pull request, absence of checks there is expected, and it merges
+# exactly as it did before this gate existed. This is a text heuristic over
+# each workflow's YAML, not a real parser, so a filter it cannot confidently
+# evaluate - an unfamiliar glob form, a changed-file list it could not read -
+# is never resolved toward "does not apply": it counts the pull request as
+# covered instead, because refusing a mergeable pull request is recoverable
+# by hand while merging an unchecked one is not. pull_request_target
+# deliberately does NOT arm it, even though it is also a pull-request
+# trigger: GitHub records such a run under the pull_request_target event and
+# against the BASE branch's SHA, so it can never appear in step two's
+# head-SHA-filtered pull_request count no matter how that query is widened.
+# Absence is therefore expected by construction for a repository whose only
+# PR trigger is pull_request_target, which is exactly what step one exists to
+# exempt; arming on it would instead trap every one of that repository's pull
+# requests in a refusal its green, running CI can never clear. Second,
+# per-head: once a trigger is confirmed to apply, the current head must show
+# at least one Actions run whose event is pull_request
 # (github_check_dropped_ci_event), counted through the API's own event filter
 # rather than by whether any run object exists at the SHA - a workflow_dispatch
 # diagnostic run leaves a run on the same SHA without ever carrying the
@@ -48,12 +63,10 @@
 # be read cannot flip the verdict either: it only falls back to the wording
 # that names both causes. The one read that still leaves today's merge behavior
 # untouched is the one taken BEFORE any absence is confirmed - an unreadable
-# workflow listing or an unreadable run count - and it says so on stderr,
-# because an inconclusive read must never become a refusal a healthy pull
-# request cannot clear. The cost of refusing unconditionally is accepted and
-# deliberate: a pull request whose only matching workflow is filtered out by
-# branches or paths produces no run and cannot be merged through this script.
-# Every failing condition is reported, not
+# workflow listing, an unreadable changed-file list needed by a paths filter,
+# or an unreadable run count - and it says so on stderr, because an
+# inconclusive read must never become a refusal a healthy pull request cannot
+# clear. Every failing condition is reported, not
 # just the first. The verified head is then passed to gh as
 # --match-head-commit, so a push that lands between that read and the merge
 # fails the merge instead of landing commits nothing verified. Reading that
@@ -657,27 +670,250 @@ github_workflow_declares_pull_request() {
   '
 }
 
-# Whether this repository has any pull_request-triggered workflow at
-# all, read once per merge attempt (not cached across attempts or repos; each
-# invocation of this script judges exactly one merge). Sets
+# The branches/branches-ignore/paths/paths-ignore filter values nested under
+# an already-confirmed pull_request trigger key, one "key value" pair per
+# line: an inline list ("branches: [main, release/*]") and a block list
+# ("paths:\n  - src/**") are both read, each item with its surrounding quotes
+# stripped. A "types:" key or any other sibling under the trigger is not a
+# filter this reads and cannot pollute one, because only lines strictly more
+# indented than a matched filter key - up to the next line back at the
+# trigger's own child indentation - are read as that key's values. No output
+# at all means the trigger carries no nested filters at all (an inline
+# "on: [push, pull_request]" list, a bare "pull_request:", or a "- pull_request"
+# sequence entry): those match every base branch and every changed file, so
+# github_workflow_applies_to_pr's caller-side "no filter present" default
+# already covers them correctly. This is a text heuristic over one block's
+# indentation, not a YAML parser.
+github_workflow_pull_request_filters() {
+  printf '%s\n' "$1" | awk '
+    function indent_of(s) { match(s, /^[[:space:]]*/); return RLENGTH }
+    function emit_inline(key, s,    n, i, parts, v) {
+      sub(/^[^:]*:[[:space:]]*/, "", s)
+      gsub(/[][]/, "", s)
+      n = split(s, parts, ",")
+      for (i = 1; i <= n; i++) {
+        v = parts[i]
+        gsub(/^[[:space:]\x27"]+|[[:space:]\x27"]+$/, "", v)
+        if (v != "") print key, v
+      }
+    }
+    { line = $0; sub(/[[:space:]]*#.*$/, "", line) }
+    !found_on && line ~ "^(on|\"on\"|\047on\047)[[:space:]]*:" {
+      in_on = 1; on_child = -1; found_on = 1; next
+    }
+    !in_on { next }
+    line ~ /^[[:space:]]*$/ { next }
+    line ~ /^[^[:space:]]/ && line !~ /^-([[:space:]]|$)/ { in_on = 0; in_pr = 0; next }
+    {
+      here = indent_of(line)
+      if (on_child < 0) on_child = here
+      if (in_pr && here <= on_child) in_pr = 0
+      if (!in_pr && here == on_child && line ~ /^[[:space:]]*pull_request[[:space:]]*:/) {
+        rest = line
+        sub(/^[[:space:]]*pull_request[[:space:]]*:/, "", rest)
+        gsub(/[[:space:]]/, "", rest)
+        if (rest == "") { in_pr = 1; pr_child = -1; cur_key = "" }
+        next
+      }
+      if (in_pr) {
+        if (pr_child < 0) pr_child = here
+        if (here == pr_child) {
+          cur_key = ""
+          if (line ~ /^[[:space:]]*branches-ignore[[:space:]]*:/) cur_key = "branches-ignore"
+          else if (line ~ /^[[:space:]]*branches[[:space:]]*:/) cur_key = "branches"
+          else if (line ~ /^[[:space:]]*paths-ignore[[:space:]]*:/) cur_key = "paths-ignore"
+          else if (line ~ /^[[:space:]]*paths[[:space:]]*:/) cur_key = "paths"
+          if (cur_key != "") {
+            rest = line
+            sub(/^[^:]*:[[:space:]]*/, "", rest)
+            if (rest ~ /^\[/) { emit_inline(cur_key, line); cur_key = "" }
+          }
+        } else if (here > pr_child && cur_key != "") {
+          v = line
+          sub(/^[[:space:]]*-[[:space:]]*/, "", v)
+          gsub(/^[\x27"]+|[\x27"]+$/, "", v)
+          if (v != "") print cur_key, v
+        }
+      }
+    }
+  '
+}
+
+# Whether a branches/paths glob pattern is simple enough for this heuristic to
+# judge with confidence: only literal characters, "/", "-", "_", ".", and the
+# wildcards "*" and "?". A "!" negation, a character class, an extglob form,
+# or anything else this never learned is left for the caller to treat as
+# uncertain rather than guessed at.
+github_glob_pattern_simple() {
+  case "$1" in
+    '') return 1 ;;
+    *[!A-Za-z0-9_./*?-]*) return 1 ;;
+  esac
+}
+
+# Whether any pattern in the given list matches the candidate, using the
+# shell's own case-statement globbing - which, unlike GitHub's, also lets "*"
+# cross "/". That asymmetry is deliberate and only ever makes this MORE
+# willing to call a branch or path covered by an include filter
+# (branches/paths) than GitHub itself would, never less: a false match here
+# only keeps a pull request under the unconditional per-head run count it
+# would already be under without this heuristic, while a false non-match
+# would wrongly exempt it. Prints "yes" on a confirmed match, "no" when every
+# pattern was simple and none matched, "uncertain" when no simple pattern
+# matched but at least one pattern could not be evaluated. Args: candidate
+# pattern...
+github_glob_matches_any() {
+  local candidate=$1 p any_complex=false
+  shift
+  for p in "$@"; do
+    if ! github_glob_pattern_simple "$p"; then
+      any_complex=true
+      continue
+    fi
+    # shellcheck disable=SC2254 # $p is meant to expand as a glob pattern here.
+    case "$candidate" in
+      $p) printf 'yes\n'; return 0 ;;
+    esac
+  done
+  if $any_complex; then printf 'uncertain\n'; else printf 'no\n'; fi
+}
+
+# The same verdict as github_glob_matches_any, but against a newline-separated
+# list of candidates (a pull request's changed files) rather than one string:
+# "yes" as soon as any candidate matches any pattern, "uncertain" when none
+# matched but some pattern was left unevaluated against at least one
+# candidate, otherwise "no". A candidate list read as empty is judged the same
+# way with zero candidates, and only ever reaches this function once its
+# reader has confirmed the read itself succeeded. Args: newline-separated
+# candidates, pattern...
+github_glob_matches_any_of() {
+  local candidates=$1 f verdict any_uncertain=false
+  shift
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    verdict=$(github_glob_matches_any "$f" "$@")
+    case "$verdict" in
+      yes) printf 'yes\n'; return 0 ;;
+      uncertain) any_uncertain=true ;;
+    esac
+  done <<CANDIDATES
+$candidates
+CANDIDATES
+  if $any_uncertain; then printf 'uncertain\n'; else printf 'no\n'; fi
+}
+
+# This pull request's changed file paths, read once per merge attempt and
+# cached, since more than one workflow's paths filter may need them. Sets
+# FM_PR_FILES to a newline-separated list of paths and FM_PR_FILES_STATUS to
+# "ok" or "unreadable". Never called unless some workflow's pull_request
+# trigger actually declares a paths or paths-ignore filter, so an ordinary
+# merge with no such filter never pays for this call.
+FM_PR_FILES_FETCHED=false
+FM_PR_FILES_STATUS=unreadable
+FM_PR_FILES=''
+github_pr_changed_files() {
+  $FM_PR_FILES_FETCHED && return 0
+  FM_PR_FILES_FETCHED=true
+  if FM_PR_FILES=$(gh api --paginate "repos/$PR_OWNER/$PR_REPO/pulls/$PR_NUMBER/files" \
+    --jq '.[].filename' 2>/dev/null); then
+    FM_PR_FILES_STATUS=ok
+  else
+    FM_PR_FILES_STATUS=unreadable
+    FM_PR_FILES=''
+  fi
+}
+
+# Whether the pull_request trigger in this already-confirmed-present workflow
+# actually applies to this pull request, given its base branch and changed
+# files. Only branches and paths are ever judged toward "no" (see
+# github_glob_matches_any for why over-matching an include filter is the safe
+# direction); a branches-ignore or paths-ignore filter is always left
+# uncertain, because confidently confirming an EXCLUSION needs the opposite
+# bias from confirming an inclusion, and getting that wrong is the unsafe
+# direction this whole change exists to avoid. Sets FM_PR_WORKFLOW_APPLIES to:
+#   yes       - no branches/paths filter narrows this trigger at all, or every
+#               filter present is confirmed to cover this pull request.
+#   no        - a branches or paths filter is confirmed NOT to cover this pull
+#               request, and nothing about that read was uncertain.
+#   uncertain - at least one filter could not be confidently evaluated either
+#               way, including an unreadable changed-file list for any
+#               paths/paths-ignore filter present.
+# Args: workflow-content base-branch
+FM_PR_WORKFLOW_APPLIES=uncertain
+github_workflow_applies_to_pr() {
+  local content=$1 base=$2
+  local key value branch_result=yes paths_result=yes
+  local -a branches=() paths_incl=()
+  local has_branches_ignore=false has_paths_ignore=false
+  while IFS=' ' read -r key value; do
+    [ -n "$key" ] || continue
+    case "$key" in
+      branches) branches+=("$value") ;;
+      branches-ignore) has_branches_ignore=true ;;
+      paths) paths_incl+=("$value") ;;
+      paths-ignore) has_paths_ignore=true ;;
+    esac
+  done <<FILTERS
+$(github_workflow_pull_request_filters "$content")
+FILTERS
+
+  if $has_branches_ignore; then
+    branch_result=uncertain
+  elif [ "${#branches[@]}" -gt 0 ]; then
+    branch_result=$(github_glob_matches_any "$base" "${branches[@]}")
+  fi
+
+  if $has_paths_ignore; then
+    paths_result=uncertain
+  elif [ "${#paths_incl[@]}" -gt 0 ]; then
+    github_pr_changed_files
+    if [ "$FM_PR_FILES_STATUS" != ok ]; then
+      paths_result=uncertain
+    else
+      paths_result=$(github_glob_matches_any_of "$FM_PR_FILES" "${paths_incl[@]}")
+    fi
+  fi
+
+  if [ "$branch_result" = no ] || [ "$paths_result" = no ]; then
+    FM_PR_WORKFLOW_APPLIES=no
+  elif [ "$branch_result" = uncertain ] || [ "$paths_result" = uncertain ]; then
+    FM_PR_WORKFLOW_APPLIES=uncertain
+  else
+    FM_PR_WORKFLOW_APPLIES=yes
+  fi
+}
+
+# Whether this pull request has any pull_request-triggered workflow that
+# actually applies to it, read once per merge attempt (not cached across
+# attempts or repos; each invocation of this script judges exactly one
+# merge). A workflow declaring the trigger is read once at the repository
+# level; github_workflow_applies_to_pr then judges its filters, if any,
+# against this pull request's own base branch and changed files. Sets
 # FM_PR_GITHUB_PR_CI to:
-#   yes        - a workflow file was found declaring the trigger.
+#   yes        - a workflow file was found declaring the trigger, and it is
+#                confirmed or uncertain whether that trigger's filters cover
+#                this pull request (never resolved toward "no" on an
+#                uncertain filter - see github_workflow_applies_to_pr).
 #   no         - proven absence: no .github/workflows directory (a 404 on the
-#                listing), an empty listing, or every file read declared no
-#                such trigger. This repo genuinely has no PR CI; absence of
-#                checks on any of its pull requests is expected and the
-#                dropped-event check below never runs for it.
+#                listing), an empty listing, every file read declared no such
+#                trigger, or every declared trigger's filters are confirmed
+#                NOT to cover this pull request. Either way this pull request
+#                genuinely has no PR CI coming; absence of checks on it is
+#                expected and the dropped-event check below never runs for it.
 #   unreadable - the listing or a file's content could not be read. This
 #                never arms the dropped-event refusal below: only a
-#                positively confirmed trigger does, so a transient failure to
-#                list or read workflow files here can never turn into a new
-#                merge refusal that today's repos, including ones this call
-#                can't reach for whatever reason, don't already have to
-#                clear. It is reported distinctly from "no" so a persistent
-#                read failure is visible rather than silently read as "no CI".
+#                positively confirmed-or-uncertain applicable trigger does,
+#                so a transient failure to list or read workflow files here
+#                can never turn into a new merge refusal that today's repos,
+#                including ones this call can't reach for whatever reason,
+#                don't already have to clear. It is reported distinctly from
+#                "no" so a persistent read failure is visible rather than
+#                silently read as "no CI".
+# Args: base-branch
 FM_PR_GITHUB_PR_CI=unreadable
 github_repo_has_pr_ci_workflow() {
-  local listing name err_file err_text encoded content
+  local base=$1
+  local listing name err_file err_text encoded content any_uncertain=false
   FM_PR_GITHUB_PR_CI=unreadable
   err_file=$(mktemp "${TMPDIR:-/tmp}/fm-pr-merge-workflows.XXXXXX") || return 0
   if ! listing=$(gh api "repos/$PR_OWNER/$PR_REPO/contents/.github/workflows" \
@@ -708,13 +944,20 @@ github_repo_has_pr_ci_workflow() {
       || content=$(printf '%s' "$encoded" | base64 -D 2>/dev/null) \
       || return 0
     if github_workflow_declares_pull_request "$content"; then
-      FM_PR_GITHUB_PR_CI=yes
-      return 0
+      github_workflow_applies_to_pr "$content" "$base"
+      case "$FM_PR_WORKFLOW_APPLIES" in
+        yes) FM_PR_GITHUB_PR_CI=yes; return 0 ;;
+        uncertain) any_uncertain=true ;;
+      esac
     fi
   done <<WORKFLOWS
 $listing
 WORKFLOWS
-  FM_PR_GITHUB_PR_CI=no
+  if $any_uncertain; then
+    FM_PR_GITHUB_PR_CI=yes
+  else
+    FM_PR_GITHUB_PR_CI=no
+  fi
 }
 
 # Whether the given head SHA of a PR-CI-configured repository shows a
@@ -837,11 +1080,12 @@ FIELDS
   # see what never arrived - the exact trap this closes (report Section 2). It
   # runs independently of the rollup, so a rollup made non-empty and green by a
   # workflow_dispatch diagnostic run, a push-triggered run, or an external
-  # status context does not satisfy it. Only a positively confirmed
-  # pull_request trigger arms it: "no" and "unreadable" both leave today's
-  # merge behavior untouched, and an inconclusive read says so on stderr rather
-  # than disarming the gate in silence.
-  github_repo_has_pr_ci_workflow
+  # status context does not satisfy it. Only a positively confirmed-or-
+  # uncertain trigger that applies to this pull request's own base branch and
+  # changed files arms it: "no" and "unreadable" both leave today's merge
+  # behavior untouched, and an inconclusive read says so on stderr rather than
+  # disarming the gate in silence.
+  github_repo_has_pr_ci_workflow "$base"
   case "$FM_PR_GITHUB_PR_CI" in
     unreadable)
       echo "note: could not read this repository's workflow triggers, so the dropped-CI-event check is disarmed for this merge attempt" >&2
