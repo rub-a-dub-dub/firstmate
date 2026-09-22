@@ -31,8 +31,10 @@
 # captain_decision because it has an open
 # captain hold still contributes each working child as its own Underway row;
 # the home row on secondmates[] keeps the decision and gate classification.
-# Captain-hold placement follows the canonical snapshot's hold_bucket and
-# nothing else; this wrapper never inspects hold reason or body prose. The
+# Captain-hold classification and placement follow the canonical snapshot's
+# hold_bucket and nothing else; the wrapper reads a hold's reason and body prose
+# only to retain a gate that hold points at (see Charted Next below), never to
+# bucket or place the hold itself. The
 # buckets are total and mutually exclusive, so every captain hold appears in
 # exactly one decision bucket and none can fall through both. An actively worked
 # held task may also appear in Underway. A "live" hold is a default Captain's Call
@@ -53,8 +55,9 @@
 # the bound rather than silently dropped behind an honest count: structurally when
 # the hold's unresolved blocked-by names it, otherwise when a live hold's title,
 # hold reason, or body text names it. Retentions are capped at
-# FM_BEARINGS_GATES_PINNED and omitted[] names every gate kept this way plus any
-# retention the cap dropped.
+# FM_BEARINGS_GATES_PINNED, structural retentions claiming that cap ahead of
+# textual ones, and omitted[] names every gate kept this way plus any retention
+# the cap dropped.
 # The textual half is a heuristic, so it only considers gate ids carrying a - or _:
 # an ordinary prose word can never pin a gate, at the accepted cost that a
 # single-word gate id is retained only when a hold names it structurally.
@@ -171,7 +174,8 @@ Default gates are selected newest filed first before their bound; undated gates
   retain input order after dated gates. A gate that a captain hold in its own home
   names - structurally by an unresolved blocked-by id, or textually in a live
   hold's title, hold reason, or body text - is kept past that bound, capped by
-  FM_BEARINGS_GATES_PINNED, with omitted[] naming every gate retained this way.
+  FM_BEARINGS_GATES_PINNED with structural retentions first, and omitted[] names
+  every gate retained this way.
 landed merges this home's Done with registered secondmate homes' Done, bounded by
   a per-home cap (FM_BEARINGS_LANDED_PER_HOME) and an overall cap (FM_BEARINGS_LANDED),
   with omitted[] disclosure. Default selection is balanced across deterministic home
@@ -634,20 +638,25 @@ MODEL=$(printf '%s' "$SNAP" | jq \
       | sort_by((.value | filed_epoch) as $epoch
           | if $epoch == null then [1, 0, .key] else [0, -$epoch, .key] end)
       | map(.value);
-    def pinned_by_captain_hold:
+    def pinned_structurally:
       . as $gate
       | ($gate.id // "") as $id
       | $id != ""
-        and (($id | test("[-_]")) as $id_shaped
-             | id_word_re($id) as $re
+        and any($captain_hold_refs[];
+                .owner == $gate.owner
+                and (((.blockers // []) | index($id)) != null));
+    def pinned_by_hold_text:
+      . as $gate
+      | ($gate.id // "") as $id
+      | ($id | test("[-_]"))
+        and (id_word_re($id) as $re
              | any($captain_hold_refs[];
-                   .owner == $gate.owner
-                   and ((((.blockers // []) | index($id)) != null)
-                        or ($id_shaped and ((.text // "") | test($re))))));
+                   .owner == $gate.owner and ((.text // "") | test($re))));
     ($gates_all | newest_filed_first) as $gates_sorted
   | ($gates_sorted[:$gates_n]) as $gates_top
-  | ($gates_sorted | map(select(pinned_by_captain_hold))) as $gates_referenced
-  | ($gates_referenced - $gates_top) as $gates_pinned_all
+  | ($gates_sorted[$gates_n:]) as $gates_rest
+  | (($gates_rest | map(select(pinned_structurally)))
+     + ($gates_rest | map(select((pinned_structurally | not) and pinned_by_hold_text)))) as $gates_pinned_all
   | ($gates_pinned_all[:$gates_pinned_n]) as $gates_pinned
   | (($gates_top + $gates_pinned) | newest_filed_first) as $gates_capped
   | (if $all_queued == 1 then $gates_sorted else $gates_capped end) as $gates_shown

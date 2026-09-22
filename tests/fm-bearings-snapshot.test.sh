@@ -2678,6 +2678,8 @@ EOF
 
 # Retention is driven by hold text, so without its own cap the gates array could
 # grow past FM_BEARINGS_GATES by however many rows a hold body happens to name.
+# Under that cap the unambiguous signal wins: a gate a captain hold structurally
+# blocks on is retained even when heuristic text matches were filed later.
 test_gate_retention_is_capped_and_discloses_the_cap() {
   local home fakebin json
   home=$(make_home pinned-gate-cap)
@@ -2689,8 +2691,10 @@ test_gate_retention_is_capped_and_discloses_the_cap() {
 - [ ] top-gate - Newest filed gate (repo: firstmate) (kind: ship) (since 2026-07-12)
 - [ ] pin-a - Pinned gate A (repo: firstmate) (kind: ship) (since 2026-07-11)
 - [ ] pin-b - Pinned gate B (repo: firstmate) (kind: ship) (since 2026-07-11)
-- [ ] pin-c - Pinned gate C (repo: firstmate) (kind: ship) (since 2026-07-11)
-- [ ] hold-on-three - Wait for all three (repo: firstmate) (kind: captain) (since 2026-07-11) (hold: waiting on pin-a, pin-b and pin-c) (hold-kind: captain)
+- [ ] blk - Oldest filed structural blocker (repo: firstmate) (kind: ship) (since 2026-07-10)
+- [ ] hold-on-blk - Wait for the blocker blocked-by: blk (repo: firstmate) (kind: captain) (since 2026-07-10) (hold: waiting on the blocker) (hold-kind: captain)
+  Captain hold set: 2026-07-10T00:00:00Z
+- [ ] hold-on-two - Wait for both prose rows (repo: firstmate) (kind: captain) (since 2026-07-11) (hold: waiting on pin-a and pin-b) (hold-kind: captain)
   Captain hold set: 2026-07-11T00:00:00Z
 
 ## Done
@@ -2700,9 +2704,12 @@ EOF
   printf '%s' "$json" | jq -e '
     (.gates | length) == 3
       and (.gates | any(.id == "top-gate"))
-      and ([.gates[].id] | contains(["pin-a", "pin-b"]))
-      and (.gates | any(.id == "pin-c") | not)
-      and ([.omitted[].surface] | index("gates showing 3 of 4") != null)
+      and ([.gates[].id] | contains(["blk", "pin-a"]))
+      and (.gates | any(.id == "pin-b") | not)
+      and ([.omitted[].surface] | index("gates showing 3 of 5") != null)
+      and ([.omitted[].surface]
+           | any(startswith("gates retained past the truncation bound, referenced by a captain hold: ")
+                 and contains("blk") and contains("pin-a")))
       and ([.omitted[].surface] | index("gates retained past the bound capped at 2; 1 more omitted") != null)
   ' >/dev/null || fail "captain-hold gate retention was not capped and disclosed: $json"
   pass "gate retention past the bound is capped and disclosed"
