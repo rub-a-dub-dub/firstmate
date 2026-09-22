@@ -2043,6 +2043,27 @@ crew_run_activity_recent() {  # <id>
   esac
 }
 
+# 0 if crew <id>'s reconciled current state is exactly `done`: a terminal
+# no-mistakes outcome (passed, passed-with-override, checks-passed/held-for-merge)
+# or a terminal status-log line, with no active run left to outrank pane-idle
+# time. fm-crew-state.sh is the one place that reconciliation happens - it folds
+# a still-monitoring ci step whose checks already read green, and a stale
+# status-log verb a finished run has since moved past, into this same `done`
+# rather than `working` - so this predicate never has to re-derive any of that.
+# NOT the negation of crew_is_provably_working: `parked`/`blocked`/`paused`/
+# `failed`/`unknown` are neither working nor done, and must keep reading false
+# here so a genuinely wedged or stuck task is untouched by this predicate.
+# Same non-pure-read caution as crew_absorb_class above applies; callers bound
+# how often they call this the same way.
+crew_done_no_active_run() {  # <id>
+  local id=$1 line state
+  [ -n "$id" ] || return 1
+  line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
+  case "$line" in state:*) ;; *) return 1 ;; esac
+  state=${line#state: }; state=${state%% *}
+  [ "$state" = "done" ]
+}
+
 # Directories excluded from the worktree write probe below, and the depth it walks.
 # The excluded set is everything a supervisor read or a package manager can write
 # without the crew doing any work - .git first, so firstmate's own read-only git
