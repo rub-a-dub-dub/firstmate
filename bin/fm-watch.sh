@@ -966,6 +966,7 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
         # or a timed-out state read all return "no evidence" here and fall
         # through to the pane-based checks exactly as before.
         if crew_run_activity_recent "$task"; then
+          clear_write_tracking "$(window_key "$win")"
           date +%s > "$since_file"
           triage_log "absorbed $label (live no-mistakes run reports recent activity, idle ${age}s): $win"
           return 0

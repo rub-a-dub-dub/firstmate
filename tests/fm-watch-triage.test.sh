@@ -2016,6 +2016,74 @@ test_wedge_escalation_suppressed_by_recent_run_activity() {
   pass "a live no-mistakes run reporting recent activity suppresses the wedge escalation on an unchanged quiet pane"
 }
 
+# The recent-activity absorb restarts the idle timer, so like every other stale
+# bookkeeping reset it must drop the window's write-deferral chain. A chain kept
+# alive across a long fix round would make the FIRST deferral of the next quiet
+# stretch re-surface immediately, reporting a writing duration measured from a
+# quiet stretch that ended hours earlier.
+test_recent_activity_absorb_drops_a_finished_write_deferral_chain() {
+  local dir state fakebin out capture_file window key pane_hash sig pid wt back
+  dir=$(make_case recent-activity-write-chain); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"
+  window="test:fm-activechain"; wt="$dir/wt"
+  mkdir -p "$wt/src"
+  printf 'idle building output' > "$capture_file"
+  printf 'window=%s\nkind=ship\nworktree=%s\n' "$window" "$wt" > "$state/activechain.meta"
+  printf 'working: still compiling\n' > "$state/activechain.status"
+  sig=$(seen_sig "$state/activechain.status"); printf '%s' "$sig" > "$state/.seen-activechain_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle building output")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  printf '%s' "$pane_hash" > "$state/.stale-$key"
+  back=$(( $(date +%s) - 500 ))
+  echo "$back" > "$state/.stale-since-$key"
+  set_mtime "$back" "$state/.stale-since-$key"
+  # An earlier quiet stretch deferred on write evidence 5000s ago and never got
+  # far enough to record a re-surface throttle.
+  : > "$state/.writing-since-$key"
+  set_mtime "$(( $(date +%s) - 5000 ))" "$state/.writing-since-$key"
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (fixing) · activity: recent'
+
+  # Phase A: the live run's recent activity absorbs the crossing and opens a new
+  # idle window, so the finished chain must go with it.
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 \
+    FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_absorbed "$state" "$pid" "absorbed non-terminal stale (live no-mistakes run reports recent activity" \
+    || { reap "$pid"; fail "a live run reporting recent activity did not suppress the wedge escalation: $(cat "$out")"; }
+  [ ! -e "$state/.writing-since-$key" ] \
+    || { reap "$pid"; fail "the recent-activity absorb kept a finished write-deferral chain"; }
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional phase-A watcher stop"
+
+  # Phase B: the run goes quiet and the crew resumes editing, so this crossing is
+  # a fresh write deferral. Its chain must be measured from THIS quiet stretch,
+  # which is far younger than the re-surface cadence, so nothing re-surfaces yet.
+  FM_FAKE_CREW_STATE='state: working · source: run-step · validating (fixing) · activity: quiet'
+  echo "$back" > "$state/.stale-since-$key"
+  set_mtime "$back" "$state/.stale-since-$key"
+  printf 'int main(void) { return 0; }\n' > "$wt/src/main.c"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 \
+    FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_absorbed "$state" "$pid" "absorbed non-terminal stale (worktree written since the idle window opened" \
+    || { reap "$pid"; fail "the resumed write evidence did not defer the escalation: $(cat "$out")"; }
+  [ ! -s "$out" ] \
+    || { reap "$pid"; fail "the first deferral of a new quiet stretch re-surfaced at once: $(cat "$out")"; }
+  [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "the first deferral of a new quiet stretch enqueued a wake"; }
+  [ ! -e "$state/.writing-resurfaced-$key" ] \
+    || { reap "$pid"; fail "the first deferral of a new quiet stretch recorded a re-surface throttle"; }
+  reap "$pid"
+  unset FM_FAKE_CREW_STATE
+  pass "a recent-activity absorb drops the write-deferral chain, so the next quiet stretch is timed from its own start"
+}
+
 # The other direction: a recorded run that is still nominally running/fixing but
 # whose OWN last_activity has gone quiet must not be vouched for - a dead run
 # cannot excuse a quiet pane, and doing so would convert this exact false
@@ -5044,6 +5112,7 @@ test_terminal_stale_surfaced
 test_stale_terminal_status_overridden_by_active_run
 test_nonterminal_stale_provably_working_absorbed_then_escalated
 test_wedge_escalation_suppressed_by_recent_run_activity
+test_recent_activity_absorb_drops_a_finished_write_deferral_chain
 test_wedge_escalation_not_suppressed_by_quiet_run_activity
 test_wedge_escalation_marks_demand_deep_inspection_after_threshold
 test_wedge_escalation_resets_when_pane_becomes_active
