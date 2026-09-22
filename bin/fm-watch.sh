@@ -966,12 +966,12 @@ wedge_defer_run_activity() {  # <window> <since-file> <triage-label> <idle-age>
 # absorbed as provably-working - repairs a missing/corrupt timer (self-heals a
 # watcher restart between recording the hash and recording the timer), or
 # escalates once STALE_ESCALATE_SECS have elapsed. Re-reads the crew state only
-# inside the at-threshold branch below, and only when the caller asked for it;
-# the per-poll path never does (that costly check already ran once, at
-# classification time). Shared by
-# both places a hash can be absorbed this way: the plain non-terminal path,
-# and the stale_is_terminal-overridden path (a captain-relevant status-log
-# line that an active run/busy pane outranked).
+# inside the at-threshold branch below, and only when the caller asked for it
+# (the run-activity outrank) or for the narrower done/no-active-run question
+# below; the per-poll path never does (that costly check already ran once, at
+# classification time). Shared by both places a hash can be absorbed this way:
+# the plain non-terminal path, and the stale_is_terminal-overridden path (a
+# captain-relevant status-log line that an active run/busy pane outranked).
 # <run-activity-outranks> is 1 for the STALE call sites only, where pane-idle
 # time is the whole basis of the suspicion and a live run's own recency is the
 # contradicting evidence. The busy-turn bound passes 0: a busy pane already
@@ -980,7 +980,15 @@ wedge_defer_run_activity() {  # <window> <since-file> <triage-label> <idle-age>
 # activity cannot rule out. Keeping it 0 there also keeps the away-mode promise
 # that this watcher never runs the costly provably-working read, since the busy
 # bound is the only route into this function while state/.afk exists.
-# The worktree write probe, and the authoritative-run recheck below, both run
+# The done/no-active-run recheck below runs unconditionally at every threshold
+# hit, for every call site including the busy-turn bound: it answers a
+# narrower question the classifier never asked ("has this since become
+# provably FINISHED", not "is this still working"), which the original
+# working/busy classification cannot have already priced in because that
+# verdict was true when the timer started, and a task that has since
+# reconciled to done with no active run is never a wedge regardless of which
+# call site is asking.
+# The worktree write probe, and both authoritative-run rechecks above, run
 # ONLY here, inside the at-threshold branch that is about to escalate: at most
 # one bounded read per window per STALE_ESCALATE_SECS, never per poll.
 wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file> <task> <run-activity-outranks>
@@ -997,6 +1005,29 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
     *)
       age=$(( $(date +%s) - since ))
       if [ "$age" -ge "$STALE_ESCALATE_SECS" ]; then
+        # A task can be classified "provably working" (ci step still active)
+        # and then finish - checks turn green, the run's own outcome
+        # reconciles to done - while the pane stays exactly as idle as it was
+        # the whole time. Nothing else ever re-reads crew state to notice: a
+        # stable hash keeps re-arming this same timer forever (the repair
+        # branch above resets it without asking, and a fresh escalation just
+        # re-classifies once more). The captain never authorized a merge
+        # decision for a task with no live run left to wedge, so a reconciled
+        # `done` (no active run, checks-passed/passed already reconciled by
+        # fm-crew-state.sh into `done` regardless of a stale status-log verb)
+        # ends the ladder here instead of demanding another deep inspection of
+        # work that is already finished. A `blocked`/`failed`/`parked`/
+        # `unknown` verdict is not this case and still escalates below exactly
+        # as before. Checked first and unconditionally (not gated by
+        # run_activity) because it is a permanent stop, not a deferral, and
+        # because a task with no active run left can never have crew_run_activity_recent
+        # answer yes anyway - this is simply the more specific verdict.
+        if crew_done_no_active_run "$task"; then
+          rm -f "$since_file" "$escalation_file"
+          clear_deferral_tracking "$(window_key "$win")"
+          triage_log "absorbed $label (reconciled state is done with no active run - awaiting merge, not a wedge): $win"
+          return 0
+        fi
         # A LIVE no-mistakes run reporting recent activity (fm-classify-lib.sh's
         # crew_run_activity_recent, backed by bin/fm-crew-state.sh's own
         # `activity: recent` verdict) outranks pane-idle time outright: the
