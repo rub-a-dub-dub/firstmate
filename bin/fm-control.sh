@@ -31,10 +31,14 @@
 #              busy, then submits the harness's exit command. Postcondition:
 #              the backend's recovery-grade classifier reports the agent gone.
 #              Already-stopped is success (idempotent).
-#   relaunch   Transactionally replace the running agent with a new one, in the
-#              SAME endpoint and SAME worktree, on the same or a newly chosen
-#              harness/model/effort - so switching harness is one ordinary use
-#              of this verb. An explicit `default` model or effort clears that
+#   relaunch   Transactionally replace the agent with a new one, in the SAME
+#              worktree, on the same or a newly chosen harness/model/effort -
+#              so switching harness is one ordinary use of this verb. The
+#              recorded endpoint is adopted when agent-free, or recreated
+#              fresh when its address no longer resolves and the task's
+#              endpoint is then found nowhere on the backend
+#              (docs/agent-control.md owns that distinction). An
+#              explicit `default` model or effort clears that
 #              axis for the replacement. With no explicit axis, a secondmate
 #              re-resolves its durable config/secondmate-harness pin (harness
 #              plus its optional model and effort tokens) exactly as any other
@@ -46,8 +50,10 @@
 #              inherits the local copy but none of the conversation; a
 #              secondmate reconciles its own home's records at startup, so its
 #              standing charter is never rewritten.
-#              Records a durable checkpoint and that note, exits the old agent,
-#              then delegates the launch to its single owner,
+#              Records a durable checkpoint and that note, exits the old agent
+#              (skipped only when that same backend-wide sweep proves its
+#              endpoint absent, so there is no agent left to stop), then
+#              delegates the launch to its single owner,
 #              bin/fm-spawn.sh --relaunch. A failure before publication keeps
 #              the prior durable record in place and reports the concrete
 #              state; it never leaves a half-transitioned task claiming to be
@@ -830,7 +836,18 @@ do_relaunch() {
   journal_write noted "${CHECKPOINT_LINES[@]}" "$note_line"
 
   journal_write stopping "${CHECKPOINT_LINES[@]}" "$note_line"
-  exit_result=$(do_exit)
+  if [ "$(agent_state)" = missing ] && fm_backend_endpoint_absent "$BACKEND" "$T"; then
+    # A missing address whose endpoint is then found nowhere on the backend is
+    # strictly safer than an agent-free endpoint: there is provably no pane and
+    # no agent left to stop. A missing address whose endpoint still exists
+    # under another one proves only that the recorded address stopped
+    # resolving, so it falls through to do_exit, whose own `missing` refusal
+    # stops the relaunch before the agent is touched. The recreate path applies
+    # the identical test (bin/fm-spawn.sh --relaunch, docs/agent-control.md).
+    exit_result='already-absent'
+  else
+    exit_result=$(do_exit)
+  fi
   journal_write exited "${CHECKPOINT_LINES[@]}" "$note_line" "exit_result=$exit_result"
 
   # The launch owner (fm-spawn --relaunch) clears the previous incarnation's
@@ -848,6 +865,14 @@ do_relaunch() {
       || RELAUNCH_META_PUBLISHED=1
     die "the replacement agent for $ID could not be launched on $TARGET_HARNESS"
   fi
+
+  # A missing endpoint is recreated fresh rather than adopted (fm-spawn.sh
+  # --relaunch), so the just-published record can name a different endpoint
+  # than the one this process started with. Re-read it before proving the
+  # replacement is alive; an adopted endpoint re-reads the same value it
+  # already had.
+  T=$(fm_meta_get "$META" window)
+  [ -n "$T" ] || die "task $ID's replacement record has no recorded endpoint to verify"
 
   state=$(wait_agent_state "$LAUNCH_WAIT" alive) || {
     die "the replacement agent for $ID did not come up within ${LAUNCH_WAIT}s (endpoint reads '$state')"
