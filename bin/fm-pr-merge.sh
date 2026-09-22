@@ -37,12 +37,14 @@
 # is never resolved toward "does not apply": it counts the pull request as
 # covered instead, because refusing a mergeable pull request is recoverable
 # by hand while merging an unchecked one is not. Each workflow's text is read
-# at the pull request's own BASE ref rather than the repository's default
-# branch, so a long-lived base branch whose filters differ from the default
-# branch's is judged by its own copy of them; and because GitHub resolves a
-# pull_request run from head merged into base, a pull request that itself
-# edits anything under .github/workflows/ has no single committed copy whose
-# filters can be judged at all, so that pull request counts as covered too.
+# at the pull request's own MERGE ref - the head merged into the base, the
+# tree GitHub itself resolves a pull_request run from - and at no other ref,
+# so the filters judged here are the filters GitHub evaluates: a long-lived
+# base branch whose filters differ from the default branch's is judged by its
+# own copy of them, and a pull request that edits .github/workflows/ is judged
+# by its own edit rather than by a committed copy that no longer describes the
+# run. A merge ref that cannot be established leaves the read inconclusive and
+# disarms the rule, the same as any other read that never confirmed an absence.
 # pull_request_target
 # deliberately does NOT arm it, even though it is also a pull-request
 # trigger: GitHub records such a run under the pull_request_target event and
@@ -59,8 +61,8 @@
 # diagnostic run leaves a run on the same SHA without ever carrying the
 # pull_request event and without ever attaching to the PR, and counting it
 # would read a manual diagnostic as proof the checks arrived. A run count of
-# zero refuses the merge, whatever the rollup says beside it, and the head
-# commit's age chooses the wording: "not arrived yet, re-check" while it is
+# zero refuses the merge, whatever the rollup says beside it, and the age of
+# the delivery chooses the wording: "not arrived yet, re-check" while it is
 # younger than the grace window, a suspected dropped event once it is older,
 # because GitHub's own pull_request delivery to Actions can silently drop for a
 # given push. Older than the Actions run retention window, though, a zero count
@@ -68,15 +70,20 @@
 # runs, no retry can ever bring them back, and a refusal no retry can clear
 # would leave merging outside firstmate as the operator's only route - so that
 # one age disarms the check with a note instead of refusing. Every age is
-# measured from the head commit's own date, never from the pull request's
-# updatedAt, which any comment, label or approval bumps and which would
-# therefore reset the clock on the ordinary approve-then-merge path. A commit
-# date that cannot be read therefore keeps the refusal: it falls back to the
-# wording that names both delivery causes, never to the retention exemption.
-# The one read that still leaves today's merge behavior untouched is the one
-# taken BEFORE any absence is confirmed - an unreadable workflow listing or an
-# unreadable run count - and it says so on stderr, because an inconclusive read
-# must never become a refusal a healthy pull request cannot clear. Every failing condition is reported, not
+# measured from the LATER of the head commit's own date and the pull request's
+# createdAt, the moment a delivery could first have been expected, so an old
+# branch opened as a fresh pull request is judged on its fresh delivery rather
+# than exempted by a commit date that says nothing about whether any run was
+# ever created; never from the pull request's updatedAt, which any comment,
+# label or approval bumps and which would therefore reset the clock on the
+# ordinary approve-then-merge path. A date that cannot be read therefore keeps
+# the refusal: it falls back to the wording that names both delivery causes,
+# never to the retention exemption. A read taken BEFORE any absence is
+# confirmed - an unestablished merge ref, an unreadable workflow listing, an
+# unreadable run count - leaves today's merge behavior untouched, and every
+# stand-down, including a filter-confirmed one, says so on stderr, because an
+# inconclusive read must never become a refusal a healthy pull request cannot
+# clear and an exemption must never be granted in silence. Every failing condition is reported, not
 # just the first. The verified head is then passed to gh as
 # --match-head-commit, so a push that lands between that read and the merge
 # fails the merge instead of landing commits nothing verified. Reading that
@@ -846,51 +853,30 @@ github_pr_changed_files() {
   [ "$FM_PR_FILES_STATUS" = ok ] || FM_PR_FILES=''
 }
 
-# Whether this pull request itself changes anything under .github/workflows/.
-# GitHub resolves a pull_request run from the head merged into the base, so for
-# such a pull request the filters committed on the base ref are not the filters
-# GitHub ran: a pull request that broadens its own workflow's paths filter, or
-# retargets its branches filter, genuinely gets PR CI that the base ref's copy
-# says it would not. No committed copy can settle that, so this answers the
-# question the same way every other unevaluable read is answered - yes, treat
-# it as covered - including when the changed-file list cannot be read at all.
-# It never invents a trigger the read workflow does not declare, so a pull
-# request adding the repository's first workflow still arms nothing.
-github_pr_touches_workflows() {
-  local f
-  github_pr_changed_files
-  [ "$FM_PR_FILES_STATUS" = ok ] || return 0
-  while IFS= read -r f; do
-    case "$f" in
-      .github/workflows/*) return 0 ;;
-    esac
-  done <<CANDIDATES
-$FM_PR_FILES
-CANDIDATES
-  return 1
-}
-
 # Whether the pull_request trigger a workflow file declares, if it declares one
 # at all, applies to this pull request, given its base branch and changed
 # files. Only an include filter - branches or paths - can ever answer "no" (see
 # github_glob_may_match for why over-matching one is the safe direction).
 # Everything this cannot judge confidently counts the pull request as covered:
 # a branches-ignore or paths-ignore exclusion, a glob too complex to evaluate,
-# an unreadable changed-file list, a pull request editing the workflows
-# themselves. Confidently confirming an EXCLUSION needs the opposite bias from
-# confirming an inclusion, and getting that wrong is the unsafe direction this
-# whole change exists to avoid. Sets FM_PR_WORKFLOW_APPLIES to:
+# an unreadable changed-file list. Confidently confirming an EXCLUSION needs
+# the opposite bias from confirming an inclusion, and getting that wrong is the
+# unsafe direction this whole change exists to avoid. Sets
+# FM_PR_WORKFLOW_APPLIES to:
 #   yes  - this file declares the trigger and nothing confirms that the
 #          trigger skips this pull request.
-#   no   - it declares the trigger, and a branches or paths filter committed on
-#          the base ref is confirmed NOT to cover this pull request, which that
-#          pull request does not edit.
+#   no   - it declares the trigger, and a branches or paths filter carried by
+#          the text GitHub itself resolves the run from is confirmed NOT to
+#          cover this pull request.
 #   none - this file declares no pull_request trigger at all.
+# On a "no" verdict FM_PR_WORKFLOW_SKIP_FILTER names which of the two filters
+# confirmed the skip, so the caller can say on stderr why the gate stood down.
 # Args: workflow-content base-branch
 FM_PR_WORKFLOW_APPLIES=none
+FM_PR_WORKFLOW_SKIP_FILTER=''
 github_workflow_applies_to_pr() {
   local content=$1 base=$2
-  local key value declared=false skipped=false
+  local key value declared=false skipped=''
   local -a branches=() paths_incl=()
   while IFS=' ' read -r key value; do
     [ -n "$key" ] || continue
@@ -904,31 +890,37 @@ $(github_workflow_pull_request_trigger "$content")
 TRIGGER
 
   FM_PR_WORKFLOW_APPLIES=none
+  FM_PR_WORKFLOW_SKIP_FILTER=''
   $declared || return 0
   FM_PR_WORKFLOW_APPLIES=yes
   if [ "${#branches[@]}" -gt 0 ] \
     && ! github_glob_may_match "$base" "${branches[@]}"; then
-    skipped=true
+    skipped=branches
   elif [ "${#paths_incl[@]}" -gt 0 ]; then
     github_pr_changed_files
     if [ "$FM_PR_FILES_STATUS" = ok ] \
       && ! github_glob_may_match_any_of "$FM_PR_FILES" "${paths_incl[@]}"; then
-      skipped=true
+      skipped=paths
     fi
   fi
-  if $skipped && ! github_pr_touches_workflows; then
+  if [ -n "$skipped" ]; then
     FM_PR_WORKFLOW_APPLIES=no
+    FM_PR_WORKFLOW_SKIP_FILTER=$skipped
   fi
 }
 
 # Whether this pull request has any pull_request-triggered workflow that
 # actually applies to it, read once per merge attempt (not cached across
 # attempts or repos; each invocation of this script judges exactly one
-# merge). Every workflow file is read at this pull request's own base ref, the
-# nearest committed copy of what GitHub resolves for a pull_request run;
-# github_workflow_applies_to_pr judges each one's trigger and its filters, if
-# any, against this pull request's own base branch and changed files. Sets
-# FM_PR_GITHUB_PR_CI to:
+# merge). Every workflow file is read at this pull request's own MERGE ref -
+# the head merged into the base, which is the tree GitHub itself resolves a
+# pull_request run from - so the filter text judged here is the filter text
+# GitHub evaluates, including a pull request's own edits to .github/workflows/.
+# There is deliberately no second ref to fall back to: a committed copy on any
+# other ref is not the text GitHub ran, and judging one would reintroduce the
+# guesswork the merge ref removes. github_workflow_applies_to_pr judges each
+# file's trigger and its filters, if any, against this pull request's own base
+# branch and changed files. Sets FM_PR_GITHUB_PR_CI to:
 #   yes        - a workflow file was found declaring the trigger, and nothing
 #                confirmed that trigger's filters skip this pull request
 #                (never resolved toward "no" on a filter this cannot judge -
@@ -941,22 +933,30 @@ TRIGGER
 #                NOT to cover this pull request. Either way this pull request
 #                genuinely has no PR CI coming; absence of checks on it is
 #                expected and the dropped-event check below never runs for it.
-#   unreadable - the listing, or a file's content read before any applicable
-#                trigger was found, could not be read. This never arms the
-#                dropped-event refusal below: only an applicable trigger does,
-#                so a transient failure to list or read workflow files here
-#                can never turn into a new merge refusal that today's repos,
-#                including ones this call can't reach for whatever reason,
-#                don't already have to clear. It is reported distinctly from
-#                "no" so a persistent read failure is visible rather than
-#                silently read as "no CI".
-# Args: base-branch
+#   unreadable - the merge ref was never established, or the listing, or a
+#                file's content read before any applicable trigger was found,
+#                could not be read. This never arms the dropped-event refusal
+#                below: only an applicable trigger does, so a transient
+#                failure to resolve the merge ref or to list or read workflow
+#                files here can never turn into a new merge refusal that
+#                today's repos, including ones this call can't reach for
+#                whatever reason, don't already have to clear. It is reported
+#                distinctly from "no" so a persistent read failure is visible
+#                rather than silently read as "no CI".
+# When the verdict is "no" because a filter confirmed a skip,
+# FM_PR_GITHUB_PR_CI_SKIP names the workflow files and filters that confirmed
+# it; a repository that simply declares no pull_request trigger leaves it
+# empty, since that absence needs no explaining.
+# Args: merge-ref base-branch
 FM_PR_GITHUB_PR_CI=unreadable
+FM_PR_GITHUB_PR_CI_SKIP=''
 github_repo_has_pr_ci_workflow() {
-  local base=$1
+  local merge_ref=$1 base=$2
   local listing name err_file err_text encoded content ref
   FM_PR_GITHUB_PR_CI=unreadable
-  ref=$(github_urlencode_path_segment "$base")
+  FM_PR_GITHUB_PR_CI_SKIP=''
+  fm_pr_head_valid "$merge_ref" || return 0
+  ref=$(github_urlencode_path_segment "$merge_ref")
   err_file=$(mktemp "${TMPDIR:-/tmp}/fm-pr-merge-workflows.XXXXXX") || return 0
   if ! listing=$(gh api "repos/$PR_OWNER/$PR_REPO/contents/.github/workflows?ref=$ref" \
     --jq '.[] | select(.type == "file") | .name' 2>"$err_file"); then
@@ -988,7 +988,11 @@ github_repo_has_pr_ci_workflow() {
     github_workflow_applies_to_pr "$content" "$base"
     if [ "$FM_PR_WORKFLOW_APPLIES" = yes ]; then
       FM_PR_GITHUB_PR_CI=yes
+      FM_PR_GITHUB_PR_CI_SKIP=''
       return 0
+    fi
+    if [ "$FM_PR_WORKFLOW_APPLIES" = no ]; then
+      FM_PR_GITHUB_PR_CI_SKIP="${FM_PR_GITHUB_PR_CI_SKIP:+$FM_PR_GITHUB_PR_CI_SKIP, }$name ($FM_PR_WORKFLOW_SKIP_FILTER filter)"
     fi
   done <<WORKFLOWS
 $listing
@@ -1009,14 +1013,14 @@ WORKFLOWS
 # FM_PR_GITHUB_DROPPED_CI to:
 #   present    - at least one pull_request-event run exists at this head; the
 #                ordinary check-rollup logic above already judges it.
-#   grace      - zero such runs, and the head commit is provably younger than
+#   grace      - zero such runs, and the delivery is provably younger than
 #                FM_PR_MERGE_CI_GRACE_SECS; not arrived yet, not actionable.
 #                Refused all the same, because merging a head whose checks are
 #                still in flight is the same unverified merge as merging a
 #                dropped one; the refusal says to re-check rather than to act.
-#   dropped    - zero such runs, and the head commit is older than the grace
+#   dropped    - zero such runs, and the delivery is older than the grace
 #                window or its age could not be established. Never green.
-#   expired    - zero such runs, and the head commit is provably older than
+#   expired    - zero such runs, and the delivery is provably older than
 #                FM_PR_MERGE_CI_RETENTION_SECS, past which GitHub has purged
 #                the run history this count reads. The absence is therefore
 #                expired evidence, not a confirmed one: the runs may well have
@@ -1032,15 +1036,30 @@ WORKFLOWS
 #                dropped event should cause. The caller prints a stderr note so
 #                the disarmed gate is visible.
 #
-# Once the run count confirms zero, only a head commit provably older than the
-# retention window escapes a refusal. Every other path refuses, and the commit
-# date can only choose which wording: a failed date read, an unparseable date,
-# or an unreadable clock all land on "dropped", whose wording already covers an
+# Retention runs from when a RUN was created, not from when a commit was
+# written, and the two diverge whenever an old branch is opened as a fresh
+# pull request: the commit is months old while the delivery that should have
+# produced a run is minutes old and fully retained. So every age here is the
+# age of the LATER of the head commit's own date and the pull request's
+# createdAt - the moment from which a pull_request delivery could first have
+# been expected. Both must be past the retention window before an absence is
+# read as purged evidence, and a freshly opened pull request on an old head
+# reaches the grace window rather than jumping past it to the exemption.
+# createdAt is used rather than the pull request's updatedAt, which any
+# comment, label or approval bumps and which would therefore reset the clock
+# on the ordinary approve-then-merge path.
+#
+# Once the run count confirms zero, only a delivery provably older than the
+# retention window escapes a refusal. Every other path refuses, and the dates
+# can only choose which wording: a failed date read, an unparseable date, or
+# an unreadable clock all land on "dropped", whose wording already covers an
 # age it could not establish, never on the retention exemption an unread date
 # has not earned.
+# Args: head-sha pr-created-at
 FM_PR_GITHUB_DROPPED_CI=unreadable
 github_check_dropped_ci_event() {
-  local sha=$1 total committer_date commit_epoch now_epoch age
+  local sha=$1 created=$2
+  local total committer_date commit_epoch created_epoch since_epoch now_epoch age
   FM_PR_GITHUB_DROPPED_CI=unreadable
   if ! total=$(gh api "repos/$PR_OWNER/$PR_REPO/actions/runs?head_sha=$sha&event=pull_request" \
     --jq '.total_count' 2>/dev/null); then
@@ -1057,11 +1076,14 @@ github_check_dropped_ci_event() {
   committer_date=$(gh api "repos/$PR_OWNER/$PR_REPO/commits/$sha" \
     --jq '.commit.committer.date' 2>/dev/null) || return 0
   commit_epoch=$(fm_utc_iso_to_epoch "$committer_date") || return 0
+  created_epoch=$(fm_utc_iso_to_epoch "$created") || return 0
+  since_epoch=$commit_epoch
+  [ "$created_epoch" -le "$since_epoch" ] || since_epoch=$created_epoch
   now_epoch=$(date -u +%s 2>/dev/null) || return 0
   case "$now_epoch" in
     ''|*[!0-9]*) return 0 ;;
   esac
-  age=$((now_epoch - commit_epoch))
+  age=$((now_epoch - since_epoch))
   if [ "$age" -lt "$FM_PR_MERGE_CI_GRACE_SECS" ]; then
     FM_PR_GITHUB_DROPPED_CI=grace
   elif [ "$age" -gt "$FM_PR_MERGE_CI_RETENTION_SECS" ]; then
@@ -1075,8 +1097,9 @@ github_verify_mergeable() {
   local json fields line red name covered
   local total=0 named=0 refusals=''
   local state='' draft='' mergeable='' merge_state='' live_head='' base=''
+  local created='' merge_ref=''
 
-  if ! json=$(gh pr view "$URL" --json state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,statusCheckRollup 2>/dev/null) \
+  if ! json=$(gh pr view "$URL" --json state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,createdAt,potentialMergeCommitOid,statusCheckRollup 2>/dev/null) \
     || [ -z "$json" ]; then
     echo "error: could not read the GitHub pull request state before merging" >&2
     return 1
@@ -1088,7 +1111,9 @@ github_verify_mergeable() {
         "mergeable=" + ((.mergeable // "") | tostring),
         "merge_state=" + ((.mergeStateStatus // "") | tostring),
         "head=" + ((.headRefOid // "") | tostring),
-        "base=" + ((.baseRefName // "") | tostring)
+        "base=" + ((.baseRefName // "") | tostring),
+        "created=" + ((.createdAt // "") | tostring),
+        "merge_ref=" + ((.potentialMergeCommitOid // "") | tostring)
       else
         error("pull request payload is not an object")
       end' 2>/dev/null); then
@@ -1104,13 +1129,15 @@ github_verify_mergeable() {
       merge_state=*) merge_state=${line#merge_state=} ;;
       head=*) live_head=${line#head=} ;;
       base=*) base=${line#base=} ;;
+      created=*) created=${line#created=} ;;
+      merge_ref=*) merge_ref=${line#merge_ref=} ;;
       *) continue ;;
     esac
     named=$((named + 1))
   done <<FIELDS
 $fields
 FIELDS
-  if [ "$named" -ne 6 ] || [ "$total" -ne 6 ] || [ -z "$base" ]; then
+  if [ "$named" -ne 8 ] || [ "$total" -ne 8 ] || [ -z "$base" ]; then
     echo "error: could not read the GitHub pull request state before merging" >&2
     return 1
   fi
@@ -1130,28 +1157,32 @@ FIELDS
   # workflow_dispatch diagnostic run, a push-triggered run, or an external
   # status context does not satisfy it. Only a trigger not confirmed to skip
   # this pull request's own base branch and changed files arms it: "no" and "unreadable" both leave today's merge
-  # behavior untouched, and an inconclusive read says so on stderr rather than
+  # behavior untouched, and every stand-down says so on stderr rather than
   # disarming the gate in silence.
-  github_repo_has_pr_ci_workflow "$base"
+  github_repo_has_pr_ci_workflow "$merge_ref" "$base"
   case "$FM_PR_GITHUB_PR_CI" in
     unreadable)
       echo "note: could not read this repository's workflow triggers, so the dropped-CI-event check is disarmed for this merge attempt" >&2
       ;;
+    no)
+      [ -z "$FM_PR_GITHUB_PR_CI_SKIP" ] \
+        || echo "note: no pull_request-triggered workflow applies to this pull request - $FM_PR_GITHUB_PR_CI_SKIP confirmed it is skipped at base $base - so the dropped-CI-event check is disarmed for this merge attempt" >&2
+      ;;
     yes)
-      github_check_dropped_ci_event "$live_head"
+      github_check_dropped_ci_event "$live_head" "$created"
       case "$FM_PR_GITHUB_DROPPED_CI" in
         unreadable)
           echo "note: could not read the pull_request-event run count for head $live_head, so no absence was confirmed and the dropped-CI-event check is disarmed for this merge attempt" >&2
           ;;
         expired)
-          echo "note: no pull_request-event run is recorded for head $live_head and its commit is older than GitHub's Actions run retention window, so that absence is expired evidence rather than a confirmed one and the dropped-CI-event check is disarmed for this merge attempt" >&2
+          echo "note: no pull_request-event run is recorded for head $live_head and both its commit and this pull request are older than GitHub's Actions run retention window, so that absence is expired evidence rather than a confirmed one and the dropped-CI-event check is disarmed for this merge attempt" >&2
           ;;
         grace)
-          refusals="$refusals  - no pull_request-triggered check has reported for head $live_head yet, and its commit is younger than the delivery grace window; re-check shortly
+          refusals="$refusals  - no pull_request-triggered check has reported for head $live_head yet, and its delivery is younger than the grace window; re-check shortly
 "
           ;;
         dropped)
-          refusals="$refusals  - no pull_request-triggered check has reported for head $live_head, and its commit is already past the delivery grace window: wait and retry this merge first, because a run still on its way looks identical here once the commit has aged out of the window, and treat it as a suspected dropped CI event only if a retry still finds none. Neither is ever treated as green
+          refusals="$refusals  - no pull_request-triggered check has reported for head $live_head, and its delivery is already past the grace window: wait and retry this merge first, because a run still on its way looks identical here once the delivery has aged out of the window, and treat it as a suspected dropped CI event only if a retry still finds none. Neither is ever treated as green
 "
           ;;
       esac

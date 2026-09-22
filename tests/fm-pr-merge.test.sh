@@ -70,6 +70,17 @@ make_case() {
   printf '%s\n' "$case_dir"
 }
 
+# The pull request's merge ref - the head merged into the base, which is what
+# GitHub resolves a pull_request run from and therefore the only ref
+# fm-pr-merge.sh reads workflow text at. Fixed per case unless a test sets its
+# own, so a test pinning per-ref workflow copies has a ref to key them on.
+FM_TEST_MERGE_REF=5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e
+
+# The pull request's own createdAt, which the retention exemption requires past
+# the window alongside the head commit's date. The default sits an hour before
+# the epoch pin_now uses, so an ordinary case is neither in grace nor expired.
+FM_TEST_PR_CREATED=2025-12-31T23:00:00Z
+
 # Live GitHub JSON for the pre-merge verify, plus gh-axi for the
 # post-merge fallback view. Merge itself is `gh pr merge --match-head-commit`.
 # Args: case_dir head_sha [base_branch]
@@ -77,7 +88,7 @@ write_github_live_json() {
   local case_dir=$1 head=$2 base=${3:-main}
   printf '%s\n' "$head" > "$case_dir/github-head"
   cat > "$case_dir/github-view.json" <<JSON
-{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"$base","statusCheckRollup":[{"__typename":"CheckRun","name":"ci","status":"COMPLETED","conclusion":"SUCCESS"}]}
+{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"$base","createdAt":"$FM_TEST_PR_CREATED","potentialMergeCommitOid":"$FM_TEST_MERGE_REF","statusCheckRollup":[{"__typename":"CheckRun","name":"ci","status":"COMPLETED","conclusion":"SUCCESS"}]}
 JSON
 }
 
@@ -85,7 +96,7 @@ write_github_red_json() {
   local case_dir=$1 head=$2 name=$3
   printf '%s\n' "$head" > "$case_dir/github-head"
   cat > "$case_dir/github-view.json" <<JSON
-{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"main","statusCheckRollup":[{"__typename":"CheckRun","name":"$name","status":"COMPLETED","conclusion":"FAILURE"}]}
+{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"main","createdAt":"$FM_TEST_PR_CREATED","potentialMergeCommitOid":"$FM_TEST_MERGE_REF","statusCheckRollup":[{"__typename":"CheckRun","name":"$name","status":"COMPLETED","conclusion":"FAILURE"}]}
 JSON
 }
 
@@ -120,7 +131,7 @@ write_github_rollup_json() {
   done
   printf '%s\n' "$head" > "$case_dir/github-head"
   cat > "$case_dir/github-view.json" <<JSON
-{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"main","statusCheckRollup":[$rollup]}
+{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"main","createdAt":"$FM_TEST_PR_CREATED","potentialMergeCommitOid":"$FM_TEST_MERGE_REF","statusCheckRollup":[$rollup]}
 JSON
 }
 
@@ -316,6 +327,27 @@ set_pr_ci_workflow() {
 '}
   printf 'ci.yml\n' > "$case_dir/github-workflows-listing"
   printf '%s' "$content" | base64 > "$case_dir/github-workflow-content-b64"
+}
+
+# The pull request's own createdAt as the live view reports it, which the
+# retention exemption requires past the window alongside the head commit's
+# date. Args: case_dir iso8601
+set_pr_created() {
+  local case_dir=$1 created=$2
+  "$JQ_BIN" --arg c "$created" '.createdAt = $c' \
+    "$case_dir/github-view.json" > "$case_dir/github-view.json.tmp"
+  mv "$case_dir/github-view.json.tmp" "$case_dir/github-view.json"
+}
+
+# The merge ref the live view reports, which is the only ref fm-pr-merge.sh
+# reads workflow text at. An empty value is GitHub reporting none, the shape a
+# pull request whose test merge has not been computed shows.
+# Args: case_dir sha
+set_merge_ref() {
+  local case_dir=$1 ref=$2
+  "$JQ_BIN" --arg r "$ref" '.potentialMergeCommitOid = $r' \
+    "$case_dir/github-view.json" > "$case_dir/github-view.json.tmp"
+  mv "$case_dir/github-view.json.tmp" "$case_dir/github-view.json"
 }
 
 # The copy of .github/workflows/ci.yml that lives on one specific ref, as
@@ -3371,50 +3403,75 @@ test_multiline_inline_branches_filter_never_confirms_a_skip() {
   pass "fm-pr-merge never confirms a skip from a branches filter whose flow sequence spans lines"
 }
 
-# The filters that decide the exemption are the ones committed on the pull
-# request's OWN base ref, not the ones on the repository's default branch. Here
-# the default branch's copy would exempt this pull request and the base ref's
-# copy covers it, so a reader taking the default branch's copy merges a stale
-# zero-run head that its real CI was going to check.
-test_workflow_filters_are_read_from_the_base_ref() {
+# The filters that decide the exemption are the ones on the pull request's
+# MERGE ref - head merged into base, the tree GitHub resolves a pull_request
+# run from - and on no other ref. Here every other ref's copy would cover this
+# pull request and arm the gate, while the merge ref's copy excludes it, so a
+# reader pinned to any other ref refuses a pull request GitHub was never going
+# to check.
+test_workflow_filters_are_read_from_the_merge_ref() {
   local case_dir rc head
   head=7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a
-  case_dir=$(make_case github-base-ref-filters)
+  case_dir=$(make_case github-merge-ref-filters)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head" release-1.0
+  set_pr_ci_workflow "$case_dir" 'on:
+  pull_request:
+    branches: [release-1.0]
+'
+  set_pr_ci_workflow_on_ref "$case_dir" "$FM_TEST_MERGE_REF" 'on:
+  pull_request:
+    branches: [main]
+'
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+
+  run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/128 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "merge-ref-filters: the merge ref's branches filter excludes this pull request, so its zero-run head must not refuse"$'\n'"$(cat "$case_dir/stderr")"
+  assert_no_grep 'suspected dropped' "$case_dir/stderr" \
+    "merge-ref-filters: a filter-confirmed skip must not be reported as a suspected drop"
+  assert_logged_gh_merge "$case_dir" 128 example/repo --squash
+  pass "fm-pr-merge judges a workflow's filters by the copy on the pull request's merge ref"
+}
+
+# A filter-confirmed stand-down is the one way this change lets a pull request
+# merge with the gate never armed, so it must name on stderr which workflow and
+# which filter exempted it rather than disarming in silence.
+test_filter_confirmed_stand_down_names_the_workflow_and_filter() {
+  local case_dir head
+  head=7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d
+  case_dir=$(make_case github-filter-standdown-note)
   mkdir -p "$case_dir/wt"
   add_gh_mocks "$case_dir" "$head" release-1.0
   set_pr_ci_workflow "$case_dir" 'on:
   pull_request:
     branches: [main]
 '
-  set_pr_ci_workflow_on_ref "$case_dir" release-1.0 'on:
-  pull_request:
-    branches: [release-1.0]
-'
   set_pr_run_count "$case_dir" 0
   set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
   pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
 
-  set +e
   run_pr_merge "$case_dir" task-x1 \
-    https://github.com/example/repo/pull/128 \
-    > "$case_dir/stdout" 2> "$case_dir/stderr"
-  rc=$?
-  set -e
-  expect_code 1 "$rc" "base-ref-filters: the base ref's own branches filter covers this pull request, so its zero-run head must refuse"
-  assert_grep 'suspected dropped CI event' "$case_dir/stderr" \
-    "base-ref-filters: the suspected-drop reason was not reported"
-  assert_no_grep 'pr merge' "$case_dir/gh.log" \
-    "base-ref-filters: gh pr merge ran on a suspected dropped CI event"
-  pass "fm-pr-merge judges a workflow's filters by the copy on the pull request's base ref"
+    https://github.com/example/repo/pull/132 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "filter-standdown-note: a filter-confirmed skip must merge"$'\n'"$(cat "$case_dir/stderr")"
+  assert_grep 'ci.yml (branches filter)' "$case_dir/stderr" \
+    "filter-standdown-note: the stand-down did not name the workflow and filter that exempted this pull request"
+  assert_grep 'the dropped-CI-event check is disarmed' "$case_dir/stderr" \
+    "filter-standdown-note: the stand-down did not report the disarmed gate"
+  assert_logged_gh_merge "$case_dir" 132 example/repo --squash
+  pass "fm-pr-merge names the workflow and filter when a confirmed skip disarms the dropped-CI gate"
 }
 
-# A pull request that edits the workflows themselves. GitHub runs a
-# pull_request workflow from the head merged into the base, so the base ref's
-# paths filter is not the filter that ran and no committed copy can settle
-# whether CI applied. That is unevaluable, so this pull request counts as
-# covered and its zero-run stale head still refuses.
-test_pull_request_editing_its_workflows_is_never_exempted() {
-  local case_dir rc head
+# A pull request that edits the workflows themselves. Its own edit is part of
+# the merge ref's tree, so the filter read there IS the filter GitHub ran: a
+# paths filter that excludes this pull request excludes it for GitHub too, and
+# refusing here would be a deadlock no new commit could clear.
+test_workflow_editing_pr_is_judged_by_its_own_merge_ref_filter() {
+  local case_dir head
   head=7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b
   case_dir=$(make_case github-pr-edits-workflows)
   mkdir -p "$case_dir/wt"
@@ -3429,24 +3486,89 @@ test_pull_request_editing_its_workflows_is_never_exempted() {
   set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
   pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
 
-  set +e
   run_pr_merge "$case_dir" task-x1 \
     https://github.com/example/repo/pull/129 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "pr-edits-workflows: a workflow-editing pull request its merge-ref filter excludes must not be refused"$'\n'"$(cat "$case_dir/stderr")"
+  assert_no_grep 'suspected dropped' "$case_dir/stderr" \
+    "pr-edits-workflows: a filter-confirmed skip must not be reported as a suspected drop"
+  assert_logged_gh_merge "$case_dir" 129 example/repo --squash
+  pass "fm-pr-merge judges a workflow-editing pull request by its own merge-ref filter"
+}
+
+# The same pull request, widening its own paths filter to cover itself. The
+# merge ref carries that edit, so the gate arms on the widened filter and the
+# zero-run head still refuses - the case the removed touches-workflows override
+# existed to catch, now caught by reading the ref GitHub actually runs.
+test_workflow_editing_pr_widening_its_own_filter_still_arms() {
+  local case_dir rc head
+  head=7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e
+  case_dir=$(make_case github-pr-widens-own-filter)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir" 'on:
+  pull_request:
+    paths:
+      - "src/**"
+'
+  set_pr_ci_workflow_on_ref "$case_dir" "$FM_TEST_MERGE_REF" 'on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "docs/**"
+'
+  set_pr_files "$case_dir" .github/workflows/ci.yml docs/guide.md
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/133 \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
-  expect_code 1 "$rc" "pr-edits-workflows: a pull request editing its own workflows must not be exempted by the base ref's filters"
+  expect_code 1 "$rc" "pr-widens-own-filter: a pull request whose own edit widens the filter onto itself must still refuse a zero-run head"
   assert_grep 'suspected dropped CI event' "$case_dir/stderr" \
-    "pr-edits-workflows: the suspected-drop reason was not reported"
+    "pr-widens-own-filter: the suspected-drop reason was not reported"
   assert_no_grep 'pr merge' "$case_dir/gh.log" \
-    "pr-edits-workflows: gh pr merge ran on a suspected dropped CI event"
-  pass "fm-pr-merge never exempts a pull request that edits the workflows its coverage was read from"
+    "pr-widens-own-filter: gh pr merge ran on a suspected dropped CI event"
+  pass "fm-pr-merge arms on a workflow-editing pull request whose merge-ref filter covers it"
 }
 
-# A head commit older than GitHub's Actions run retention window: the runs it
-# had have been purged, so the zero count proves nothing and no retry can ever
-# change it. Refusing forever would leave merging outside firstmate as the only
-# route, so the gate reports the expired evidence and stands down.
+# No merge ref means no tree to read the filters from, so nothing was ever
+# confirmed about this pull request's coverage. That is an inconclusive read,
+# not an absence: it disarms with a note, exactly as an unreadable listing does,
+# and never arms a refusal on evidence it does not have.
+test_unreadable_merge_ref_does_not_arm_the_gate() {
+  local case_dir head
+  head=7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f
+  case_dir=$(make_case github-no-merge-ref)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir"
+  set_merge_ref "$case_dir" ''
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+
+  run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/134 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "no-merge-ref: an unestablished merge ref must not arm the dropped-CI gate"$'\n'"$(cat "$case_dir/stderr")"
+  assert_no_grep 'suspected dropped' "$case_dir/stderr" \
+    "no-merge-ref: an inconclusive read must not be reported as a suspected drop"
+  assert_grep "could not read this repository's workflow triggers" "$case_dir/stderr" \
+    "no-merge-ref: the disarmed gate was not reported on stderr"
+  assert_logged_gh_merge "$case_dir" 134 example/repo --squash
+  pass "fm-pr-merge disarms rather than arms when the pull request has no merge ref"
+}
+
+# A pull request whose head commit AND whose own createdAt are both older than
+# GitHub's Actions run retention window: the runs it had have been purged, so
+# the zero count proves nothing and no retry can ever change it. Refusing
+# forever would leave merging outside firstmate as the only route, so the gate
+# reports the expired evidence and stands down.
 test_head_past_the_run_retention_window_is_not_a_dropped_event() {
   local case_dir rc head
   head=7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c
@@ -3456,6 +3578,7 @@ test_head_past_the_run_retention_window_is_not_a_dropped_event() {
   set_pr_ci_workflow "$case_dir"
   set_pr_run_count "$case_dir" 0
   set_commit_date "$case_dir" 2025-06-01T00:00:00Z # 214 days before "now"
+  set_pr_created "$case_dir" 2025-06-01T00:00:00Z
   pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
 
   run_pr_merge "$case_dir" task-x1 \
@@ -3468,6 +3591,68 @@ test_head_past_the_run_retention_window_is_not_a_dropped_event() {
     "retention-expired: the disarmed gate was not reported on stderr"
   assert_logged_gh_merge "$case_dir" 130 example/repo --squash
   pass "fm-pr-merge reports expired run evidence instead of refusing a head past the retention window"
+}
+
+# Actions retention runs from when a run was created, not from when a commit
+# was written. An old branch opened today as a fresh pull request has a head
+# commit far past the window and a delivery that is minutes old and fully
+# retained, so its zero count is a confirmed absence - the dropped delivery
+# this gate exists to catch - and must never be waved through as expired.
+test_old_head_on_a_freshly_opened_pr_is_not_expired_evidence() {
+  local case_dir rc head
+  head=8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c
+  case_dir=$(make_case github-old-head-fresh-pr)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir"
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-01-01T00:00:00Z # 365 days before "now"
+  set_pr_created "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/135 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "old-head-fresh-pr: a freshly opened pull request's zero-run head must refuse, whatever its commit date says"
+  assert_grep 'suspected dropped CI event' "$case_dir/stderr" \
+    "old-head-fresh-pr: the suspected-drop reason was not reported"
+  assert_no_grep 'retention window' "$case_dir/stderr" \
+    "old-head-fresh-pr: a delivery the window never covered was exempted as expired evidence"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "old-head-fresh-pr: gh pr merge ran on a suspected dropped CI event"
+  pass "fm-pr-merge refuses an old head on a freshly opened pull request rather than calling its absence expired"
+}
+
+# The same shape inside the grace window: the pull request was opened seconds
+# ago, so the delivery is still in flight and the refusal must say re-check
+# rather than jumping past the grace window to the retention exemption.
+test_old_head_on_a_just_opened_pr_reaches_the_grace_window() {
+  local case_dir rc head
+  head=8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d
+  case_dir=$(make_case github-old-head-grace)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir"
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-01-01T00:00:00Z # 365 days before "now"
+  set_pr_created "$case_dir" 2025-12-31T23:59:00Z # 60s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/136 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "old-head-grace: a just-opened pull request's zero-run head must refuse inside the grace window"
+  assert_grep 'younger than the grace window' "$case_dir/stderr" \
+    "old-head-grace: an old commit on a just-opened pull request never reached the grace window"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "old-head-grace: gh pr merge ran while the delivery was still in flight"
+  pass "fm-pr-merge reaches the grace window for a just-opened pull request on an old head"
 }
 
 # The head's run count already confirmed zero pull_request-event runs, and only
@@ -4055,9 +4240,14 @@ test_truncated_changed_file_list_still_refuses_zero_runs
 test_same_indent_branches_sequence_is_read_as_a_filter
 test_crlf_workflow_branches_filter_is_read_as_a_filter
 test_multiline_inline_branches_filter_never_confirms_a_skip
-test_workflow_filters_are_read_from_the_base_ref
-test_pull_request_editing_its_workflows_is_never_exempted
+test_workflow_filters_are_read_from_the_merge_ref
+test_filter_confirmed_stand_down_names_the_workflow_and_filter
+test_workflow_editing_pr_is_judged_by_its_own_merge_ref_filter
+test_workflow_editing_pr_widening_its_own_filter_still_arms
+test_unreadable_merge_ref_does_not_arm_the_gate
 test_head_past_the_run_retention_window_is_not_a_dropped_event
+test_old_head_on_a_freshly_opened_pr_is_not_expired_evidence
+test_old_head_on_a_just_opened_pr_reaches_the_grace_window
 test_unreadable_head_commit_date_still_refuses_a_zero_run_head
 test_unreadable_workflow_listing_does_not_block_a_green_merge
 test_allow_red_still_waives_only_the_current_failure
