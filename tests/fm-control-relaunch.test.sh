@@ -219,6 +219,7 @@ run_control() {  # <case-dir> <args...>
     FM_REAL_GIT="${FM_REAL_GIT:-}" FM_FAKE_GIT_FAILURE="${FM_FAKE_GIT_FAILURE:-}" \
     FM_REAL_MV="${FM_REAL_MV:-}" FM_FAKE_COMPLETE_JOURNAL_MV_FAIL="${FM_FAKE_COMPLETE_JOURNAL_MV_FAIL:-}" \
     FM_FAKE_META_PUBLISH_MV_FAIL="${FM_FAKE_META_PUBLISH_MV_FAIL:-}" \
+    FM_FAKE_META_PUBLISH_MV_LOSE="${FM_FAKE_META_PUBLISH_MV_LOSE:-}" \
     FM_FAKE_TRACE_PREPARE="${FM_FAKE_TRACE_PREPARE:-}" \
     FM_FAKE_TRACE_RELEASE="${FM_FAKE_TRACE_RELEASE:-}" \
     FM_FAKE_META_WRITER_READY="${FM_FAKE_META_WRITER_READY:-}" \
@@ -271,6 +272,16 @@ fi
 if [ -n "${FM_FAKE_META_PUBLISH_MV_FAIL:-}" ]; then
   for path in "$@"; do
     [ "$path" != "$FM_FAKE_META_PUBLISH_MV_FAIL" ] || exit 1
+  done
+fi
+# A publication whose move lands but whose success cannot be confirmed, which
+# is what fm_backlog_record_publish's post-move readback failure looks like.
+if [ -n "${FM_FAKE_META_PUBLISH_MV_LOSE:-}" ]; then
+  for path in "$@"; do
+    if [ "$path" = "$FM_FAKE_META_PUBLISH_MV_LOSE" ]; then
+      "$FM_REAL_MV" "$@" || true
+      exit 1
+    fi
   done
 fi
 source_path=
@@ -448,6 +459,27 @@ test_missing_endpoint_relaunch_removes_its_recreated_endpoint_on_abort() {
   [ ! -s "$dir/fake/windows" ] \
     || fail "an endpoint recreated by this relaunch is its own until publication names it; an abort must not strand it (left: $(cat "$dir/fake/windows"))"
   pass "fm-control relaunch: an abort before publication removes the endpoint it recreated, leaving none the durable record cannot name"
+}
+
+test_missing_endpoint_relaunch_keeps_a_recreated_endpoint_its_record_names() {
+  local dir out rc meta real_mv
+  dir=$(new_case gone-published rlmiss4)
+  add_ship_task "$dir" rlmiss4 claude
+  : > "$dir/fake/windows"
+  printf '%s' "$dir/proj" > "$dir/fake/cwd"
+  meta="$dir/home/state/rlmiss4.meta"
+  real_mv=$(command -v mv)
+  make_mv_failure_stub "$dir"
+  out=$(FM_REAL_MV="$real_mv" FM_FAKE_META_PUBLISH_MV_LOSE="$meta" TMUX='' \
+    run_control "$dir" rlmiss4 relaunch --note "publication lands but reports failure"); rc=$?
+  expect_code 1 "$rc" "an unconfirmable publication should fail closed"$'\n'"$out"
+  [ "$(meta_field "$dir" rlmiss4 window)" = "firstmate:fm-rlmiss4" ] \
+    || fail "the landed publication should leave the durable record naming the recreated endpoint (got '$(meta_field "$dir" rlmiss4 window)')"
+  grep -qxF "fm-rlmiss4" "$dir/fake/windows" \
+    || fail "an endpoint the published record already names must survive the abort (left: '$(cat "$dir/fake/windows")')"
+  [ "$(journal_field "$dir" rlmiss4 rollback)" = none-new-record-kept ] \
+    || fail "the journal should record that the published replacement record was kept"
+  pass "fm-control relaunch: an abort whose publication already landed keeps the endpoint that record names"
 }
 
 test_relaunch_from_linked_home_preserves_recorded_worktree() {
@@ -1723,6 +1755,7 @@ test_missing_endpoint_relaunch_recreates_it
 test_missing_endpoint_relaunch_verifies_the_replacement_on_its_new_endpoint
 test_ambiguous_endpoint_relaunch_still_refuses
 test_missing_endpoint_relaunch_removes_its_recreated_endpoint_on_abort
+test_missing_endpoint_relaunch_keeps_a_recreated_endpoint_its_record_names
 test_relaunch_from_linked_home_preserves_recorded_worktree
 test_relaunch_preserves_durable_task_metadata
 test_relaunch_serializes_concurrent_durable_metadata_publication
