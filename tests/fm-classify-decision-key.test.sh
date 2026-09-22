@@ -146,10 +146,12 @@ test_keyed_terminal_line_does_not_retire_the_default_bucket() {
   expected=$(printf 'default\tneeds-decision\tship without the migration?\n')
   assert_fold "$dir/ios.status" "$expected" "unkeyed needs-decision opens the default bucket"
 
-  printf 'done [key=child-outcome-c7-done-ab12cd34]: child c7 done: shipped\n' >> "$dir/ios.status"
-  printf 'done [key=child-pr-c7]: child c7 PR ready: https://example/pr/1\n' >> "$dir/ios.status"
-  printf 'failed [key=merged-c7]: merge of c7 failed\n' >> "$dir/ios.status"
-  printf 'paused [key=child-outcome-c8-paused-ff00ff00]: child c8 paused\n' >> "$dir/ios.status"
+  {
+    printf 'done [key=child-outcome-c7-done-ab12cd34]: child c7 done: shipped\n'
+    printf 'done [key=child-pr-c7]: child c7 PR ready: https://example/pr/1\n'
+    printf 'failed [key=merged-c7]: merge of c7 failed\n'
+    printf 'paused [key=child-outcome-c8-paused-ff00ff00]: child c8 paused\n'
+  } >> "$dir/ios.status"
   assert_fold "$dir/ios.status" "$expected" \
     "keyed terminal reports must leave the captain's unkeyed decision open"
 
