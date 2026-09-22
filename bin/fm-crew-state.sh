@@ -253,16 +253,17 @@ map_log_state() {  # <line>
 
 LOG_LINE=$(status_current_line "$LOG" "$KIND")
 LOG_VERB=$(status_line_verb "$LOG_LINE")
-# The log's genuine current declared state (fm-classify-lib.sh's
-# status_current_state_line): the newest line whose verb is a real state,
-# skipping any resolved:/note:/other non-state line, and a still-open
-# needs-decision/blocked when nothing state-bearing follows it.
-# The fallback source below and the remote secondmate branch both read THIS,
-# never the bare last line, so a decision- or note-closing append can never
-# blank out or masquerade as current state. It scans the whole log, so each
-# branch reads it only once it is actually about to report from the log -
-# every earlier emit (run-step, busy pane, dead endpoint) exits without
-# paying for the scan.
+# status_current_line's own open-decision fold (fm-classify-lib.sh's
+# status_open_decisions) wins over anything else: a still-open keyed
+# blocked/needs-decision survives an unrelated later working:/done:/failed:
+# declaration, so a crew moving on to other work never buries a decision it
+# never closed. Only when nothing is open does it fall back to
+# status_current_state_line's own read: the newest line whose verb is a real
+# state, skipping any resolved:/note:/other non-state line. The fallback
+# source below and the remote secondmate branch both reuse this SAME
+# already-computed LOG_LINE rather than re-deriving it, never the bare last
+# line, so a decision- or note-closing append can never blank out or
+# masquerade as current state.
 
 # --- remote secondmate: the true source is the remote endpoint ---------------
 # A remote mate's recorded worktree and backend target live on its own host, so
@@ -283,9 +284,11 @@ if [ -n "$REMOTE_HOST" ]; then
   REMOTE_STATE=$(printf '%s\n' "$REMOTE_STATE" | tail -1)
   case "$REMOTE_STATE" in
     alive)
-      STATE_LINE=$(status_current_state_line "$LOG" || true)
-      if [ -n "$STATE_LINE" ]; then
-        emit "$(map_log_state "$STATE_LINE")" status-log "$(status_line_note "$STATE_LINE")${SEP}remote endpoint alive on $REMOTE_HOST"
+      if [ -n "$LOG_VERB" ]; then
+        REMOTE_LOG_STATE=$(map_log_state "$LOG_LINE")
+        if [ "$REMOTE_LOG_STATE" != unknown ]; then
+          emit "$REMOTE_LOG_STATE" status-log "$(status_line_note "$LOG_LINE")${SEP}remote endpoint alive on $REMOTE_HOST"
+        fi
       fi
       emit unknown remote-endpoint "alive on $REMOTE_HOST (an idle secondmate is healthy)"
       ;;
@@ -1254,24 +1257,35 @@ if [ "$KIND" != secondmate ]; then
 fi
 
 # Fall back to the status log's genuine CURRENT declared state, never its bare
-# last line. bin/fm-classify-lib.sh's status_current_state_line is the single
-# owner of that read: the newest line whose verb is a real state
-# (working/done/failed/paused/captain-held, or a needs-decision/blocked still
-# open in the SAME fold status_open_decisions uses). A trailing resolved: (or
-# any future decision-only sibling), an informational note:, or any other
-# unrecognized verb is skipped - never read as, and never allowed to blank out,
-# the current state - and so is a needs-decision/blocked entry one of those
-# verbs already closed. That lets a just-resolved idle crew (typically a
-# secondmate, which has no busy check above) fall through to the idle default
-# instead of rendering `unknown` with stale resolution prose as `doing`, and
-# lets a still-declared paused: survive a later informational note: instead of
-# reading as a fresh wedge - status_current_line's own last-recognized-event
-# fallback would stop at that trailing note: and read unknown, discarding the
-# still-standing pause. map_log_state is still the single owner of the
-# verb->state mapping (including the configurable paused verb).
-STATE_LINE=$(status_current_state_line "$LOG" || true)
-if [ -n "$STATE_LINE" ]; then
-  emit "$(map_log_state "$STATE_LINE")" status-log "$(status_line_note "$STATE_LINE")"
+# last line: the SAME already-computed LOG_LINE the run-step reconciliation
+# above read, not a fresh re-derivation. Reusing it (rather than calling
+# status_current_state_line directly here) keeps this fallback's verdict
+# consistent with status_current_line's own fold priority: a still-open keyed
+# needs-decision/blocked survives an unrelated LATER working:/done:/failed:
+# declaration elsewhere in the log, which a bare status_current_state_line
+# read would not preserve - it stops at the first state-bearing line walking
+# backward, with no awareness of an different, still-open key underneath it.
+# Only when nothing is open does LOG_LINE fall through to
+# status_current_state_line's own read: the newest line whose verb is a real
+# state (working/done/failed/paused/captain-held), skipping any trailing
+# resolved:, informational note:, or other unrecognized verb - never read as,
+# and never allowed to blank out, the current state. That lets a
+# just-resolved idle crew (typically a secondmate, which has no busy check
+# above) fall through to the idle default instead of rendering `unknown` with
+# stale resolution prose as `doing`, and lets a still-declared paused: survive
+# a later informational note: instead of reading as a fresh wedge.
+# map_log_state is still the single owner of the verb->state mapping
+# (including the configurable paused verb). A decision-closing event such as
+# resolved: is NOT a state: when status_current_state_line finds no real
+# state either, LOG_LINE's last-resort fallback (last_status_line) can still
+# be that resolved:/note: line itself, which maps to unknown here - reported
+# as the recovery-grade `unknown/none` default rather than as a status-log
+# source carrying its resolution prose as if it were the crew's `doing`.
+if [ -n "$LOG_VERB" ]; then
+  LOG_STATE=$(map_log_state "$LOG_LINE")
+  if [ "$LOG_STATE" != unknown ]; then
+    emit "$LOG_STATE" status-log "$(status_line_note "$LOG_LINE")"
+  fi
 fi
 
 emit unknown none "no current-state source available"

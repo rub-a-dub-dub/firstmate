@@ -793,23 +793,51 @@ status_open_decisions() {  # <status-file> [<kind>]
 # (and fails) when the log declares no state at all - e.g. every decision it
 # opened has since been resolved and no plain state was ever declared - so
 # callers fall back to their own unknown/none default exactly as before.
-status_current_state_line() {  # <status-file>
-  local f=$1 line verb key note paused held resolve closed='' plain=''
+#
+# <kind> (optional, resolved the same way status_open_decisions resolves it -
+# the caller's value or else the sibling .meta file's kind=, defaulting to
+# ship) gates done/failed exactly as _fm_decision_fold_line's own
+# done:ship|done:scout|failed:ship|failed:scout special case does: for a
+# secondmate, a bare done:/failed: line is not proof of ITS OWN terminal
+# state, because a secondmate's own status log also carries done:/failed:
+# child-outcome lines relayed upward by fm-inactive-reconcile.sh's ledger
+# path - so those verbs are skipped here exactly as the fold already treats
+# them, rather than being read as the secondmate's own declared state. A ship
+# or scout crew's log carries no such relayed lines, so done:/failed: there
+# still win immediately, as they always have.
+status_current_state_line() {  # <status-file> [<kind>]
+  local f=$1 kind=${2:-} line verb key note paused held resolve closed='' plain=''
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
+  kind=$(_fm_status_kind "$f" "$kind")
   paused=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
   held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   while IFS= read -r line; do
     case "$line" in *[![:space:]]*) ;; *) continue ;; esac
+    # A colonless (and key-tag-less) line is continuation prose, never an
+    # event: status_line_verb returns the WHOLE trimmed line as "verb" when
+    # there is no colon to split on, so without this gate ordinary prose
+    # would itself match a case arm below and wrongly count as one.
+    case "$line" in *:*|*\[key=*\]*) ;; *) continue ;; esac
     verb=$(status_line_verb "$line")
     if [ "$verb" = "$paused" ] || [ "$verb" = "$held" ]; then
       plain=$line
       break
     fi
     case "$verb" in
-      working|done|failed)
+      working)
         plain=$line
         break
+        ;;
+      done|failed)
+        # A secondmate's own status log also carries done:/failed:
+        # child-outcome lines relayed upward by fm-inactive-reconcile.sh's
+        # ledger path, so those are not proof of the SECONDMATE's own
+        # terminal state; a ship or scout crew's log carries no such relayed
+        # lines, so done:/failed: there still win immediately.
+        case "$kind" in
+          ship|scout) plain=$line; break ;;
+        esac
         ;;
       needs-decision|blocked)
         note=$(status_line_note "$line")
@@ -834,25 +862,59 @@ status_current_state_line() {  # <status-file>
 }
 
 # Resolve the log's current declaration at one boundary for crew-state consumers.
-# Any decision the fold still holds open wins over unrelated events, and the
-# fold's most recently opened record supplies it. When nothing is open, the
-# fallback is status_current_state_line above, NEVER last_status_line's bare
-# latest-recognized-event: that read still treats a trailing resolved:/note:/
-# other non-state line as the event, which would mask a still-standing
-# paused:/captain-held: declaration back down to unknown the moment a crew
-# added a note or closed an unrelated decision (the bug status_current_state_line
-# exists to fix). A caller that genuinely wants the bare last recognized event
-# still has last_status_line directly.
+# Three-tier priority, in this exact order:
+#   1. A declared wait (paused:/captain-held:, from status_current_state_line's
+#      own backward walk) wins UNCONDITIONALLY, even over a still-open keyed
+#      decision positioned earlier in the log: a worker that moves from an
+#      unresolved escalation to a declared pause is doing the pause now, not
+#      still stuck on the earlier question (2026-09-22
+#      firstmate-reconcile-fork-with-upstream). Never last_status_line's bare
+#      latest-recognized-event here either: that read treats a trailing
+#      resolved:/note:/other non-state line as the event, which would mask a
+#      still-standing paused:/captain-held: declaration back down to unknown
+#      the moment a crew added a note or closed an unrelated decision (the bug
+#      status_current_state_line exists to fix).
+#   2. Otherwise, any decision the fold still holds open wins over an
+#      unrelated later working:/done:/failed: event elsewhere in the log - the
+#      fold's most recently opened record supplies it. status_current_state_line
+#      alone cannot express this: its own single backward walk stops at the
+#      first working:/done:/failed: it meets and never looks further back for
+#      a different, still-open key underneath it.
+#   3. Otherwise, status_current_state_line's own answer (the newest real
+#      state) is current - EXCEPT a bare done:/failed: (unlike paused:/
+#      captain-held:/working:, not an ongoing state a later note or
+#      resolution is expected to sit beside) counts only when it is ALSO the
+#      log's literal newest recognized event (last_status_line): once
+#      anything - even a mere note: - trails a ship/scout crew's own terminal
+#      declaration, something happened since, so it must not be resurrected
+#      as still-current. A caller that wants that terminal line regardless of
+#      what trails it (fm-inactive-reconcile.sh's ledger delivery, where a
+#      late captain answer must not undo an already-reported completion)
+#      calls status_current_state_line directly instead of through here.
+# Nothing found by any tier reports empty, never a bare resolved:/note: line -
+# a caller that genuinely wants the literal last recognized event still has
+# last_status_line directly.
 # Actual run/pane evidence is still reconciled by fm-crew-state.sh.
 status_current_line() {  # <status-file> <kind>
-  local open key verb note current=''
+  local state open key verb note current=''
+  state=$(status_current_state_line "$1" "$2") || state=''
+  verb=$(status_line_verb "$state")
+  case "$verb" in
+    "${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}"|"${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}")
+      printf '%s\n' "$state"
+      return 0
+      ;;
+    done|failed)
+      [ "$state" = "$(last_status_line "$1")" ] || state=''
+      ;;
+  esac
   open=$(status_open_decisions "$1" "$2")
   while IFS=$'\t' read -r key verb note; do
     case "$verb" in ?*) current="$verb [key=$key]: $note" ;; esac
   done <<EOF
 $open
 EOF
-  [ -n "$current" ] || current=$(status_current_state_line "$1") || current=$(last_status_line "$1")
+  [ -n "$current" ] || current=$state
   printf '%s\n' "$current"
 }
 
