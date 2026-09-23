@@ -551,18 +551,19 @@ EOF
   printf 'RECORD DIVERGENCE: reconcile each one - record the captain'"'"'s own words with bin/fm-captain-hold.sh answer <task> --decision-file <path>, or re-open the status decision when that resolution was not the captain'"'"'s word.\n' || return 1
 }
 
-# A read or write hiccup anywhere in the fleet-wide passes below (one task's
-# status log, one task's open-decisions cursor, the scratch file the sections
-# are prepared into) must never be indistinguishable from "computed, and
-# genuinely nothing is open or unread": that silence is exactly what let a
-# captain-facing OPEN DECISIONS section vanish for a drain even though several
-# tasks' needs-decision/blocked lines were still open and unresolved in their
-# own durable status logs (a failure on any ONE task aborts the whole
-# acknowledge pass via its `|| return 1` before a single section is prepared,
-# and the preparation that follows is itself all-or-nothing). Print this notice
-# on every such failure instead of returning silently, so an empty presentation
-# can only ever mean the passes ran to completion and found nothing - never
-# that they could not be computed.
+# A read or write hiccup anywhere in the drain's fleet-wide passes (the wake-row
+# annotations, one task's status log, one task's open-decisions cursor, the
+# scratch file the sections are prepared into) must never be indistinguishable
+# from "computed, and genuinely nothing is open or unread": that silence is
+# exactly what let a captain-facing OPEN DECISIONS section vanish for a drain
+# even though several tasks' needs-decision/blocked lines were still open and
+# unresolved in their own durable status logs (a failure on any ONE task aborts
+# the whole acknowledge pass via its `|| return 1` before a single section is
+# prepared, the annotation pass aborts the same way before the sections are
+# even reached, and the preparation that follows is itself all-or-nothing).
+# Print this notice on every such failure instead of returning silently, so an
+# empty presentation can only ever mean the passes ran to completion and found
+# nothing - never that they could not be computed.
 print_status_sections_incomplete_notice() {
   printf 'STATUS PRESENTATION INCOMPLETE: unread status, outcome backstop, OPEN DECISIONS, and record divergence could not be fully computed this drain (a status log or cursor read/write failed); do not read this drain'"'"'s silence as nothing open or unread - retry on the next drain.\n'
 }
@@ -605,7 +606,7 @@ print_status_sections() {
 
 print_status_presentation() {  # [<deduped-raw-rows>]
   local rows=${1:-} lock="$STATE/.status-presentation-lock" snapshot annotation_manifest fully_presented='' rc=0
-  local lock_rc holder_pid
+  local lock_rc holder_pid notice_owed=0
   if fm_lock_acquire_wait_bounded "$lock" "$PRESENTATION_LOCK_TIMEOUT"; then
     :
   else
@@ -624,13 +625,20 @@ print_status_presentation() {  # [<deduped-raw-rows>]
     rc=1
   }
   if [ "$rc" -eq 0 ] && [ -n "$rows" ]; then
-    fm_wake_print_annotations "$rows" "$snapshot" || rc=1
-    if [ "$rc" -eq 0 ]; then
-      annotation_manifest=$(fm_wake_annotation_manifest "$rows") || rc=1
-      fully_presented=$(printf '%s\n' "$annotation_manifest" | awk -F '\t' '$2 == "direct" { sub(/\.status$/, "", $1); print $1 }') || rc=1
+    fm_wake_print_annotations "$rows" "$snapshot" || notice_owed=1
+    if [ "$notice_owed" -eq 0 ]; then
+      annotation_manifest=$(fm_wake_annotation_manifest "$rows") || notice_owed=1
+      fully_presented=$(printf '%s\n' "$annotation_manifest" | awk -F '\t' '$2 == "direct" { sub(/\.status$/, "", $1); print $1 }') || notice_owed=1
     fi
+    # Annotations are supplemental enrichment of rows already printed above. A
+    # failure there says nothing about the sections, so fall through and compute
+    # whatever still can be - but never let that partial drain read as silence.
+    if [ "$notice_owed" -ne 0 ]; then fully_presented=''; rc=1; fi
   fi
-  if [ "$rc" -eq 0 ] && [ -n "$snapshot" ]; then print_status_sections "$snapshot" "$fully_presented" || rc=1; fi
+  if [ -n "$snapshot" ]; then
+    print_status_sections "$snapshot" "$fully_presented" || { rc=1; notice_owed=0; }
+  fi
+  [ "$notice_owed" -eq 0 ] || print_status_sections_incomplete_notice
   fm_lock_release "$lock"
   return "$rc"
 }

@@ -203,17 +203,101 @@ test_unrelated_task_read_failure_reports_incomplete_not_silent_empty() {
   if grep -F 'OPEN DECISIONS (still open' "$out" >/dev/null; then
     fail "an incomplete fold still printed a normal OPEN DECISIONS section: $(command cat "$out")"
   fi
-  grep -F 'STATUS PRESENTATION INCOMPLETE' "$out" >/dev/null \
+  grep -F 'STATUS PRESENTATION INCOMPLETE: unread status, outcome backstop, OPEN DECISIONS' "$out" >/dev/null \
     || fail "an unrelated task's read failure went silent instead of reporting an incomplete drain: $(command cat "$out")"
 
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
     || fail "recovery drain after the injected failure cleared failed"
-  for task in cowork-skills-directory-phone-design-forks firstmate-reconcile-fork-with-upstream firstmate-unreplayable-backlog-close; do
-    grep -F "$task" "$out" >/dev/null \
-      || fail "task $task's open decision did not reappear once the read failure cleared: $(command cat "$out")"
-  done
+  while IFS='|' read -r task decision; do
+    [ -n "$task" ] || continue
+    grep -F "$task [key=$decision" "$out" >/dev/null \
+      || fail "task $task's open decision did not reappear unchanged once the read failure cleared: $(command cat "$out")"
+  done <<'DECISIONS'
+cowork-skills-directory-phone-design-forks|which-fork] needs-decision: pick a or b
+firstmate-reconcile-fork-with-upstream|default] needs-decision: reconcile with upstream how?
+firstmate-unreplayable-backlog-close|default] blocked: cannot replay this close
+DECISIONS
 
   pass "an unrelated task's transient read failure reports an incomplete drain instead of a silently empty OPEN DECISIONS section"
+}
+
+# The reported incident, reproduced end to end. Teardown retires a task's
+# presentation record and deletes $STATE/<task>.status but purges nothing from
+# the wake queue, so a still-unacked `signal:` row keeps pointing at a status
+# file that no longer exists. The annotation pass read that vanished task's
+# cursor before checking whether the snapshot even listed it, so one torn-down
+# task aborted the whole pass; the drain then skipped every section and printed
+# no notice, and the next drain - once the ack consumed the row - printed all
+# the open calls again unchanged. That is exactly the teardown-adjacent,
+# self-correcting blank the captain saw.
+test_torn_down_task_wake_row_does_not_blank_the_sections() {
+  local dir state out
+  dir=$(make_case torn-down-wake-row)
+  state="$dir/state"
+  out="$dir/drain.out"
+
+  printf 'needs-decision [key=which-fork]: pick a or b\n' > "$state/cowork-skills-directory-phone-design-forks.status"
+  printf 'blocked [key=default]: cannot replay this close\n' > "$state/firstmate-unreplayable-backlog-close.status"
+  printf 'working: about to be torn down\n' > "$state/firstmate-bearings-truncates-the-urgent-row.status"
+
+  append_wake "$state" signal firstmate-bearings-truncates-the-urgent-row.status \
+    "signal: $state/firstmate-bearings-truncates-the-urgent-row.status" \
+    || fail "seeding the torn-down task's wake row failed"
+  rm -f "$state/firstmate-bearings-truncates-the-urgent-row.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "drain failed on a wake row whose status file teardown removed"
+
+  grep -F 'cowork-skills-directory-phone-design-forks [key=which-fork] needs-decision: pick a or b' "$out" >/dev/null \
+    || fail "a torn-down task's queued wake row blanked another task's open decision: $(command cat "$out")"
+  grep -F 'firstmate-unreplayable-backlog-close [key=default] blocked: cannot replay this close' "$out" >/dev/null \
+    || fail "a torn-down task's queued wake row blanked another task's open decision: $(command cat "$out")"
+
+  pass "a torn-down task's still-queued wake row does not blank the surviving tasks' open decisions"
+}
+
+# An untrusted per-task fold cursor has no persisted open set to fall back on,
+# so a span-read failure there cannot honestly report "nothing open". The
+# acknowledge and unread-status passes both short-circuit at EOF here, so this
+# reaches the fold as the only failing read - the case that used to return rc 0
+# with an emptied set and print an authoritative-looking empty section.
+test_untrusted_fold_cursor_read_failure_is_not_a_silent_empty() {
+  local dir state out reader
+  dir=$(make_case untrusted-fold-cursor)
+  state="$dir/state"
+  out="$dir/drain.out"
+  reader="$dir/fail-reader"
+
+  printf 'needs-decision [key=which-fork]: pick a or b\nnote: still waiting on the captain\n' \
+    > "$state/cowork-skills-directory-phone-design-forks.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "bootstrap drain before the untrusted-cursor failure failed"
+  grep -F 'cowork-skills-directory-phone-design-forks [key=which-fork]' "$out" >/dev/null \
+    || fail "the decision failed to surface on the bootstrap drain"
+
+  # Invalidate only the fold cursor: a stale fold version is what a release
+  # bump or a reused task id produces, and it clears the trusted open set while
+  # leaving the presentation cursor parked at EOF.
+  printf 'version=0\noffset=0\nident=stale\n' \
+    > "$state/.cowork-skills-directory-phone-design-forks.open-decisions-cursor"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$reader"
+  chmod +x "$reader"
+
+  FM_STATE_OVERRIDE="$state" FM_STATUS_SPAN_READER="$reader" "$DRAIN" > "$out" \
+    || fail "wake drain failed instead of reporting an incomplete computation"
+  if grep -F 'OPEN DECISIONS (still open' "$out" >/dev/null; then
+    fail "an unreadable untrusted fold still printed a normal OPEN DECISIONS section: $(command cat "$out")"
+  fi
+  grep -F 'STATUS PRESENTATION INCOMPLETE: unread status, outcome backstop, OPEN DECISIONS' "$out" >/dev/null \
+    || fail "an untrusted fold cursor's read failure printed a silently empty section: $(command cat "$out")"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "recovery drain after the injected failure cleared failed"
+  grep -F 'cowork-skills-directory-phone-design-forks [key=which-fork] needs-decision: pick a or b' "$out" >/dev/null \
+    || fail "the open decision did not reappear unchanged once the read failure cleared: $(command cat "$out")"
+
+  pass "an untrusted fold cursor's read failure reports an incomplete drain instead of a silently empty section"
 }
 
 test_status_symlink_is_not_followed() {
@@ -282,4 +366,6 @@ test_no_open_decisions_prints_nothing
 test_open_decision_surfaces_even_with_an_unrelated_queued_wake
 test_buried_decision_surfaces_on_the_empty_queue_fast_path
 test_unrelated_task_read_failure_reports_incomplete_not_silent_empty
+test_torn_down_task_wake_row_does_not_blank_the_sections
+test_untrusted_fold_cursor_read_failure_is_not_a_silent_empty
 test_status_symlink_is_not_followed

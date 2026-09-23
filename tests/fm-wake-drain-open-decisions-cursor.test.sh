@@ -215,7 +215,7 @@ test_read_failure_preserves_state_for_retry() {
   if grep -F 'OPEN DECISIONS (still open' "$out" >/dev/null; then
     fail "the failed presentation read printed an OPEN DECISIONS section despite an incomplete fold: $(command cat "$out")"
   fi
-  grep -F 'STATUS PRESENTATION INCOMPLETE' "$out" >/dev/null \
+  grep -F 'STATUS PRESENTATION INCOMPLETE: unread status, outcome backstop, OPEN DECISIONS' "$out" >/dev/null \
     || fail "the failed presentation read went silent instead of reporting an incomplete computation: $(command cat "$out")"
   after_cursor=$(LC_ALL=C cksum "$cursor")
   [ "$after_cursor" = "$before_cursor" ] \
