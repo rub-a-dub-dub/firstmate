@@ -2323,6 +2323,37 @@ test_newest_open_decision_supplies_the_reported_detail() {
   pass "the most recently opened decision supplies the reported state and detail"
 }
 
+test_secondmate_own_terminal_declaration_beats_a_relayed_child_outcome() {
+  reset_fakes
+  local d out terminal
+  d=$(new_case mate-own-terminal)
+  mkdir -p "$d/wt"
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/mate.meta" "window=fm:fm-mate" "worktree=$d/wt" "kind=secondmate" "harness=claude"
+  arm_idle_record "$d/state" mate
+  for terminal in 'done' failed; do
+    printf 'working: starting up\n%s: mate finished its assignment\n' "$terminal" > "$d/state/mate.status"
+    out=$(run_crew_state "$d" mate)
+    assert_contains "$out" "state: $terminal" "a secondmate's own $terminal declaration is its current state"
+    assert_contains "$out" "mate finished its assignment" "the mate's own terminal declaration supplies the detail"
+    assert_not_contains "$out" "starting up" "the superseded working line is not resurrected"
+
+    printf 'working: starting up\n%s [key=child-outcome-kid-%s-abcd1234]: child kid %s: landed the work\n' \
+      "$terminal" "$terminal" "$terminal" > "$d/state/mate.status"
+    out=$(run_crew_state "$d" mate)
+    assert_contains "$out" "state: working" "a relayed child $terminal is not the mate's own state"
+    assert_contains "$out" "starting up" "the mate's own working line still supplies the detail"
+    assert_not_contains "$out" "landed the work" "the child's outcome prose is not reported as the mate's"
+
+    printf 'working [key=phase]: starting up\n%s [key=phase]: mate finished its assignment\n' \
+      "$terminal" > "$d/state/mate.status"
+    out=$(run_crew_state "$d" mate)
+    assert_contains "$out" "state: $terminal" "a secondmate's own keyed $terminal declaration is its current state"
+    assert_contains "$out" "mate finished its assignment" "the mate's keyed terminal declaration supplies the detail"
+  done
+  pass "a secondmate's own terminal declaration wins while a relayed child outcome does not"
+}
+
 test_single_owner_terminal_declaration_supersedes_stale_decision() {
   reset_fakes
   local d kind opener terminal out key expected
@@ -5076,6 +5107,7 @@ test_ordinary_blocked_over_live_run_keeps_plain_superseded
 test_genuine_daemon_down_reports_blocked
 test_secondmate_open_block_survives_unrelated_append
 test_newest_open_decision_supplies_the_reported_detail
+test_secondmate_own_terminal_declaration_beats_a_relayed_child_outcome
 test_single_owner_terminal_declaration_supersedes_stale_decision
 test_latest_status_preserves_legacy_completions
 test_latest_status_subshell_work_does_not_grow_with_history

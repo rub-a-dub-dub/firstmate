@@ -806,15 +806,15 @@ status_open_decisions() {  # <status-file> [<kind>]
 #
 # <kind> (optional, resolved the same way status_open_decisions resolves it -
 # the caller's value or else the sibling .meta file's kind=, defaulting to
-# ship) gates done/failed exactly as _fm_decision_fold_line's own
-# done:ship|done:scout|failed:ship|failed:scout special case does: for a
-# secondmate, a bare done:/failed: line is not proof of ITS OWN terminal
-# state, because a secondmate's own status log also carries done:/failed:
-# child-outcome lines relayed upward by fm-inactive-reconcile.sh's ledger
-# path - so those verbs are skipped here exactly as the fold already treats
-# them, rather than being read as the secondmate's own declared state. A ship
-# or scout crew's log carries no such relayed lines, so done:/failed: there
-# still win immediately, as they always have.
+# ship) narrows which done:/failed: lines count as the crew's own. A
+# secondmate's status log also carries done:/failed: lines relayed upward for
+# its CHILDREN by fm-inactive-reconcile.sh's ledger path; those always carry
+# that path's machine-generated `child-outcome-...` key, so they alone are
+# skipped for a secondmate. The mate's OWN terminal declaration - the bare
+# keyless form bin/fm-brief.sh's charter mandates, or one keyed with its own
+# routed-work slug - still wins, exactly as a ship's or scout's does. A ship
+# or scout log carries no relayed lines at all, so every done:/failed: there
+# wins immediately, as it always has.
 status_current_state_line() {  # <status-file> [<kind>]
   local f=$1 kind=${2:-} line verb key note unstamped paused held resolve closed='' plain=''
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
@@ -839,14 +839,20 @@ status_current_state_line() {  # <status-file> [<kind>]
         break
         ;;
       done|failed)
-        # A secondmate's own status log also carries done:/failed:
-        # child-outcome lines relayed upward by fm-inactive-reconcile.sh's
-        # ledger path, so those are not proof of the SECONDMATE's own
-        # terminal state; a ship or scout crew's log carries no such relayed
-        # lines, so done:/failed: there still win immediately.
-        case "$kind" in
-          ship|scout) plain=$line; break ;;
-        esac
+        # A secondmate's own status log also carries done:/failed: lines
+        # relayed upward for its CHILDREN by fm-inactive-reconcile.sh's ledger
+        # path. Those carry that path's own machine-generated
+        # `child-outcome-<child>-<state>-<fp8>` key and are not proof of the
+        # SECONDMATE's terminal state, so they are skipped; the mate's own
+        # declaration - bare, as bin/fm-brief.sh's charter mandates, or keyed
+        # with its own routed-work slug - wins immediately, exactly as a ship's
+        # or scout's does. A ship or scout log carries no relayed lines at all.
+        if [ "$kind" = secondmate ]; then
+          key=$(_fm_decision_key "$line") || key=''
+          case "$key" in child-outcome-*) continue ;; esac
+        fi
+        plain=$line
+        break
         ;;
       needs-decision|blocked)
         note=$(status_line_note "$line")
