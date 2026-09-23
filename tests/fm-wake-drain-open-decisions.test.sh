@@ -316,6 +316,72 @@ IDENT
   pass "a partially read fleet snapshot never commits over the other tasks' presentation cursors"
 }
 
+# A TRUSTED fold cursor whose persisted open set is empty is the same lie in a
+# quieter form: reporting that empty set with rc 0 asserts "nothing open" about
+# bytes the fold never read. The fold cursor can lag the presentation cursor
+# because the fold's own error paths leave it unadvanced while the sections
+# still commit their receipt, so the state staged below - presentation cursor at
+# EOF, fold cursor parked before an appended decision, persisted open set empty
+# - is reachable, and it puts the fold's span read in the same position as the
+# untrusted case above: the only read the drain still has to make.
+test_trusted_empty_fold_cursor_read_failure_is_not_a_silent_empty() {
+  local dir state out reader cursor task log empty_offset
+  dir=$(make_case trusted-empty-fold-cursor)
+  state="$dir/state"
+  out="$dir/drain.out"
+  reader="$dir/fail-reader"
+  task=firstmate-reconcile-fork-with-upstream
+  log="$state/$task.status"
+  cursor="$state/.$task.open-decisions-cursor"
+
+  # Nothing open yet, but a `note:` unread surface so the bootstrap drain
+  # commits both cursors at EOF and the fold persists a TRUSTED, empty set.
+  printf 'note: nothing is waiting on the captain yet\n' > "$log"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "bootstrap drain before the trusted-empty-cursor failure failed"
+  if grep -F 'OPEN DECISIONS' "$out" >/dev/null; then
+    fail "a log with no open decision printed an OPEN DECISIONS section: $(command cat "$out")"
+  fi
+  empty_offset=$(LC_ALL=C wc -c < "$log") || fail "could not size the status log"
+  empty_offset=${empty_offset//[[:space:]]/}
+
+  # Now a real decision lands, and a second clean drain carries BOTH cursors
+  # past it - so the acknowledge and unread-status passes have nothing left to
+  # read when the failure is injected below.
+  printf 'needs-decision [key=which-fork]: pick a or b\nnote: still waiting on the captain\n' >> "$log"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "drain after the decision landed failed"
+  grep -F "$task [key=which-fork] needs-decision: pick a or b" "$out" >/dev/null \
+    || fail "the decision failed to surface once it landed: $(command cat "$out")"
+
+  # Rewind only the fold cursor to where its open set was still legitimately
+  # empty, keeping the version and ident the fold itself wrote so the cursor
+  # stays TRUSTED. The cursor file is this fold's own persisted format:
+  # version/offset/ident lines followed by the open set.
+  awk -v off="$empty_offset" 'NR <= 3 { if (NR == 2) print "offset=" off; else print }' \
+    "$cursor" > "$cursor.staged" \
+    || fail "could not stage the lagging fold cursor"
+  mv -f "$cursor.staged" "$cursor" || fail "could not install the lagging fold cursor"
+
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$reader"
+  chmod +x "$reader"
+
+  FM_STATE_OVERRIDE="$state" FM_STATUS_SPAN_READER="$reader" "$DRAIN" > "$out" \
+    || fail "wake drain failed instead of reporting an incomplete computation"
+  if grep -F 'OPEN DECISIONS (still open' "$out" >/dev/null; then
+    fail "an unreadable trusted-but-lagging fold still printed a normal OPEN DECISIONS section: $(command cat "$out")"
+  fi
+  grep -F 'STATUS PRESENTATION INCOMPLETE: unread status, outcome backstop, OPEN DECISIONS' "$out" >/dev/null \
+    || fail "a trusted fold cursor's empty persisted set was replayed as a silently empty section: $(command cat "$out")"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "recovery drain after the injected failure cleared failed"
+  grep -F "$task [key=which-fork] needs-decision: pick a or b" "$out" >/dev/null \
+    || fail "the open decision did not reappear unchanged once the read failure cleared: $(command cat "$out")"
+
+  pass "a trusted fold cursor's empty persisted set is not replayed as a computed empty section"
+}
+
 # An untrusted per-task fold cursor has no persisted open set to fall back on,
 # so a span-read failure there cannot honestly report "nothing open". The
 # acknowledge and unread-status passes both short-circuit at EOF here, so this
@@ -429,4 +495,5 @@ test_unrelated_task_read_failure_reports_incomplete_not_silent_empty
 test_torn_down_task_wake_row_does_not_blank_the_sections
 test_partial_snapshot_does_not_truncate_the_cursor_manifest
 test_untrusted_fold_cursor_read_failure_is_not_a_silent_empty
+test_trusted_empty_fold_cursor_read_failure_is_not_a_silent_empty
 test_status_symlink_is_not_followed
