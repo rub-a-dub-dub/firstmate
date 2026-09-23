@@ -253,13 +253,18 @@ map_log_state() {  # <line>
 
 LOG_LINE=$(status_current_line "$LOG" "$KIND")
 LOG_VERB=$(status_line_verb "$LOG_LINE")
-# status_current_line's own open-decision fold (fm-classify-lib.sh's
-# status_open_decisions) wins over anything else: a still-open keyed
-# blocked/needs-decision survives an unrelated later working:/done:/failed:
-# declaration, so a crew moving on to other work never buries a decision it
-# never closed. Only when nothing is open does it fall back to
-# status_current_state_line's own read: the newest line whose verb is a real
-# state, skipping any resolved:/note:/other non-state line. The fallback
+# status_current_line answers in the library's own three-tier order. A declared
+# wait (paused:/captain-held:) wins FIRST and unconditionally, even over a
+# keyed decision the fold still holds open earlier in the log: a crew that
+# moved from an unresolved escalation to a declared pause is doing the pause
+# now. Only then does its open-decision fold (fm-classify-lib.sh's
+# status_open_decisions) win: a still-open keyed blocked/needs-decision
+# survives an unrelated later working:/done:/failed: declaration, so a crew
+# moving on to other work never buries a decision it never closed. Only with
+# no declared wait and nothing open does it report status_current_state_line's
+# own read: the newest line whose verb is a real state, skipping any
+# resolved:/note:/other non-state line, and keeping a bare done:/failed: only
+# when it is ALSO the log's literal newest recognized event. The fallback
 # source below and the remote secondmate branch both reuse this SAME
 # already-computed LOG_LINE rather than re-deriving it, never the bare last
 # line, so a decision- or note-closing append can never blank out or
@@ -1257,16 +1262,20 @@ fi
 # last line: the SAME already-computed LOG_LINE the run-step reconciliation
 # above read, not a fresh re-derivation. Reusing it (rather than calling
 # status_current_state_line directly here) keeps this fallback's verdict
-# consistent with status_current_line's own fold priority: a still-open keyed
-# needs-decision/blocked survives an unrelated LATER working:/done:/failed:
-# declaration elsewhere in the log, which a bare status_current_state_line
-# read would not preserve - it stops at the first state-bearing line walking
-# backward, with no awareness of an different, still-open key underneath it.
-# Only when nothing is open does LOG_LINE fall through to
-# status_current_state_line's own read: the newest line whose verb is a real
-# state (working/done/failed/paused/captain-held), skipping any trailing
-# resolved:, informational note:, or other unrecognized verb - never read as,
-# and never allowed to blank out, the current state. That lets a
+# consistent with status_current_line's own three-tier priority: a declared
+# paused:/captain-held: wait wins first, ahead of the fold; then a still-open
+# keyed needs-decision/blocked survives an unrelated LATER
+# working:/done:/failed: declaration elsewhere in the log, which a bare
+# status_current_state_line read would not preserve - it stops at the first
+# state-bearing line walking backward, with no awareness of a different,
+# still-open key underneath it. Only with no declared wait and nothing open
+# does LOG_LINE report status_current_state_line's own read: the newest line
+# whose verb is a real state (working/done/failed/paused/captain-held),
+# skipping any trailing resolved:, informational note:, or other unrecognized
+# verb - never read as, and never allowed to blank out, the current state. A
+# bare done:/failed: is dropped there unless it is ALSO the log's literal
+# newest recognized event, which is what actually leaves LOG_LINE empty in the
+# common done: + trailing resolved: case. That lets a
 # just-resolved idle crew (typically a secondmate, which has no busy check
 # above) fall through to the idle default instead of rendering `unknown` with
 # stale resolution prose as `doing`, and lets a still-declared paused: survive
