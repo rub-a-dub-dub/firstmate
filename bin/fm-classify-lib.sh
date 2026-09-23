@@ -675,27 +675,37 @@ _fm_status_kind() {
   case "$kind" in ship|scout|secondmate) printf '%s' "$kind" ;; *) printf unknown ;; esac
 }
 
+# The declaration guard both status readers below share, defined once. A
+# transition's verb ends at a colon, or - in the colonless form
+# _fm_decision_key still accepts - at a complete "[key=...]" token. A line
+# holding neither is continuation prose, a bare word, or blank, and is never an
+# event: status_line_verb returns the WHOLE trimmed line as "verb" when there is
+# no colon to split on, so without this gate ordinary prose would itself match a
+# verb case arm. Answer it about the UNSTAMPED copy the note and key readers
+# read, never the raw bytes: a worker-written time tag must not decide whether a
+# line declares anything, and a readable [at=10:30] carries colons that would
+# otherwise make bare prose look like a transition. A `case` glob answers this in
+# one pattern match; the equivalent parameter expansion costs tens of
+# milliseconds per line under bash 3.2's global bracket-class substitution, which
+# is the whole per-line cost of a status log of ordinary width.
+_fm_status_declares_event() {  # <unstamped-status-line>
+  case "$1" in
+    *:*|*\[key=*\]*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb> <kind>
   local open=$1 line=$2 resolve=$3 held=$4 kind=$5 verb key note unstamped
-  # Both colon tests below ask where the head ends, the same question the note
-  # and key readers ask, so they read the same unstamped copy those readers do.
-  # A worker-written time tag must never decide whether a decision opens or
-  # closes: a readable [at=10:30] carries colons that would otherwise make bare
-  # prose look like a transition, or make a keyless line open a phantom
-  # decision no later line could close. The stored and surfaced bytes stay the
-  # caller's own.
+  # The declaration guard and the colon test below both ask where the head ends,
+  # the same question the note and key readers ask, so they read the same
+  # unstamped copy those readers do. A worker-written time tag must never decide
+  # whether a decision opens or closes: a readable [at=10:30] carries colons that
+  # would otherwise make bare prose look like a transition, or make a keyless
+  # line open a phantom decision no later line could close. The stored and
+  # surfaced bytes stay the caller's own.
   _fm_status_unstamped "$line" unstamped
-  # Declaration guard. A transition's verb ends at a colon, or - in the colonless
-  # form _fm_decision_key still accepts below - at a complete "[key=...]" token.
-  # A line holding neither is continuation prose, a bare word, or blank, and can
-  # never move the set. A `case` glob answers that in one pattern match; the
-  # equivalent parameter expansion costs tens of milliseconds per line under bash
-  # 3.2's global bracket-class substitution, which is the whole per-line cost of
-  # both folds on a status log of ordinary width. Same verdict, bounded cost.
-  case "$unstamped" in
-    *:*|*\[key=*\]*) ;;
-    *) printf '%s' "$open"; return 0 ;;
-  esac
+  _fm_status_declares_event "$unstamped" || { printf '%s' "$open"; return 0; }
   status_line_verb "$line" verb
   case "$unstamped" in
     *:*) case "$verb:$kind" in done:ship|done:scout|failed:ship|failed:scout) return 0 ;; esac ;;
@@ -806,7 +816,7 @@ status_open_decisions() {  # <status-file> [<kind>]
 # or scout crew's log carries no such relayed lines, so done:/failed: there
 # still win immediately, as they always have.
 status_current_state_line() {  # <status-file> [<kind>]
-  local f=$1 kind=${2:-} line verb key note paused held resolve closed='' plain=''
+  local f=$1 kind=${2:-} line verb key note unstamped paused held resolve closed='' plain=''
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
   kind=$(_fm_status_kind "$f" "$kind")
   paused=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
@@ -814,11 +824,10 @@ status_current_state_line() {  # <status-file> [<kind>]
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   while IFS= read -r line; do
     case "$line" in *[![:space:]]*) ;; *) continue ;; esac
-    # A colonless (and key-tag-less) line is continuation prose, never an
-    # event: status_line_verb returns the WHOLE trimmed line as "verb" when
-    # there is no colon to split on, so without this gate ordinary prose
-    # would itself match a case arm below and wrongly count as one.
-    case "$line" in *:*|*\[key=*\]*) ;; *) continue ;; esac
+    # The same declaration guard the fold applies, on the same unstamped copy,
+    # so the two readers can never disagree about what counts as an event.
+    _fm_status_unstamped "$line" unstamped
+    _fm_status_declares_event "$unstamped" || continue
     verb=$(status_line_verb "$line")
     if [ "$verb" = "$paused" ] || [ "$verb" = "$held" ]; then
       plain=$line

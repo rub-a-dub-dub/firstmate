@@ -285,10 +285,7 @@ if [ -n "$REMOTE_HOST" ]; then
   case "$REMOTE_STATE" in
     alive)
       if [ -n "$LOG_VERB" ]; then
-        REMOTE_LOG_STATE=$(map_log_state "$LOG_LINE")
-        if [ "$REMOTE_LOG_STATE" != unknown ]; then
-          emit "$REMOTE_LOG_STATE" status-log "$(status_line_note "$LOG_LINE")${SEP}remote endpoint alive on $REMOTE_HOST"
-        fi
+        emit "$(map_log_state "$LOG_LINE")" status-log "$(status_line_note "$LOG_LINE")${SEP}remote endpoint alive on $REMOTE_HOST"
       fi
       emit unknown remote-endpoint "alive on $REMOTE_HOST (an idle secondmate is healthy)"
       ;;
@@ -1276,16 +1273,13 @@ fi
 # a later informational note: instead of reading as a fresh wedge.
 # map_log_state is still the single owner of the verb->state mapping
 # (including the configurable paused verb). A decision-closing event such as
-# resolved: is NOT a state: when status_current_state_line finds no real
-# state either, LOG_LINE's last-resort fallback (last_status_line) can still
-# be that resolved:/note: line itself, which maps to unknown here - reported
-# as the recovery-grade `unknown/none` default rather than as a status-log
-# source carrying its resolution prose as if it were the crew's `doing`.
+# resolved: is NOT a state, and status_current_line reports no such line at
+# all: LOG_LINE is therefore either EMPTY - falling through to the
+# recovery-grade `unknown/none` default below rather than surfacing resolution
+# prose as if it were the crew's `doing` - or a line whose verb map_log_state
+# already maps to a real state, which the emptiness test alone distinguishes.
 if [ -n "$LOG_VERB" ]; then
-  LOG_STATE=$(map_log_state "$LOG_LINE")
-  if [ "$LOG_STATE" != unknown ]; then
-    emit "$LOG_STATE" status-log "$(status_line_note "$LOG_LINE")"
-  fi
+  emit "$(map_log_state "$LOG_LINE")" status-log "$(status_line_note "$LOG_LINE")"
 fi
 
 emit unknown none "no current-state source available"
