@@ -400,14 +400,10 @@ EOF
 # including the empty-queue fast path - so a buried answer cannot be swallowed
 # when the fold later advances the cursor. Prints nothing when nothing is
 # unread, which is the common case.
-print_unread_status_section() {
-  local snapshot=${1:-} unread task line shown=0
+print_unread_status_section() {  # <task-and-endpoint-snapshot>
+  local snapshot=$1 unread task line shown=0
 
-  if [ -n "$snapshot" ]; then
-    unread=$(scan_unread_surface_snapshot "$STATE" "$snapshot") || return 1
-  else
-    unread=$(scan_unread_surface_lines "$STATE") || return 1
-  fi
+  unread=$(scan_unread_surface_snapshot "$STATE" "$snapshot") || return 1
   [ -n "$unread" ] || return 0
 
   while IFS=$(printf '\t') read -r task line; do
@@ -568,14 +564,8 @@ print_status_sections_incomplete_notice() {
   printf 'STATUS PRESENTATION INCOMPLETE: unread status, outcome backstop, OPEN DECISIONS, and record divergence could not be fully computed this drain (a status log or cursor read/write failed); do not read this drain'"'"'s silence as nothing open or unread - retry on the next drain.\n'
 }
 
-# Returns 0 when the whole presentation computed, delivered and committed; 1
-# when a pass could not be computed; 2 when the prepared bytes were computed but
-# could not be delivered to the consumer. A 2 leaves the receipt uncommitted, so
-# the next drain replays this presentation in full - and nothing further may be
-# written to a consumer that has already failed to receive it.
 print_status_sections() {  # <task-and-endpoint-snapshot> [<fully-presented-task-ids>]
-  local snapshot=${1:-} fully_presented=${2:-} acknowledged prepared
-  if [ -z "$snapshot" ]; then snapshot=$(status_presentation_snapshot "$STATE") || return 1; fi
+  local snapshot=$1 fully_presented=${2:-} acknowledged prepared
   [ -n "$snapshot" ] || return 0
   acknowledged=$(status_acknowledge_presented_snapshot "$STATE" "$snapshot" "$fully_presented") || return 1
   prepared=$(mktemp "$STATE/.status-presentation.prepared.XXXXXX") || return 1
@@ -593,7 +583,7 @@ print_status_sections() {  # <task-and-endpoint-snapshot> [<fully-presented-task
   # leave the receipt behind so the next drain can recover the presentation.
   if ! command cat "$prepared"; then
     rm -f -- "$prepared"
-    return 2
+    return 1
   fi
   if ! status_commit_presentation_snapshot "$STATE" "$acknowledged"; then
     rm -f -- "$prepared"
@@ -640,10 +630,7 @@ print_status_presentation() {  # [<deduped-raw-rows>]
     if [ "$notice_owed" -ne 0 ]; then fully_presented=''; rc=1; fi
   fi
   if [ -n "$snapshot" ]; then
-    print_status_sections "$snapshot" "$fully_presented" || {
-      if [ "$?" -eq 2 ]; then notice_owed=0; else notice_owed=1; fi
-      rc=1
-    }
+    print_status_sections "$snapshot" "$fully_presented" || { rc=1; notice_owed=1; }
   fi
   [ "$notice_owed" -eq 0 ] || print_status_sections_incomplete_notice
   fm_lock_release "$lock"

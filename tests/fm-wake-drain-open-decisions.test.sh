@@ -318,12 +318,15 @@ IDENT
 
 # A TRUSTED fold cursor whose persisted open set is empty is the same lie in a
 # quieter form: reporting that empty set with rc 0 asserts "nothing open" about
-# bytes the fold never read. The fold cursor can lag the presentation cursor
-# because the fold's own error paths leave it unadvanced while the sections
-# still commit their receipt, so the state staged below - presentation cursor at
-# EOF, fold cursor parked before an appended decision, persisted open set empty
-# - is reachable, and it puts the fold's span read in the same position as the
-# untrusted case above: the only read the drain still has to make.
+# bytes the fold never read. That state - presentation cursor at EOF, fold
+# cursor parked before an appended decision, persisted open set empty - is
+# staged directly here, by rewinding the fold cursor the drain itself wrote.
+# No drain can still produce it in situ: every fold fallback now fails when its
+# set is empty, which aborts the preparation before the receipt is committed, so
+# a lagging fold cursor can only be left behind alongside a NON-empty set. The
+# staged state is what the guard exists to catch, and it puts the fold's span
+# read in the same position as the untrusted case above: the only read the drain
+# still has to make.
 test_trusted_empty_fold_cursor_read_failure_is_not_a_silent_empty() {
   local dir state out reader cursor task log empty_offset
   dir=$(make_case trusted-empty-fold-cursor)
