@@ -544,17 +544,25 @@ _fm_key_before_colon() {  # <status-line>
 # the line has no colon or no complete token there; slug charset validity is
 # the caller's check via _fm_decision_slug_ok, exactly as for the before-colon
 # position.
-_fm_key_at_note_head() {  # <status-line> -> raw slug
-  local rest
+_fm_key_at_note_head() {  # <status-line> [<out-var>] -> raw slug
+  local __fm_keyhead_rest
   case "$1" in
-    *:*) rest=${1#*:} ;;
+    *:*) __fm_keyhead_rest=${1#*:} ;;
     *) return 1 ;;
   esac
-  rest=${rest#"${rest%%[![:space:]]*}"}
-  case "$rest" in
-    \[key=*\]*) rest=${rest#\[key=}; printf '%s' "${rest%%\]*}" ;;
+  __fm_keyhead_rest=${__fm_keyhead_rest#"${__fm_keyhead_rest%%[![:space:]]*}"}
+  case "$__fm_keyhead_rest" in
+    \[key=*\]*)
+      __fm_keyhead_rest=${__fm_keyhead_rest#\[key=}
+      __fm_keyhead_rest=${__fm_keyhead_rest%%\]*}
+      ;;
     *) return 1 ;;
   esac
+  if [ "$#" -gt 1 ]; then
+    printf -v "$2" '%s' "$__fm_keyhead_rest"
+  else
+    printf '%s' "$__fm_keyhead_rest"
+  fi
 }
 # 0 when a stated key slug is well-formed: nonempty, A-Za-z0-9._- only.
 _fm_decision_slug_ok() {  # <slug>
@@ -584,18 +592,29 @@ status_line_note() {  # <status-line> -> text after the first colon, trimmed
   fi
   printf '%s' "$n"
 }
-_fm_decision_key() {  # <status-line> -> key slug, or "default" when no token
-  local k unstamped
-  _fm_status_unstamped "$1" unstamped
-  if _fm_key_before_colon "$unstamped"; then
-    k=${unstamped%%:*}
-    k=${k#*\[key=}
-    k=${k%%\]*}
-  else
-    k=$(_fm_key_at_note_head "$unstamped") || { printf 'default'; return 0; }
+# Printed, or assigned to <out-var> when one is given, so a per-line caller on a
+# hot path can take the key without forking a command substitution - the same
+# contract status_line_verb states above, and the same dynamic-scope caveat: an
+# <out-var> named like one of this function's own locals would be assigned here
+# and lost, so the locals carry a reserved prefix no caller uses.
+# A rejected slug still fails without writing <out-var>, so a caller that must
+# distinguish that case seeds the variable itself first.
+_fm_decision_key() {  # <status-line> [<out-var>] -> key slug, or "default" when no token
+  local __fm_deckey_k __fm_deckey_unstamped
+  _fm_status_unstamped "$1" __fm_deckey_unstamped
+  if _fm_key_before_colon "$__fm_deckey_unstamped"; then
+    __fm_deckey_k=${__fm_deckey_unstamped%%:*}
+    __fm_deckey_k=${__fm_deckey_k#*\[key=}
+    __fm_deckey_k=${__fm_deckey_k%%\]*}
+  elif ! _fm_key_at_note_head "$__fm_deckey_unstamped" __fm_deckey_k; then
+    __fm_deckey_k=default
   fi
-  _fm_decision_slug_ok "$k" || return 1
-  printf '%s' "$k"
+  _fm_decision_slug_ok "$__fm_deckey_k" || return 1
+  if [ "$#" -gt 1 ]; then
+    printf -v "$2" '%s' "$__fm_deckey_k"
+  else
+    printf '%s' "$__fm_deckey_k"
+  fi
 }
 # Drop the record for <key> from a newline-terminated "<key>\t<verb>\t<note>" set.
 # Portable (no associative arrays) so the fold runs on bash 3.2 as well as 4+.
@@ -708,9 +727,10 @@ _fm_status_declares_event() {  # <unstamped-status-line>
 # line too. Only a secondmate's log has a second voice; every other kind's log
 # is its own throughout.
 _fm_status_is_relayed() {  # <kind> <status-line>
+  local __fm_relay_key=''
   [ "$1" = secondmate ] || return 1
-  case "$(_fm_decision_key "$2")" in default) return 1 ;; esac
-  return 0
+  _fm_decision_key "$2" __fm_relay_key || __fm_relay_key=''
+  [ "$__fm_relay_key" != default ]
 }
 
 # The newest recognized event that is the crew's OWN, for the terminal-currency
@@ -2347,13 +2367,6 @@ crew_absorb_class() {  # <id>
 # working/none decision.
 crew_is_provably_working() {  # <id>
   [ "$(crew_absorb_class "$1")" = working ]
-}
-
-# 0 if crew <id>'s authoritative current state is a declared external-wait pause.
-# The stale path absorbs such a crew (on a long re-surface cadence) instead of
-# escalating a possible wedge.
-crew_is_paused() {  # <id>
-  [ "$(crew_absorb_class "$1")" = paused ]
 }
 
 # The one spelling of the verdict component that says a parked gate's answer is
