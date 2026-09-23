@@ -2352,6 +2352,7 @@ fm_wake_print_annotations() {  # <deduped-raw-rows> [<presentation-snapshot>]
     if [ "$mode" = historical ] && fm_wake_signal_seen_current "$STATE" "$path"; then
       continue
     fi
+    offset=$(fm_wake_status_cursor_offset "$path") || continue
     endpoint=
     if [ -n "$snapshot" ]; then
       task=${status_key%.status}
@@ -2360,12 +2361,8 @@ fm_wake_print_annotations() {  # <deduped-raw-rows> [<presentation-snapshot>]
       done <<EOF
 $snapshot
 EOF
-      # A task the snapshot never listed has no status file to annotate at all -
-      # teardown retires the record while its wake rows stay queued - so it is
-      # skipped here, before any read that could abort the whole pass.
       [ -n "$endpoint" ] || continue
     fi
-    offset=$(fm_wake_status_cursor_offset "$path") || return 1
     if [ -n "$endpoint" ] && [ "$offset" -ge "$endpoint" ]; then continue; fi
     if ! fm_wake_unread_events "$path" 0 "$offset" "$endpoint"; then
       # Annotation enrichment is supplemental to the already-printed durable

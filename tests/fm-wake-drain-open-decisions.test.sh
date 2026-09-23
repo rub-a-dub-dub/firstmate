@@ -252,8 +252,68 @@ test_torn_down_task_wake_row_does_not_blank_the_sections() {
     || fail "a torn-down task's queued wake row blanked another task's open decision: $(command cat "$out")"
   grep -F 'firstmate-unreplayable-backlog-close [key=default] blocked: cannot replay this close' "$out" >/dev/null \
     || fail "a torn-down task's queued wake row blanked another task's open decision: $(command cat "$out")"
+  # The sections all computed, so the drain owes no incomplete notice: a task
+  # that was legitimately retired has nothing left to report, and crying
+  # incomplete over it would erode the notice everywhere else.
+  if grep -F 'STATUS PRESENTATION INCOMPLETE' "$out" >/dev/null; then
+    fail "a legitimately torn-down task's queued wake row reported a false incomplete drain: $(command cat "$out")"
+  fi
 
   pass "a torn-down task's still-queued wake row does not blank the surviving tasks' open decisions"
+}
+
+# A fleet snapshot read that fails PART WAY through still hands back every task
+# it printed before the failure. Committing that truncated view rewrites the
+# shared presentation-cursor manifest without the tasks the read never reached,
+# so their unread and outcome-backstop cursors are lost for good and the whole
+# status log replays as unread on the next drain - a durable regression, not the
+# self-correcting blank the branch targets. The identity reader fails for the
+# middle task only, which is exactly the teardown concurrency the incident
+# describes: the record vanishes between the snapshot's existence test and its
+# stat.
+test_partial_snapshot_does_not_truncate_the_cursor_manifest() {
+  local dir state out ident
+  dir=$(make_case partial-snapshot)
+  state="$dir/state"
+  out="$dir/drain.out"
+  ident="$dir/ident-reader"
+
+  # Stable per-file identity so the manifest stays trusted across all three
+  # drains; the middle task's read fails only while the flag file exists.
+  cat > "$ident" <<IDENT
+#!/usr/bin/env bash
+case "\${1:-}" in
+  *mmm-vanishing-task.status) [ ! -f "$dir/fail-ident" ] || exit 1 ;;
+esac
+printf 'test-ident:%s' "\$(basename "\${1:-}")"
+IDENT
+  chmod +x "$ident"
+
+  printf 'needs-decision [key=aaa]: pick a or b\nnote: still waiting on the captain\n' > "$state/aaa-open-task.status"
+  printf 'working: about to vanish mid-snapshot\nnote: still waiting on the captain\n' > "$state/mmm-vanishing-task.status"
+  printf 'needs-decision [key=zzz]: reconcile with upstream how?\nnote: still waiting on the captain\n' > "$state/zzz-open-task.status"
+
+  FM_STATE_OVERRIDE="$state" FM_STATUS_IDENTITY_READER="$ident" "$DRAIN" > "$out" \
+    || fail "bootstrap drain before the injected snapshot failure failed"
+  grep -F 'zzz-open-task note: still waiting on the captain' "$out" >/dev/null \
+    || fail "the bootstrap drain did not present the last task's status as unread"
+
+  : > "$dir/fail-ident"
+  FM_STATE_OVERRIDE="$state" FM_STATUS_IDENTITY_READER="$ident" "$DRAIN" > "$out" \
+    || fail "wake drain failed instead of reporting an unreadable snapshot"
+  grep -F 'STATUS PRESENTATION INCOMPLETE: status snapshot could not be read.' "$out" >/dev/null \
+    || fail "a failed snapshot read went unreported: $(command cat "$out")"
+
+  rm -f "$dir/fail-ident"
+  FM_STATE_OVERRIDE="$state" FM_STATUS_IDENTITY_READER="$ident" "$DRAIN" > "$out" \
+    || fail "recovery drain after the snapshot failure cleared failed"
+  if grep -F 'zzz-open-task note: still waiting on the captain' "$out" >/dev/null; then
+    fail "a partial snapshot dropped the trailing task's presentation cursor, replaying its whole status log as unread: $(command cat "$out")"
+  fi
+  grep -F 'zzz-open-task [key=zzz] needs-decision: reconcile with upstream how?' "$out" >/dev/null \
+    || fail "the trailing task's still-open decision stopped surfacing after the snapshot failure: $(command cat "$out")"
+
+  pass "a partially read fleet snapshot never commits over the other tasks' presentation cursors"
 }
 
 # An untrusted per-task fold cursor has no persisted open set to fall back on,
@@ -367,5 +427,6 @@ test_open_decision_surfaces_even_with_an_unrelated_queued_wake
 test_buried_decision_surfaces_on_the_empty_queue_fast_path
 test_unrelated_task_read_failure_reports_incomplete_not_silent_empty
 test_torn_down_task_wake_row_does_not_blank_the_sections
+test_partial_snapshot_does_not_truncate_the_cursor_manifest
 test_untrusted_fold_cursor_read_failure_is_not_a_silent_empty
 test_status_symlink_is_not_followed

@@ -563,7 +563,9 @@ EOF
 # even reached, and the preparation that follows is itself all-or-nothing).
 # Print this notice on every such failure instead of returning silently, so an
 # empty presentation can only ever mean the passes ran to completion and found
-# nothing - never that they could not be computed.
+# nothing - never that they could not be computed. It is emitted from the single
+# boundary in print_status_presentation that sees every one of those failures,
+# so no failure path can be added that returns without it.
 print_status_sections_incomplete_notice() {
   printf 'STATUS PRESENTATION INCOMPLETE: unread status, outcome backstop, OPEN DECISIONS, and record divergence could not be fully computed this drain (a status log or cursor read/write failed); do not read this drain'"'"'s silence as nothing open or unread - retry on the next drain.\n'
 }
@@ -572,14 +574,8 @@ print_status_sections() {
   local snapshot=${1:-} fully_presented=${2:-} acknowledged prepared
   if [ -z "$snapshot" ]; then snapshot=$(status_presentation_snapshot "$STATE") || return 1; fi
   [ -n "$snapshot" ] || return 0
-  acknowledged=$(status_acknowledge_presented_snapshot "$STATE" "$snapshot" "$fully_presented") || {
-    print_status_sections_incomplete_notice
-    return 1
-  }
-  prepared=$(mktemp "$STATE/.status-presentation.prepared.XXXXXX") || {
-    print_status_sections_incomplete_notice
-    return 1
-  }
+  acknowledged=$(status_acknowledge_presented_snapshot "$STATE" "$snapshot" "$fully_presented") || return 1
+  prepared=$(mktemp "$STATE/.status-presentation.prepared.XXXXXX") || return 1
   if ! {
     print_unread_status_section "$snapshot" \
       && print_status_outcome_backstop_section "$snapshot" \
@@ -587,7 +583,6 @@ print_status_sections() {
       && print_record_divergence_section
   } > "$prepared"; then
     rm -f -- "$prepared"
-    print_status_sections_incomplete_notice
     return 1
   fi
   # Prepare every section before presentation, but do not commit its receipt
@@ -620,8 +615,14 @@ print_status_presentation() {  # [<deduped-raw-rows>]
     fi
     return 1
   fi
+  # A failed snapshot read still leaves every task it printed BEFORE the failure
+  # in the captured value. Acknowledging and committing that truncated fleet view
+  # would rewrite the shared presentation-cursor manifest without the tasks the
+  # read never reached, resetting their unread and outcome-backstop cursors for
+  # good, so the partial view is discarded rather than presented.
   snapshot=$(status_presentation_snapshot "$STATE") || {
     printf 'STATUS PRESENTATION INCOMPLETE: status snapshot could not be read.\n'
+    snapshot=''
     rc=1
   }
   if [ "$rc" -eq 0 ] && [ -n "$rows" ]; then
@@ -636,7 +637,7 @@ print_status_presentation() {  # [<deduped-raw-rows>]
     if [ "$notice_owed" -ne 0 ]; then fully_presented=''; rc=1; fi
   fi
   if [ -n "$snapshot" ]; then
-    print_status_sections "$snapshot" "$fully_presented" || { rc=1; notice_owed=0; }
+    print_status_sections "$snapshot" "$fully_presented" || { rc=1; notice_owed=1; }
   fi
   [ "$notice_owed" -eq 0 ] || print_status_sections_incomplete_notice
   fm_lock_release "$lock"
