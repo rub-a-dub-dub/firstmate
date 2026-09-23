@@ -1270,16 +1270,18 @@ fi
 # state-bearing line walking backward, with no awareness of a different,
 # still-open key underneath it. Only with no declared wait and nothing open
 # does LOG_LINE report status_current_state_line's own read: the newest line
-# whose verb is a real state (working/done/failed/paused/captain-held),
-# skipping any trailing resolved:, informational note:, or other unrecognized
-# verb - never read as, and never allowed to blank out, the current state. A
-# bare done:/failed: is dropped there unless it is ALSO the log's literal
-# newest recognized event, which is what actually leaves LOG_LINE empty in the
-# common done: + trailing resolved: case. That lets a
-# just-resolved idle crew (typically a secondmate, which has no busy check
-# above) fall through to the idle default instead of rendering `unknown` with
-# stale resolution prose as `doing`, and lets a still-declared paused: survive
-# a later informational note: instead of reading as a fresh wedge.
+# whose verb is a real state (working/done/failed/paused/captain-held, or a
+# needs-decision/blocked the fold could not track by key - a malformed slug or
+# a reserved key whose transition the fold rejects, which is precisely why it
+# is not already open above), skipping any trailing resolved:, informational
+# note:, or other unrecognized verb - never read as, and never allowed to
+# blank out, the current state. A bare done:/failed: is dropped there unless
+# it is ALSO the log's literal newest recognized event, which is what actually
+# leaves LOG_LINE empty in the common done: + trailing resolved: case. That
+# lets a just-resolved idle crew (typically a secondmate, which has no busy
+# check above) fall through to the idle default instead of rendering `unknown`
+# with stale resolution prose as `doing`, and lets a still-declared paused:
+# survive a later informational note: instead of reading as a fresh wedge.
 # map_log_state is still the single owner of the verb->state mapping
 # (including the configurable paused verb). A decision-closing event such as
 # resolved: is NOT a state, and status_current_line reports no such line at
