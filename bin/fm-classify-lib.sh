@@ -695,6 +695,40 @@ _fm_status_declares_event() {  # <unstamped-status-line>
   esac
 }
 
+# A secondmate's status log is also the parent channel its CHILDREN report on:
+# bin/fm-parent-channel-lib.sh resolves every relay to that same
+# $PARENT_HOME/state/<secondmate-id>.status, so the file carries two voices.
+# Every relay writer keys its line - the ledger and inactive-terminal paths in
+# bin/fm-inactive-reconcile.sh, the PR-ready line in bin/fm-pr-check.sh, the
+# hold line in bin/fm-captain-hold.sh - while bin/fm-brief.sh's charter
+# mandates the bare keyless form for the mate's OWN escalations. Carrying a key
+# at all is therefore the whole discriminator, and unlike a list of relay
+# prefixes it cannot fall behind a relay writer added later. A key the slug
+# check rejects still means a key was written, so it reads as somebody else's
+# line too. Only a secondmate's log has a second voice; every other kind's log
+# is its own throughout.
+_fm_status_is_relayed() {  # <kind> <status-line>
+  [ "$1" = secondmate ] || return 1
+  case "$(_fm_decision_key "$2")" in default) return 1 ;; esac
+  return 0
+}
+
+# The newest recognized event that is the crew's OWN, for the terminal-currency
+# gate in status_current_line. A ship's or scout's log holds nothing but its own
+# events, so that is just last_status_line. A secondmate's relays are somebody
+# else's news and must not count as "something happened since" against the
+# mate's own terminal declaration, so they are dropped before the SAME
+# _fm_status_event_scan decides what the newest event is - the one owner of that
+# question either way.
+_fm_status_last_own_event() {  # <status-file> <kind>
+  local line scan
+  [ "$2" = secondmate ] || { last_status_line "$1"; return 0; }
+  scan=$(while IFS= read -r line || [ -n "$line" ]; do
+      _fm_status_is_relayed "$2" "$line" || printf '%s\n' "$line"
+    done < "$1" | _fm_status_event_scan) || :
+  printf '%s\n' "${scan##*$'\n'}"
+}
+
 _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb> <kind>
   local open=$1 line=$2 resolve=$3 held=$4 kind=$5 verb key note unstamped
   # The declaration guard and the colon test below both ask where the head ends,
@@ -708,7 +742,16 @@ _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb
   _fm_status_declares_event "$unstamped" || { printf '%s' "$open"; return 0; }
   status_line_verb "$line" verb
   case "$unstamped" in
-    *:*) case "$verb:$kind" in done:ship|done:scout|failed:ship|failed:scout) return 0 ;; esac ;;
+    *:*)
+      case "$verb" in
+        done|failed)
+          case "$kind" in
+            ship|scout) return 0 ;;
+            secondmate) _fm_status_is_relayed "$kind" "$line" || return 0 ;;
+          esac
+          ;;
+      esac
+      ;;
   esac
   case "$verb" in
     needs-decision|blocked|"$resolve"|"$held") ;;
@@ -806,15 +849,12 @@ status_open_decisions() {  # <status-file> [<kind>]
 #
 # <kind> (optional, resolved the same way status_open_decisions resolves it -
 # the caller's value or else the sibling .meta file's kind=, defaulting to
-# ship) narrows which done:/failed: lines count as the crew's own. A
-# secondmate's status log also carries done:/failed: lines relayed upward for
-# its CHILDREN by fm-inactive-reconcile.sh's ledger path; those always carry
-# that path's machine-generated `child-outcome-...` key, so they alone are
-# skipped for a secondmate. The mate's OWN terminal declaration - the bare
-# keyless form bin/fm-brief.sh's charter mandates, or one keyed with its own
-# routed-work slug - still wins, exactly as a ship's or scout's does. A ship
-# or scout log carries no relayed lines at all, so every done:/failed: there
-# wins immediately, as it always has.
+# ship) narrows which done:/failed: lines count as the crew's own, through the
+# single _fm_status_is_relayed test above: a secondmate's log also carries its
+# CHILDREN's relayed outcomes, and every relay is keyed, so only a keyless
+# done:/failed: is the mate's own terminal declaration. A ship or scout log has
+# no second voice, so every done:/failed: there wins immediately, as it always
+# has.
 status_current_state_line() {  # <status-file> [<kind>]
   local f=$1 kind=${2:-} line verb key note unstamped paused held resolve closed='' plain=''
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
@@ -839,18 +879,7 @@ status_current_state_line() {  # <status-file> [<kind>]
         break
         ;;
       done|failed)
-        # A secondmate's own status log also carries done:/failed: lines
-        # relayed upward for its CHILDREN by fm-inactive-reconcile.sh's ledger
-        # path. Those carry that path's own machine-generated
-        # `child-outcome-<child>-<state>-<fp8>` key and are not proof of the
-        # SECONDMATE's terminal state, so they are skipped; the mate's own
-        # declaration - bare, as bin/fm-brief.sh's charter mandates, or keyed
-        # with its own routed-work slug - wins immediately, exactly as a ship's
-        # or scout's does. A ship or scout log carries no relayed lines at all.
-        if [ "$kind" = secondmate ]; then
-          key=$(_fm_decision_key "$line") || key=''
-          case "$key" in child-outcome-*) continue ;; esac
-        fi
+        _fm_status_is_relayed "$kind" "$line" && continue
         plain=$line
         break
         ;;
@@ -899,10 +928,14 @@ status_current_state_line() {  # <status-file> [<kind>]
 #      state) is current - EXCEPT a bare done:/failed: (unlike paused:/
 #      captain-held:/working:, not an ongoing state a later note or
 #      resolution is expected to sit beside) counts only when it is ALSO the
-#      log's literal newest recognized event (last_status_line): once
-#      anything - even a mere note: - trails a ship/scout crew's own terminal
-#      declaration, something happened since, so it must not be resurrected
-#      as still-current. A caller that wants that terminal line regardless of
+#      newest recognized event the crew itself wrote
+#      (_fm_status_last_own_event): once anything - even a mere note: - trails
+#      a crew's own terminal declaration, something happened since, so it must
+#      not be resurrected as still-current. For a secondmate that means the
+#      newest NON-relayed event, because a child's outcome landing on the
+#      mate's parent channel is not the mate doing something since - and a
+#      relay trailing the mate's own done: is the ordinary steady state of a
+#      supervising mate's log. A caller that wants that terminal line regardless of
 #      what trails it (fm-inactive-reconcile.sh's ledger delivery, where a
 #      late captain answer must not undo an already-reported completion)
 #      calls status_current_state_line directly instead of through here.
@@ -920,7 +953,7 @@ status_current_line() {  # <status-file> <kind>
       return 0
       ;;
     done|failed)
-      [ "$state" = "$(last_status_line "$1")" ] || state=''
+      [ "$state" = "$(_fm_status_last_own_event "$1" "$2")" ] || state=''
       ;;
   esac
   open=$(status_open_decisions "$1" "$2")
