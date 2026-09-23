@@ -1,0 +1,41 @@
+#### TREE: AFTER the fix (branch tip 5267a27) (5267a27)
+
+========== A1. drain BEFORE the hiccup - what the captain should always see ==========
+UNREAD STATUS (new since last drain, not re-printed after this presentation):
+cowork-skills-directory-phone-design-forks note: still waiting on the captain
+firstmate-reconcile-fork-with-upstream note: still waiting on the captain
+firstmate-unreplayable-backlog-close note: still waiting on the captain
+OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+cowork-skills-directory-phone-design-forks [key=phone-design] needs-decision: one skills dir per phone, or one shared?
+cowork-skills-directory-phone-design-forks [key=directory-layout] needs-decision: flat or nested skills directory?
+firstmate-reconcile-fork-with-upstream [key=default] needs-decision: reconcile the fork with upstream how?
+firstmate-unreplayable-backlog-close [key=default] blocked: cannot replay this backlog close
+OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+
+========== A2. the very next drain, with one unrelated task's status read failing ==========
+STATUS PRESENTATION INCOMPLETE: unread status, outcome backstop, OPEN DECISIONS, and record divergence could not be fully computed this drain (a status log or cursor read/write failed); do not read this drain's silence as nothing open or unread - retry on the next drain.
+[drain exit status: 0]
+(above is the ENTIRE captain-facing output of that drain)
+
+========== A3. the drain after that, hiccup cleared - all four calls still open ==========
+OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+cowork-skills-directory-phone-design-forks [key=phone-design] needs-decision: one skills dir per phone, or one shared?
+cowork-skills-directory-phone-design-forks [key=directory-layout] needs-decision: flat or nested skills directory?
+firstmate-reconcile-fork-with-upstream [key=default] needs-decision: reconcile the fork with upstream how?
+firstmate-unreplayable-backlog-close [key=default] blocked: cannot replay this backlog close
+OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+
+========== B. drain immediately after that teardown ==========
+1790200050	1	signal	firstmate-bearings-truncates-the-urgent-row.status	signal: /var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/tmp.X07NcLBooA/b/firstmate-bearings-truncates-the-urgent-row.status
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 57539.1790200050.Yi0w6b
+UNREAD STATUS (new since last drain, not re-printed after this presentation):
+cowork-skills-directory-phone-design-forks note: still waiting on the captain
+firstmate-reconcile-fork-with-upstream note: still waiting on the captain
+firstmate-unreplayable-backlog-close note: still waiting on the captain
+OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+cowork-skills-directory-phone-design-forks [key=phone-design] needs-decision: one skills dir per phone, or one shared?
+cowork-skills-directory-phone-design-forks [key=directory-layout] needs-decision: flat or nested skills directory?
+firstmate-reconcile-fork-with-upstream [key=default] needs-decision: reconcile the fork with upstream how?
+firstmate-unreplayable-backlog-close [key=default] blocked: cannot replay this backlog close
+OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+(above is the ENTIRE captain-facing output of that drain)

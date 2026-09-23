@@ -1,0 +1,8 @@
+#### Contract check on the branch tip (5267a27): a genuinely quiet fleet stays silent
+# state: one task, nothing open, nothing unresolved
+$ bin/fm-wake-drain.sh
+[drain exit status: 0; bytes of output above: 0 means silent]
+
+# second drain, same state - still silent, and NO false "INCOMPLETE" notice
+$ bin/fm-wake-drain.sh
+[drain exit status: 0]
