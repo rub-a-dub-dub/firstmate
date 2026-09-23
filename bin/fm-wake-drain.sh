@@ -566,7 +566,6 @@ print_status_sections_incomplete_notice() {
 
 print_status_sections() {  # <task-and-endpoint-snapshot> [<fully-presented-task-ids>]
   local snapshot=$1 fully_presented=${2:-} acknowledged prepared
-  [ -n "$snapshot" ] || return 0
   acknowledged=$(status_acknowledge_presented_snapshot "$STATE" "$snapshot" "$fully_presented") || return 1
   prepared=$(mktemp "$STATE/.status-presentation.prepared.XXXXXX") || return 1
   if ! {
