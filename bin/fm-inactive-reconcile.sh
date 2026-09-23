@@ -430,8 +430,14 @@ report_child_ledger_locked() { # <id> <meta>
   # is found by locating $last's own position in the file rather than
   # last_status_line's "event before the absolute last line", which would
   # name the wrong line whenever something trails the terminal declaration.
-  previous=$(grep -v '^[[:space:]]*$' "$status" 2>/dev/null \
-    | awk -v t="$last" '$0 == t { print prev } { prev = $0 }' | tail -1 || true)
+  # The value it must equal is a recorded last_status_line head, so the log
+  # truncated at $last is read back through that same event reader: the
+  # predecessor is the event before $last, never continuation prose.
+  previous=$(FM_LEDGER_TERMINAL_LINE=$last awk '
+      BEGIN { t = ENVIRON["FM_LEDGER_TERMINAL_LINE"] }
+      { a[NR] = $0; if ($0 == t) n = NR }
+      END { for (i = 1; i <= n; i++) print a[i] }' "$status" 2>/dev/null \
+    | _fm_status_event_scan | head -n 1)
   predecessor_head=$(sha256_text "$previous")
   outcome_key="child-outcome-$id-$state-${fingerprint:0:8}"
   ensure_record "$fingerprint" "$id" "$incarnation" "$state" "$outcome_key" direct upstream "$pr" || return 1

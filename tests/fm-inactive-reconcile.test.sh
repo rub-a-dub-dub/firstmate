@@ -431,6 +431,26 @@ test_terminal_line_after_inactive_delivery_is_not_reported_twice() {
   pass "inactive and ledger paths reconcile one raced completion without hiding later events"
 }
 
+# The head the fallback recorded is a recognized event, and the declaration is
+# matched as literal bytes: continuation prose written under the preceding event,
+# and a backslash inside the declaration itself, still reconcile as one delivery.
+test_prose_and_escapes_around_terminal_line_reconcile_once() {
+  make_world inactive-ledger-prose; bind_secondmate local
+  write_child "$MATE" child 'working: finishing now'
+  FM_FAKE_CREW_STATE='done' run_reconcile "$MATE" --startup
+  [ "$(grep -c 'inactive-outcome-mate-child-done' "$MAIN/state/mate.status")" = 1 ] \
+    || fail "inactive fallback did not publish exactly once"
+
+  printf 'Continuation prose under the progress line.\ndone: fixed the \\n handling\n' \
+    >> "$MATE/state/child.status"
+  FM_FAKE_CREW_STATE='done' run_reconcile "$MATE"
+  [ "$(wc -l < "$MAIN/state/mate.status" | tr -d ' ')" = 1 ] \
+    || fail "one completion was published twice across prose or escapes: $(cat "$MAIN/state/mate.status")"
+  [ "$(outcome_count "$MATE" reported)" = 2 ] \
+    || fail "the raced ledger event was not durably reconciled with the fallback receipt"
+  pass "prose and backslash escapes do not defeat the ledger claim"
+}
+
 # An intervening progress line means the next terminal line is a new completion,
 # not a late ledger rendering of the inactive fallback.
 test_progress_after_inactive_delivery_starts_a_new_event() {
@@ -938,6 +958,7 @@ test_secondmate_ledger_delivery_carries_report_and_failure
 test_pr_field_requires_recorded_pr_or_ready_signal_line
 test_terminal_line_during_state_read_yields_to_ledger_delivery
 test_terminal_line_after_inactive_delivery_is_not_reported_twice
+test_prose_and_escapes_around_terminal_line_reconcile_once
 test_late_resolved_does_not_redeliver_a_terminal_ledger
 test_progress_after_inactive_delivery_starts_a_new_event
 test_long_terminal_lines_have_distinct_receipts
