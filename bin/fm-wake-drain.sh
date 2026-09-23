@@ -543,18 +543,15 @@ EOF
   printf 'RECORD DIVERGENCE: reconcile each one - record the captain'"'"'s own words with bin/fm-captain-hold.sh answer <task> --decision-file <path>, or re-open the status decision when that resolution was not the captain'"'"'s word.\n' || return 1
 }
 
-# A read or write hiccup anywhere in the drain's fleet-wide passes (the wake-row
-# annotations, one task's status log, one task's open-decisions cursor, the
-# scratch file the sections are prepared into) must never be indistinguishable
-# from "computed, and genuinely nothing is open or unread": that silence is
-# exactly what let a captain-facing OPEN DECISIONS section vanish for a drain
-# even though several tasks' needs-decision/blocked lines were still open and
-# unresolved in their own durable status logs: a failure on any ONE task aborts
-# the whole acknowledge pass via its `|| return 1` before a single section is
-# prepared, and the preparation that follows is itself all-or-nothing. A failing
-# annotation pass no longer suppresses the sections - print_status_presentation
-# falls through and computes whatever still can be - but it still owes this
-# notice, because the rows it dropped were part of the same presentation.
+# A read or write hiccup anywhere in the drain's fleet-wide section passes (one
+# task's status log, one task's open-decisions cursor, the scratch file the
+# sections are prepared into) must never be indistinguishable from "computed,
+# and genuinely nothing is open or unread": that silence is exactly what let a
+# captain-facing OPEN DECISIONS section vanish for a drain even though several
+# tasks' needs-decision/blocked lines were still open and unresolved in their
+# own durable status logs: a failure on any ONE task aborts the whole
+# acknowledge pass via its `|| return 1` before a single section is prepared,
+# and the preparation that follows is itself all-or-nothing.
 # Print this notice on every such failure instead of returning silently, so an
 # empty presentation can only ever mean the passes ran to completion and found
 # nothing - never that they could not be computed. print_status_presentation
@@ -618,17 +615,13 @@ print_status_presentation() {  # [<deduped-raw-rows>]
     rc=1
   }
   if [ "$rc" -eq 0 ] && [ -n "$rows" ]; then
-    fm_wake_print_annotations "$rows" "$snapshot" || notice_owed=1
-    if [ "$notice_owed" -eq 0 ]; then
-      annotation_manifest=$(fm_wake_annotation_manifest "$rows") || notice_owed=1
-      fully_presented=$(printf '%s\n' "$annotation_manifest" | awk -F '\t' '$2 == "direct" { sub(/\.status$/, "", $1); print $1 }') || notice_owed=1
+    fm_wake_print_annotations "$rows" "$snapshot" || rc=1
+    if [ "$rc" -eq 0 ]; then
+      annotation_manifest=$(fm_wake_annotation_manifest "$rows") || rc=1
+      fully_presented=$(printf '%s\n' "$annotation_manifest" | awk -F '\t' '$2 == "direct" { sub(/\.status$/, "", $1); print $1 }') || rc=1
     fi
-    # Annotations are supplemental enrichment of rows already printed above. A
-    # failure there says nothing about the sections, so fall through and compute
-    # whatever still can be - but never let that partial drain read as silence.
-    if [ "$notice_owed" -ne 0 ]; then fully_presented=''; rc=1; fi
   fi
-  if [ -n "$snapshot" ]; then
+  if [ "$rc" -eq 0 ] && [ -n "$snapshot" ]; then
     print_status_sections "$snapshot" "$fully_presented" || { rc=1; notice_owed=1; }
   fi
   [ "$notice_owed" -eq 0 ] || print_status_sections_incomplete_notice

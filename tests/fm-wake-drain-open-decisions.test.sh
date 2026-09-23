@@ -221,15 +221,20 @@ DECISIONS
   pass "an unrelated task's transient read failure reports an incomplete drain instead of a silently empty OPEN DECISIONS section"
 }
 
-# The reported incident, reproduced end to end. Teardown retires a task's
-# presentation record and deletes $STATE/<task>.status but purges nothing from
-# the wake queue, so a still-unacked `signal:` row keeps pointing at a status
-# file that no longer exists. The annotation pass read that vanished task's
-# cursor before checking whether the snapshot even listed it, so one torn-down
-# task aborted the whole pass; the drain then skipped every section and printed
-# no notice, and the next drain - once the ack consumed the row - printed all
-# the open calls again unchanged. That is exactly the teardown-adjacent,
-# self-correcting blank the captain saw.
+# A torn-down task's still-queued `signal:` row must not blank the surviving
+# tasks' sections. Teardown retires that task's presentation record and deletes
+# $STATE/<task>.status but purges nothing from the wake queue, so a still-unacked
+# `signal:` row keeps pointing at a status file that no longer exists. The
+# annotation pass read that vanished task's cursor before checking whether the
+# snapshot even listed it, so one torn-down task aborted the whole pass and the
+# drain then skipped every section.
+#
+# This is a real defect found while investigating, NOT the recorded incident:
+# every recorded blank came on a drain presenting a `check:` row, and
+# fm_wake_annotation_manifest emits only signal-kind rows, so a check-row drain
+# leaves fully_presented empty and forces the full per-task cursor plus span read
+# that test_unrelated_task_read_failure_reports_incomplete_not_silent_empty
+# covers - a signal-row drain short-circuits those tasks instead.
 test_torn_down_task_wake_row_does_not_blank_the_sections() {
   local dir state out
   dir=$(make_case torn-down-wake-row)
