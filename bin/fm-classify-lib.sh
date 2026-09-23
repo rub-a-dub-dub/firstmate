@@ -544,25 +544,17 @@ _fm_key_before_colon() {  # <status-line>
 # the line has no colon or no complete token there; slug charset validity is
 # the caller's check via _fm_decision_slug_ok, exactly as for the before-colon
 # position.
-_fm_key_at_note_head() {  # <status-line> [<out-var>] -> raw slug
-  local __fm_keyhead_rest
+_fm_key_at_note_head() {  # <status-line> -> raw slug
+  local rest
   case "$1" in
-    *:*) __fm_keyhead_rest=${1#*:} ;;
+    *:*) rest=${1#*:} ;;
     *) return 1 ;;
   esac
-  __fm_keyhead_rest=${__fm_keyhead_rest#"${__fm_keyhead_rest%%[![:space:]]*}"}
-  case "$__fm_keyhead_rest" in
-    \[key=*\]*)
-      __fm_keyhead_rest=${__fm_keyhead_rest#\[key=}
-      __fm_keyhead_rest=${__fm_keyhead_rest%%\]*}
-      ;;
+  rest=${rest#"${rest%%[![:space:]]*}"}
+  case "$rest" in
+    \[key=*\]*) rest=${rest#\[key=}; printf '%s' "${rest%%\]*}" ;;
     *) return 1 ;;
   esac
-  if [ "$#" -gt 1 ]; then
-    printf -v "$2" '%s' "$__fm_keyhead_rest"
-  else
-    printf '%s' "$__fm_keyhead_rest"
-  fi
 }
 # 0 when a stated key slug is well-formed: nonempty, A-Za-z0-9._- only.
 _fm_decision_slug_ok() {  # <slug>
@@ -592,29 +584,18 @@ status_line_note() {  # <status-line> -> text after the first colon, trimmed
   fi
   printf '%s' "$n"
 }
-# Printed, or assigned to <out-var> when one is given, so a per-line caller on a
-# hot path can take the key without forking a command substitution - the same
-# contract status_line_verb states above, and the same dynamic-scope caveat: an
-# <out-var> named like one of this function's own locals would be assigned here
-# and lost, so the locals carry a reserved prefix no caller uses.
-# A rejected slug still fails without writing <out-var>, so a caller that must
-# distinguish that case seeds the variable itself first.
-_fm_decision_key() {  # <status-line> [<out-var>] -> key slug, or "default" when no token
-  local __fm_deckey_k __fm_deckey_unstamped
-  _fm_status_unstamped "$1" __fm_deckey_unstamped
-  if _fm_key_before_colon "$__fm_deckey_unstamped"; then
-    __fm_deckey_k=${__fm_deckey_unstamped%%:*}
-    __fm_deckey_k=${__fm_deckey_k#*\[key=}
-    __fm_deckey_k=${__fm_deckey_k%%\]*}
-  elif ! _fm_key_at_note_head "$__fm_deckey_unstamped" __fm_deckey_k; then
-    __fm_deckey_k=default
-  fi
-  _fm_decision_slug_ok "$__fm_deckey_k" || return 1
-  if [ "$#" -gt 1 ]; then
-    printf -v "$2" '%s' "$__fm_deckey_k"
+_fm_decision_key() {  # <status-line> -> key slug, or "default" when no token
+  local k unstamped
+  _fm_status_unstamped "$1" unstamped
+  if _fm_key_before_colon "$unstamped"; then
+    k=${unstamped%%:*}
+    k=${k#*\[key=}
+    k=${k%%\]*}
   else
-    printf '%s' "$__fm_deckey_k"
+    k=$(_fm_key_at_note_head "$unstamped") || { printf 'default'; return 0; }
   fi
+  _fm_decision_slug_ok "$k" || return 1
+  printf '%s' "$k"
 }
 # Drop the record for <key> from a newline-terminated "<key>\t<verb>\t<note>" set.
 # Portable (no associative arrays) so the fold runs on bash 3.2 as well as 4+.
@@ -714,41 +695,6 @@ _fm_status_declares_event() {  # <unstamped-status-line>
   esac
 }
 
-# A secondmate's status log is also the parent channel its CHILDREN report on:
-# bin/fm-parent-channel-lib.sh resolves every relay to that same
-# $PARENT_HOME/state/<secondmate-id>.status, so the file carries two voices.
-# Every relay writer keys its line - the ledger and inactive-terminal paths in
-# bin/fm-inactive-reconcile.sh, the PR-ready line in bin/fm-pr-check.sh, the
-# hold line in bin/fm-captain-hold.sh - while bin/fm-brief.sh's charter
-# mandates the bare keyless form for the mate's OWN escalations. Carrying a key
-# at all is therefore the whole discriminator, and unlike a list of relay
-# prefixes it cannot fall behind a relay writer added later. A key the slug
-# check rejects still means a key was written, so it reads as somebody else's
-# line too. Only a secondmate's log has a second voice; every other kind's log
-# is its own throughout.
-_fm_status_is_relayed() {  # <kind> <status-line>
-  local __fm_relay_key=''
-  [ "$1" = secondmate ] || return 1
-  _fm_decision_key "$2" __fm_relay_key || __fm_relay_key=''
-  [ "$__fm_relay_key" != default ]
-}
-
-# The newest recognized event that is the crew's OWN, for the terminal-currency
-# gate in status_current_line. A ship's or scout's log holds nothing but its own
-# events, so that is just last_status_line. A secondmate's relays are somebody
-# else's news and must not count as "something happened since" against the
-# mate's own terminal declaration, so they are dropped before the SAME
-# _fm_status_event_scan decides what the newest event is - the one owner of that
-# question either way.
-_fm_status_last_own_event() {  # <status-file> <kind>
-  local line scan
-  [ "$2" = secondmate ] || { last_status_line "$1"; return 0; }
-  scan=$(while IFS= read -r line || [ -n "$line" ]; do
-      _fm_status_is_relayed "$2" "$line" || printf '%s\n' "$line"
-    done < "$1" | _fm_status_event_scan) || :
-  printf '%s\n' "${scan##*$'\n'}"
-}
-
 _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb> <kind>
   local open=$1 line=$2 resolve=$3 held=$4 kind=$5 verb key note unstamped
   # The declaration guard and the colon test below both ask where the head ends,
@@ -762,16 +708,7 @@ _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb
   _fm_status_declares_event "$unstamped" || { printf '%s' "$open"; return 0; }
   status_line_verb "$line" verb
   case "$unstamped" in
-    *:*)
-      case "$verb" in
-        done|failed)
-          case "$kind" in
-            ship|scout) return 0 ;;
-            secondmate) _fm_status_is_relayed "$kind" "$line" || return 0 ;;
-          esac
-          ;;
-      esac
-      ;;
+    *:*) case "$verb:$kind" in done:ship|done:scout|failed:ship|failed:scout) return 0 ;; esac ;;
   esac
   case "$verb" in
     needs-decision|blocked|"$resolve"|"$held") ;;
@@ -866,19 +803,9 @@ status_open_decisions() {  # <status-file> [<kind>]
 # (and fails) when the log declares no state at all - e.g. every decision it
 # opened has since been resolved and no plain state was ever declared - so
 # callers fall back to their own unknown/none default exactly as before.
-#
-# <kind> (optional, resolved the same way status_open_decisions resolves it -
-# the caller's value or else the sibling .meta file's kind=, defaulting to
-# ship) narrows which done:/failed: lines count as the crew's own, through the
-# single _fm_status_is_relayed test above: a secondmate's log also carries its
-# CHILDREN's relayed outcomes, and every relay is keyed, so only a keyless
-# done:/failed: is the mate's own terminal declaration. A ship or scout log has
-# no second voice, so every done:/failed: there wins immediately, as it always
-# has.
-status_current_state_line() {  # <status-file> [<kind>]
-  local f=$1 kind=${2:-} line verb key note unstamped paused held resolve closed='' plain=''
+status_current_state_line() {  # <status-file>
+  local f=$1 line verb key note unstamped paused held resolve closed='' plain=''
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
-  kind=$(_fm_status_kind "$f" "$kind")
   paused=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
   held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
@@ -894,12 +821,7 @@ status_current_state_line() {  # <status-file> [<kind>]
       break
     fi
     case "$verb" in
-      working)
-        plain=$line
-        break
-        ;;
-      done|failed)
-        _fm_status_is_relayed "$kind" "$line" && continue
+      working|done|failed)
         plain=$line
         break
         ;;
@@ -948,14 +870,10 @@ status_current_state_line() {  # <status-file> [<kind>]
 #      state) is current - EXCEPT a bare done:/failed: (unlike paused:/
 #      captain-held:/working:, not an ongoing state a later note or
 #      resolution is expected to sit beside) counts only when it is ALSO the
-#      newest recognized event the crew itself wrote
-#      (_fm_status_last_own_event): once anything - even a mere note: - trails
-#      a crew's own terminal declaration, something happened since, so it must
-#      not be resurrected as still-current. For a secondmate that means the
-#      newest NON-relayed event, because a child's outcome landing on the
-#      mate's parent channel is not the mate doing something since - and a
-#      relay trailing the mate's own done: is the ordinary steady state of a
-#      supervising mate's log. A caller that wants that terminal line regardless of
+#      log's literal newest recognized event (last_status_line): once
+#      anything - even a mere note: - trails a crew's own terminal
+#      declaration, something happened since, so it must not be resurrected
+#      as still-current. A caller that wants that terminal line regardless of
 #      what trails it (fm-inactive-reconcile.sh's ledger delivery, where a
 #      late captain answer must not undo an already-reported completion)
 #      calls status_current_state_line directly instead of through here.
@@ -965,7 +883,7 @@ status_current_state_line() {  # <status-file> [<kind>]
 # Actual run/pane evidence is still reconciled by fm-crew-state.sh.
 status_current_line() {  # <status-file> <kind>
   local state open key verb note current=''
-  state=$(status_current_state_line "$1" "$2") || state=''
+  state=$(status_current_state_line "$1") || state=''
   verb=$(status_line_verb "$state")
   case "$verb" in
     "${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}"|"${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}")
@@ -973,7 +891,7 @@ status_current_line() {  # <status-file> <kind>
       return 0
       ;;
     done|failed)
-      [ "$state" = "$(_fm_status_last_own_event "$1" "$2")" ] || state=''
+      [ "$state" = "$(last_status_line "$1")" ] || state=''
       ;;
   esac
   open=$(status_open_decisions "$1" "$2")

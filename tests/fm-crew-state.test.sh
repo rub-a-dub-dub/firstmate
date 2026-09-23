@@ -2286,9 +2286,7 @@ test_secondmate_open_block_survives_unrelated_append() {
   fm_write_meta "$d/state/mate.meta" "window=fm:fm-mate" "worktree=$d/wt" "kind=secondmate" "harness=claude"
   gen=$("$ROOT/bin/fm-busy-event.sh" arm "$d/state" mate)
   "$ROOT/bin/fm-busy-event.sh" apply "$d/state" mate busy --gen "$gen" --source claude-hook --event user-prompt-submit
-  local rdone='done [key=child-outcome-kid-done-abcd1234]: child kid done: another task completed'
-  local rfailed='failed [key=child-outcome-kid-failed-abcd1234]: child kid failed: another task failed'
-  for suffix in '' 'note: unrelated progress' 'resolved [key=other]: unrelated answer' 'working: continuing another task' "$rdone" "$rfailed" "$rdone"$'\nnote: cleanup complete' "$rfailed"$'\nnote: cleanup complete'; do
+  for suffix in '' 'note: unrelated progress' 'resolved [key=other]: unrelated answer' 'working: continuing another task' 'done: another task completed' 'failed: another task failed' $'done: another task completed\nnote: cleanup complete' $'failed: another task failed\nnote: cleanup complete'; do
     printf 'blocked [key=access]: need release access\n%s\n' "$suffix" > "$d/state/mate.status"
     out=$(run_crew_state "$d" mate)
     assert_contains "$out" "state: blocked" "open blocker survives '$suffix' with a busy endpoint"
@@ -2325,13 +2323,13 @@ test_newest_open_decision_supplies_the_reported_detail() {
   pass "the most recently opened decision supplies the reported state and detail"
 }
 
-# A secondmate's status file is also the parent channel its children report on
-# (bin/fm-parent-channel-lib.sh), so it carries two voices. These cases pin the
-# discriminator the readers use: a keyless done:/failed: is the mate's own
-# terminal declaration, every keyed one is somebody else's news.
-test_secondmate_own_terminal_declaration_beats_a_relayed_child_outcome() {
+# The terminal rule is kind-blind: the newest state-bearing line wins, so a
+# secondmate's own terminal declaration supersedes its earlier working: exactly
+# as a ship's or scout's does. A secondmate has no busy check, so without this
+# the reader would report a finished mate as still executing.
+test_secondmate_terminal_declaration_supersedes_its_working_line() {
   reset_fakes
-  local d out terminal relay
+  local d out terminal
   d=$(new_case mate-own-terminal)
   mkdir -p "$d/wt"
   make_fakebin "$d" >/dev/null
@@ -2340,48 +2338,11 @@ test_secondmate_own_terminal_declaration_beats_a_relayed_child_outcome() {
   for terminal in 'done' failed; do
     printf 'working: starting up\n%s: mate finished its assignment\n' "$terminal" > "$d/state/mate.status"
     out=$(run_crew_state "$d" mate)
-    assert_contains "$out" "state: $terminal" "a secondmate's own $terminal declaration is its current state"
-    assert_contains "$out" "mate finished its assignment" "the mate's own terminal declaration supplies the detail"
+    assert_contains "$out" "state: $terminal" "a secondmate's $terminal declaration is its current state"
+    assert_contains "$out" "mate finished its assignment" "the terminal declaration supplies the detail"
     assert_not_contains "$out" "starting up" "the superseded working line is not resurrected"
-
-    # Every relay writer keys its line: fm-inactive-reconcile.sh's ledger and
-    # inactive-terminal paths, fm-pr-check.sh's PR-ready line.
-    for relay in \
-      "$terminal [key=child-outcome-kid-$terminal-abcd1234]: child kid $terminal: landed the work" \
-      "$terminal [key=inactive-outcome-mate-kid-$terminal]: inactive terminal child=kid fingerprint=abcd1234" \
-      'done [key=child-pr-kid]: child kid PR ready: https://example.com/o/r/pull/7'; do
-      printf 'working: starting up\n%s\n' "$relay" > "$d/state/mate.status"
-      out=$(run_crew_state "$d" mate)
-      assert_contains "$out" "state: working" "a relayed child outcome is not the mate's own state"
-      assert_contains "$out" "starting up" "the mate's own working line still supplies the detail"
-      assert_not_contains "$out" "landed the work" "the child's outcome prose is not reported as the mate's"
-      assert_not_contains "$out" "PR ready" "the child's PR prose is not reported as the mate's"
-
-      printf 'working: starting up\n%s: mate finished its assignment\n%s\n' \
-        "$terminal" "$relay" > "$d/state/mate.status"
-      out=$(run_crew_state "$d" mate)
-      assert_contains "$out" "state: $terminal" "a trailing relay does not retire the mate's own $terminal"
-      assert_contains "$out" "mate finished its assignment" "the mate's own terminal still supplies the detail"
-    done
-
-    printf 'working: starting up\n%s: mate finished its assignment\nresolved [key=captain-hold-kid-1]: captain hold kid: reconciled\n' \
-      "$terminal" > "$d/state/mate.status"
-    out=$(run_crew_state "$d" mate)
-    assert_contains "$out" "state: $terminal" "a trailing relayed hold does not retire the mate's own $terminal"
-
-    printf 'blocked [key=access]: need release access\n%s: mate finished its assignment\n' \
-      "$terminal" > "$d/state/mate.status"
-    out=$(run_crew_state "$d" mate)
-    assert_contains "$out" "state: $terminal" "the mate's own $terminal retires its own earlier escalation"
-    assert_not_contains "$out" "need release access" "the retired escalation is not reported as current"
-
-    printf 'blocked [key=access]: need release access\n%s [key=child-outcome-kid-%s-abcd1234]: child kid %s: landed the work\n' \
-      "$terminal" "$terminal" "$terminal" > "$d/state/mate.status"
-    out=$(run_crew_state "$d" mate)
-    assert_contains "$out" "state: blocked" "a relayed child outcome does not retire the mate's escalation"
-    assert_contains "$out" "need release access" "the still-open escalation supplies the detail"
   done
-  pass "a secondmate's own terminal declaration wins while a relayed child outcome does not"
+  pass "a secondmate's terminal declaration supersedes its earlier working line"
 }
 
 test_single_owner_terminal_declaration_supersedes_stale_decision() {
@@ -5137,7 +5098,7 @@ test_ordinary_blocked_over_live_run_keeps_plain_superseded
 test_genuine_daemon_down_reports_blocked
 test_secondmate_open_block_survives_unrelated_append
 test_newest_open_decision_supplies_the_reported_detail
-test_secondmate_own_terminal_declaration_beats_a_relayed_child_outcome
+test_secondmate_terminal_declaration_supersedes_its_working_line
 test_single_owner_terminal_declaration_supersedes_stale_decision
 test_latest_status_preserves_legacy_completions
 test_latest_status_subshell_work_does_not_grow_with_history
