@@ -159,14 +159,17 @@ test_buried_decision_surfaces_on_the_empty_queue_fast_path() {
 }
 
 # Reproduces the captain-facing incident: several tasks hold genuinely open,
-# never-resolved needs-decision/blocked lines, and a completely UNRELATED
-# task's status log (no open decision of its own) hits a transient read
-# failure while the drain acknowledges the presented snapshot. Before the fix,
-# status_acknowledge_presented_snapshot's per-task `|| return 1` - it reads
-# each task's new span through status_new_lines_since_cursor - aborted the
-# whole fleet-wide pass on that one unrelated failure, and print_status_
-# sections returned before preparing a single section, so the drain went
-# completely silent, indistinguishable from "nothing is open".
+# never-resolved needs-decision/blocked lines whose presentation cursors the
+# bootstrap drain already advanced to EOF, and a completely UNRELATED task's
+# status log - no open decision of its own, and the fleet's only remaining
+# unread span - hits a transient read failure while the drain acknowledges the
+# presented snapshot. status_acknowledge_presented_snapshot reads each task's
+# unread span through status_new_lines_since_cursor and aborts the whole
+# fleet-wide pass on its per-task `|| return 1`; the three decision-holding
+# tasks short-circuit at EOF without reading, so that one unrelated task's
+# failure is the only span read even attempted. Before the fix,
+# print_status_sections then returned before preparing a single section, so
+# the drain went completely silent, indistinguishable from "nothing is open".
 # The very next drain (no status append, no ack) recomputed cleanly and
 # showed all the open decisions again unchanged, which is exactly the
 # self-correcting-but-dangerous pattern reported: a captain turn that lands
@@ -178,9 +181,13 @@ test_unrelated_task_read_failure_reports_incomplete_not_silent_empty() {
   out="$dir/drain.out"
   reader="$dir/fail-reader"
 
-  printf 'needs-decision [key=which-fork]: pick a or b\n' > "$state/cowork-skills-directory-phone-design-forks.status"
-  printf 'needs-decision [key=default]: reconcile with upstream how?\n' > "$state/firstmate-reconcile-fork-with-upstream.status"
-  printf 'blocked [key=default]: cannot replay this close\n' > "$state/firstmate-unreplayable-backlog-close.status"
+  # The trailing `note:` is the only unread-surface verb here, so the bootstrap
+  # drain commits these three cursors at EOF. The unrelated task's routine
+  # `working:` line is not an unread surface, so its cursor stays at 0 and its
+  # span is the one the next drain still has to read - and fail on.
+  printf 'needs-decision [key=which-fork]: pick a or b\nnote: still waiting on the captain\n' > "$state/cowork-skills-directory-phone-design-forks.status"
+  printf 'needs-decision [key=default]: reconcile with upstream how?\nnote: still waiting on the captain\n' > "$state/firstmate-reconcile-fork-with-upstream.status"
+  printf 'blocked [key=default]: cannot replay this close\nnote: still waiting on the captain\n' > "$state/firstmate-unreplayable-backlog-close.status"
   printf 'working: no decision here, just routine progress\n' > "$state/zzz-unrelated-task.status"
 
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
@@ -188,9 +195,6 @@ test_unrelated_task_read_failure_reports_incomplete_not_silent_empty() {
   grep -F 'cowork-skills-directory-phone-design-forks' "$out" | grep -F '[key=which-fork]' >/dev/null \
     || fail "a decision failed to surface on the bootstrap drain"
 
-  # New bytes on the UNRELATED task give its fold something to read (and thus
-  # somewhere to fail) on the next drain; it carries no decision of its own.
-  printf 'working: more routine progress\n' >> "$state/zzz-unrelated-task.status"
   printf '#!/usr/bin/env bash\nexit 1\n' > "$reader"
   chmod +x "$reader"
 
