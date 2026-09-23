@@ -767,7 +767,7 @@ EOF
 # lifetime on every call, so its cost grows with total log size. A per-drain
 # fleet-wide scan using that whole-file function would pay that cost for every
 # task on every wake, which grows unbounded as tasks run longer and accumulate
-# status history. status_open_decisions_incremental and scan_open_decisions_incremental
+# status history. status_open_decisions_incremental and scan_open_decisions_snapshot
 # below are the bounded-cost siblings used for that per-drain path: each call
 # reads only the bytes appended to a status file since its own last call (a
 # persisted per-file byte cursor) and folds just those new lines into a
@@ -807,7 +807,9 @@ EOF
 # error), not a malformed writer: every such read here is checked, and on
 # failure this reports the already-trusted persisted set unchanged rather than
 # risking a silent invalidation that would wipe it - never a bare "empty" as if
-# nothing were open.
+# nothing were open. Such a fallback call succeeds only when the set it reports
+# is non-empty, so a caller can never read one as a computed "nothing open";
+# the fallback block inside status_open_decisions_incremental owns why.
 #
 # Not a pure status-file read: this writes/rewrites the sibling cursor file as a
 # side effect (state/.<task>.open-decisions-cursor), the library's second
@@ -963,18 +965,24 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset>]
 
   # A stat/size-read failure is a genuine I/O error, not "the file is empty" -
   # report the already-trusted persisted set unchanged rather than risking a
-  # silent invalidation that would wipe it.
-  cur_ident=$(_fm_open_decisions_file_ident "$f") || { printf '%s' "$trusted_open"; return 0; }
-  [ -n "$cur_ident" ] || { printf '%s' "$trusted_open"; return 0; }
+  # silent invalidation that would wipe it. That fallback is only honest while
+  # the set it reports has something IN it: an EMPTY set returned with rc 0
+  # asserts "computed, nothing open" about bytes this call never read - just as
+  # wrong when the cursor was trusted but lagging a log that has since grown as
+  # when it was untrusted outright. So every fallback below reports the set it
+  # has and succeeds only when that set is non-empty; nothing to report means
+  # an incomplete fold, which the drain's existing notice already surfaces.
+  cur_ident=$(_fm_open_decisions_file_ident "$f") || { printf '%s' "$trusted_open"; [ -n "$trusted_open" ]; return; }
+  [ -n "$cur_ident" ] || { printf '%s' "$trusted_open"; [ -n "$trusted_open" ]; return; }
   actual_size=$(_fm_status_file_size "$f") \
-    || { printf '%s' "$trusted_open"; return 0; }
+    || { printf '%s' "$trusted_open"; [ -n "$trusted_open" ]; return; }
   actual_size=${actual_size//[[:space:]]/}
-  case "$actual_size" in ''|*[!0-9]*) printf '%s' "$trusted_open"; return 0 ;; esac
+  case "$actual_size" in ''|*[!0-9]*) printf '%s' "$trusted_open"; [ -n "$trusted_open" ]; return ;; esac
   if [ -n "$captured_end" ]; then
     case "$captured_end" in
-      ''|*[!0-9]*) printf '%s' "$trusted_open"; return 0 ;;
+      ''|*[!0-9]*) printf '%s' "$trusted_open"; [ -n "$trusted_open" ]; return ;;
     esac
-    [ "$captured_end" -le "$actual_size" ] || { printf '%s' "$trusted_open"; return 0; }
+    [ "$captured_end" -le "$actual_size" ] || { printf '%s' "$trusted_open"; [ -n "$trusted_open" ]; return; }
     size=$captured_end
   else
     size=$actual_size
@@ -990,12 +998,12 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset>]
   if [ "$offset" -lt "$size" ]; then
     chunk_file="$cf.read.$$"
     _fm_status_read_span "$f" "$offset" "$((size - offset))" > "$chunk_file" 2>/dev/null \
-      || { rm -f "$chunk_file"; printf '%s' "$trusted_open"; return 0; }
+      || { rm -f "$chunk_file"; printf '%s' "$trusted_open"; [ -n "$trusted_open" ]; return; }
     chunk_size=$(LC_ALL=C wc -c < "$chunk_file" 2>/dev/null) \
-      || { rm -f "$chunk_file"; printf '%s' "$trusted_open"; return 0; }
+      || { rm -f "$chunk_file"; printf '%s' "$trusted_open"; [ -n "$trusted_open" ]; return; }
     chunk_size=${chunk_size//[[:space:]]/}
     case "$chunk_size" in
-      ''|*[!0-9]*) rm -f "$chunk_file"; printf '%s' "$trusted_open"; return 0 ;;
+      ''|*[!0-9]*) rm -f "$chunk_file"; printf '%s' "$trusted_open"; [ -n "$trusted_open" ]; return ;;
     esac
     # Test-only observability seam (off by default, no production behavior
     # change): when set, records exactly how many bytes THIS call folded, so a
@@ -1023,28 +1031,6 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset>]
     mv -f "$target_cursor" "$cf" || return 1
   fi
   printf '%s' "$open"
-}
-
-# Incremental sibling of scan_open_decisions: same fleet-wide directory walk and
-# output shape ("<task>\t<key>\t<verb>\t<note>" per open decision), but folds
-# each task's status log through status_open_decisions_incremental instead of
-# the whole-file status_open_decisions, so a fleet-wide per-drain scan stays
-# bounded by new appends rather than total lifetime log size across every task.
-scan_open_decisions_incremental() {  # <state>
-  local state=$1 f task open line
-  for f in "$state"/*.status; do
-    [ -e "$f" ] || continue
-    task=$(basename "$f"); task="${task%.status}"
-    open=$(status_open_decisions_incremental "$f") || continue
-    [ -n "$open" ] || continue
-    while IFS= read -r line; do
-      [ -n "$line" ] || continue
-      printf '%s\t%s\n' "$task" "$line"
-    done <<EOF
-$open
-EOF
-  done
-  return 0
 }
 
 status_presentation_snapshot() {  # <state>

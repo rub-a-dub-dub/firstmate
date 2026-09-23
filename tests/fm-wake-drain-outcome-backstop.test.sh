@@ -236,7 +236,17 @@ SH
 
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
     || fail "the top-level empty-queue drain changed its compatibility exit on an output failure"
-  [ ! -s "$out" ] || fail "the failed output consumer received unexpected bytes: $(cat "$out")"
+  # The prepared presentation is all-or-nothing: none of it may reach a consumer
+  # that failed to receive it. The drain still owes the incomplete notice on that
+  # drain, so that one line - and nothing else - is what may appear here.
+  if grep -F 'output-task done: retry after the output consumer fails' "$out" >/dev/null; then
+    fail "the failed output consumer received part of the prepared presentation: $(cat "$out")"
+  fi
+  if grep -v -F 'could not be fully computed this drain' "$out" | grep -q '[^[:space:]]'; then
+    fail "the failed output consumer received unexpected bytes: $(cat "$out")"
+  fi
+  grep -F 'STATUS PRESENTATION INCOMPLETE: unread status, outcome backstop, OPEN DECISIONS' "$out" >/dev/null \
+    || fail "an undeliverable presentation went silent instead of reporting an incomplete drain: $(cat "$out")"
 
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$retry_out" \
     || fail "backstop retry failed after the output consumer recovered"

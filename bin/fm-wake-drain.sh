@@ -400,14 +400,10 @@ EOF
 # including the empty-queue fast path - so a buried answer cannot be swallowed
 # when the fold later advances the cursor. Prints nothing when nothing is
 # unread, which is the common case.
-print_unread_status_section() {
-  local snapshot=${1:-} unread task line shown=0
+print_unread_status_section() {  # <task-and-endpoint-snapshot>
+  local snapshot=$1 unread task line shown=0
 
-  if [ -n "$snapshot" ]; then
-    unread=$(scan_unread_surface_snapshot "$STATE" "$snapshot") || return 1
-  else
-    unread=$(scan_unread_surface_lines "$STATE") || return 1
-  fi
+  unread=$(scan_unread_surface_snapshot "$STATE" "$snapshot") || return 1
   [ -n "$unread" ] || return 0
 
   while IFS=$(printf '\t') read -r task line; do
@@ -429,7 +425,7 @@ EOF
 # Print the consolidated OPEN DECISIONS section: every still-open
 # needs-decision/blocked, fleet-wide, folded from the durable status logs by
 # fm-classify-lib.sh's status_open_decisions fold (via its cursor-backed
-# scan_open_decisions_incremental wrapper) rather than from the annotations
+# scan_open_decisions_snapshot wrapper) rather than from the annotations
 # above, so a decision buried under later unrelated appends cannot be silently
 # missed. Informational `note:` lines and pending-reply resolutions are not
 # decisions; print_unread_status_section owns their one-shot surface. Runs on
@@ -441,15 +437,11 @@ EOF
 # fm-classify-lib.sh's "incremental (cursor-backed) open-decisions fold").
 # Bounded and silent: prints nothing when no decision is open, which is the
 # common case.
-print_open_decisions_section() {
-  local snapshot=${1:-} open task key verb note line item_bytes=220 global_bytes=4000
+print_open_decisions_section() {  # <task-and-endpoint-snapshot>
+  local snapshot=$1 open task key verb note line item_bytes=220 global_bytes=4000
   local output='' used=0 shown=0 omitted=0 bytes
 
-  if [ -n "$snapshot" ]; then
-    open=$(scan_open_decisions_snapshot "$STATE" "$snapshot") || return 1
-  else
-    open=$(scan_open_decisions_incremental "$STATE") || return 1
-  fi
+  open=$(scan_open_decisions_snapshot "$STATE" "$snapshot") || return 1
   [ -n "$open" ] || return 0
 
   while IFS=$(printf '\t') read -r task key verb note; do
@@ -551,10 +543,26 @@ EOF
   printf 'RECORD DIVERGENCE: reconcile each one - record the captain'"'"'s own words with bin/fm-captain-hold.sh answer <task> --decision-file <path>, or re-open the status decision when that resolution was not the captain'"'"'s word.\n' || return 1
 }
 
-print_status_sections() {
-  local snapshot=${1:-} fully_presented=${2:-} acknowledged prepared
-  if [ -z "$snapshot" ]; then snapshot=$(status_presentation_snapshot "$STATE") || return 1; fi
-  [ -n "$snapshot" ] || return 0
+# A read or write hiccup anywhere in the drain's fleet-wide section passes (one
+# task's status log, one task's open-decisions cursor, the scratch file the
+# sections are prepared into) must never be indistinguishable from "computed,
+# and genuinely nothing is open or unread": that silence is exactly what let a
+# captain-facing OPEN DECISIONS section vanish for a drain even though several
+# tasks' needs-decision/blocked lines were still open and unresolved in their
+# own durable status logs: a failure on any ONE task aborts the whole
+# acknowledge pass via its `|| return 1` before a single section is prepared,
+# and the preparation that follows is itself all-or-nothing.
+# Print this notice on every such failure instead of returning silently, so an
+# empty presentation can only ever mean the passes ran to completion and found
+# nothing - never that they could not be computed. print_status_presentation
+# emits it from one place for every failure it observes, so no new failure
+# path inside those passes can return without it.
+print_status_sections_incomplete_notice() {
+  printf 'STATUS PRESENTATION INCOMPLETE: unread status, outcome backstop, OPEN DECISIONS, and record divergence could not be fully computed this drain (a status log or cursor read/write failed); do not read this drain'"'"'s silence as nothing open or unread - retry on the next drain.\n'
+}
+
+print_status_sections() {  # <task-and-endpoint-snapshot> [<fully-presented-task-ids>]
+  local snapshot=$1 fully_presented=${2:-} acknowledged prepared
   acknowledged=$(status_acknowledge_presented_snapshot "$STATE" "$snapshot" "$fully_presented") || return 1
   prepared=$(mktemp "$STATE/.status-presentation.prepared.XXXXXX") || return 1
   if ! {
@@ -596,6 +604,12 @@ print_status_presentation() {  # [<deduped-raw-rows>]
     fi
     return 1
   fi
+  # A failed snapshot read still leaves every task it printed BEFORE the failure
+  # in the captured value. Acknowledging and committing that truncated fleet view
+  # would rewrite the shared presentation-cursor manifest without the tasks the
+  # read never reached, resetting their unread and outcome-backstop cursors for
+  # good, so rc=1 here keeps the annotation, acknowledge and commit passes below
+  # from running at all rather than presenting a partial fleet view.
   snapshot=$(status_presentation_snapshot "$STATE") || {
     printf 'STATUS PRESENTATION INCOMPLETE: status snapshot could not be read.\n'
     rc=1
@@ -607,7 +621,9 @@ print_status_presentation() {  # [<deduped-raw-rows>]
       fully_presented=$(printf '%s\n' "$annotation_manifest" | awk -F '\t' '$2 == "direct" { sub(/\.status$/, "", $1); print $1 }') || rc=1
     fi
   fi
-  if [ "$rc" -eq 0 ] && [ -n "$snapshot" ]; then print_status_sections "$snapshot" "$fully_presented" || rc=1; fi
+  if [ "$rc" -eq 0 ] && [ -n "$snapshot" ]; then
+    print_status_sections "$snapshot" "$fully_presented" || { rc=1; print_status_sections_incomplete_notice; }
+  fi
   fm_lock_release "$lock"
   return "$rc"
 }
