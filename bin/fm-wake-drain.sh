@@ -608,10 +608,10 @@ print_status_presentation() {  # [<deduped-raw-rows>]
   # in the captured value. Acknowledging and committing that truncated fleet view
   # would rewrite the shared presentation-cursor manifest without the tasks the
   # read never reached, resetting their unread and outcome-backstop cursors for
-  # good, so the partial view is discarded rather than presented.
+  # good, so rc=1 here keeps the annotation, acknowledge and commit passes below
+  # from running at all rather than presenting a partial fleet view.
   snapshot=$(status_presentation_snapshot "$STATE") || {
     printf 'STATUS PRESENTATION INCOMPLETE: status snapshot could not be read.\n'
-    snapshot=''
     rc=1
   }
   if [ "$rc" -eq 0 ] && [ -n "$rows" ]; then
