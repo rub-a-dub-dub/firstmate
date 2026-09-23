@@ -207,8 +207,16 @@ test_read_failure_preserves_state_for_retry() {
 
   FM_STATE_OVERRIDE="$state" FM_STATUS_SPAN_READER="$reader" "$DRAIN" > "$out" \
     || fail "wake drain failed instead of preserving state after the injected read failure"
-  [ ! -s "$out" ] \
-    || fail "the failed presentation read emitted a partial status presentation: $(command cat "$out")"
+  # A read failure must never present as a silently empty (and therefore
+  # authoritative-looking) OPEN DECISIONS section: silence there is
+  # indistinguishable from "computed, and genuinely nothing is open", which is
+  # exactly the captain-facing bug this guards against. The drain must say the
+  # computation was incomplete instead of going quiet.
+  if grep -F 'OPEN DECISIONS (still open' "$out" >/dev/null; then
+    fail "the failed presentation read printed an OPEN DECISIONS section despite an incomplete fold: $(command cat "$out")"
+  fi
+  grep -F 'STATUS PRESENTATION INCOMPLETE' "$out" >/dev/null \
+    || fail "the failed presentation read went silent instead of reporting an incomplete computation: $(command cat "$out")"
   after_cursor=$(LC_ALL=C cksum "$cursor")
   [ "$after_cursor" = "$before_cursor" ] \
     || fail "the failed read advanced or rewrote the persisted cursor"

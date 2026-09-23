@@ -158,6 +158,59 @@ test_buried_decision_surfaces_on_the_empty_queue_fast_path() {
   pass "a buried open decision surfaces even when the wake queue itself is empty"
 }
 
+# Reproduces the captain-facing incident: several tasks hold genuinely open,
+# never-resolved needs-decision/blocked lines, and a completely UNRELATED
+# task's status log (no open decision of its own) hits a transient read
+# failure during the fleet-wide fold. Before the fix, scan_open_decisions_
+# snapshot's per-task `|| return 1` aborted the whole scan on that one
+# unrelated failure, and print_status_sections then discarded every
+# already-prepared section rather than showing a partial result - so the
+# drain went completely silent, indistinguishable from "nothing is open".
+# The very next drain (no status append, no ack) recomputed cleanly and
+# showed all the open decisions again unchanged, which is exactly the
+# self-correcting-but-dangerous pattern reported: a captain turn that lands
+# on the failing drain sees no open decisions at all.
+test_unrelated_task_read_failure_reports_incomplete_not_silent_empty() {
+  local dir state out reader
+  dir=$(make_case unrelated-read-failure)
+  state="$dir/state"
+  out="$dir/drain.out"
+  reader="$dir/fail-reader"
+
+  printf 'needs-decision [key=which-fork]: pick a or b\n' > "$state/cowork-skills-directory-phone-design-forks.status"
+  printf 'needs-decision [key=default]: reconcile with upstream how?\n' > "$state/firstmate-reconcile-fork-with-upstream.status"
+  printf 'blocked [key=default]: cannot replay this close\n' > "$state/firstmate-unreplayable-backlog-close.status"
+  printf 'working: no decision here, just routine progress\n' > "$state/zzz-unrelated-task.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "bootstrap drain before the injected unrelated read failure failed"
+  grep -F 'cowork-skills-directory-phone-design-forks' "$out" | grep -F '[key=which-fork]' >/dev/null \
+    || fail "a decision failed to surface on the bootstrap drain"
+
+  # New bytes on the UNRELATED task give its fold something to read (and thus
+  # somewhere to fail) on the next drain; it carries no decision of its own.
+  printf 'working: more routine progress\n' >> "$state/zzz-unrelated-task.status"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$reader"
+  chmod +x "$reader"
+
+  FM_STATE_OVERRIDE="$state" FM_STATUS_SPAN_READER="$reader" "$DRAIN" > "$out" \
+    || fail "wake drain failed instead of reporting an incomplete computation"
+  if grep -F 'OPEN DECISIONS (still open' "$out" >/dev/null; then
+    fail "an incomplete fold still printed a normal OPEN DECISIONS section: $(command cat "$out")"
+  fi
+  grep -F 'STATUS PRESENTATION INCOMPLETE' "$out" >/dev/null \
+    || fail "an unrelated task's read failure went silent instead of reporting an incomplete drain: $(command cat "$out")"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "recovery drain after the injected failure cleared failed"
+  for task in cowork-skills-directory-phone-design-forks firstmate-reconcile-fork-with-upstream firstmate-unreplayable-backlog-close; do
+    grep -F "$task" "$out" >/dev/null \
+      || fail "task $task's open decision did not reappear once the read failure cleared: $(command cat "$out")"
+  done
+
+  pass "an unrelated task's transient read failure reports an incomplete drain instead of a silently empty OPEN DECISIONS section"
+}
+
 test_status_symlink_is_not_followed() {
   local dir state out
   dir=$(make_case status-symlink)
@@ -223,4 +276,5 @@ test_reserved_key_namespace_is_owned_by_its_library
 test_no_open_decisions_prints_nothing
 test_open_decision_surfaces_even_with_an_unrelated_queued_wake
 test_buried_decision_surfaces_on_the_empty_queue_fast_path
+test_unrelated_task_read_failure_reports_incomplete_not_silent_empty
 test_status_symlink_is_not_followed
