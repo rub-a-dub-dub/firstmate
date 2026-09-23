@@ -807,7 +807,9 @@ EOF
 # error), not a malformed writer: every such read here is checked, and on
 # failure this reports the already-trusted persisted set unchanged rather than
 # risking a silent invalidation that would wipe it - never a bare "empty" as if
-# nothing were open.
+# nothing were open. Such a fallback call succeeds only when the set it reports
+# is non-empty, so a caller can never read one as a computed "nothing open";
+# the fallback block inside status_open_decisions_incremental owns why.
 #
 # Not a pure status-file read: this writes/rewrites the sibling cursor file as a
 # side effect (state/.<task>.open-decisions-cursor), the library's second
