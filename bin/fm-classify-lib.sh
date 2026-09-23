@@ -815,7 +815,7 @@ status_current_state_line() {  # <status-file>
     # so the two readers can never disagree about what counts as an event.
     _fm_status_unstamped "$line" unstamped
     _fm_status_declares_event "$unstamped" || continue
-    verb=$(status_line_verb "$line")
+    status_line_verb "$line" verb
     if [ "$verb" = "$paused" ] || [ "$verb" = "$held" ]; then
       plain=$line
       break
