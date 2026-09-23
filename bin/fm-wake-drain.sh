@@ -551,18 +551,18 @@ EOF
   printf 'RECORD DIVERGENCE: reconcile each one - record the captain'"'"'s own words with bin/fm-captain-hold.sh answer <task> --decision-file <path>, or re-open the status decision when that resolution was not the captain'"'"'s word.\n' || return 1
 }
 
-# A read or write hiccup anywhere in the fleet-wide fold below (one task's
-# status log, one task's open-decisions cursor) must never be indistinguishable
-# from "computed, and genuinely nothing is open or unread": that silence is
-# exactly what let a captain-facing OPEN DECISIONS section vanish for a drain
-# even though several tasks' needs-decision/blocked lines were still open and
-# unresolved in their own durable status logs (a fold failure on any ONE task
-# aborts the whole fleet-wide scan via its `|| return 1`, and this function's
-# all-or-nothing preparation then discards every already-computed section
-# rather than showing a partial result). Print this notice on every such
-# failure instead of returning silently, so an empty presentation can only ever
-# mean the fold ran to completion and found nothing - never that it could not
-# be computed.
+# A read or write hiccup anywhere in the fleet-wide passes below (one task's
+# status log, one task's open-decisions cursor, the scratch file the sections
+# are prepared into) must never be indistinguishable from "computed, and
+# genuinely nothing is open or unread": that silence is exactly what let a
+# captain-facing OPEN DECISIONS section vanish for a drain even though several
+# tasks' needs-decision/blocked lines were still open and unresolved in their
+# own durable status logs (a failure on any ONE task aborts the whole
+# acknowledge pass via its `|| return 1` before a single section is prepared,
+# and the preparation that follows is itself all-or-nothing). Print this notice
+# on every such failure instead of returning silently, so an empty presentation
+# can only ever mean the passes ran to completion and found nothing - never
+# that they could not be computed.
 print_status_sections_incomplete_notice() {
   printf 'STATUS PRESENTATION INCOMPLETE: unread status, outcome backstop, OPEN DECISIONS, and record divergence could not be fully computed this drain (a status log or cursor read/write failed); do not read this drain'"'"'s silence as nothing open or unread - retry on the next drain.\n'
 }
@@ -575,7 +575,10 @@ print_status_sections() {
     print_status_sections_incomplete_notice
     return 1
   }
-  prepared=$(mktemp "$STATE/.status-presentation.prepared.XXXXXX") || return 1
+  prepared=$(mktemp "$STATE/.status-presentation.prepared.XXXXXX") || {
+    print_status_sections_incomplete_notice
+    return 1
+  }
   if ! {
     print_unread_status_section "$snapshot" \
       && print_status_outcome_backstop_section "$snapshot" \

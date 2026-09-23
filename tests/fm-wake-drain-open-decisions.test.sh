@@ -161,11 +161,12 @@ test_buried_decision_surfaces_on_the_empty_queue_fast_path() {
 # Reproduces the captain-facing incident: several tasks hold genuinely open,
 # never-resolved needs-decision/blocked lines, and a completely UNRELATED
 # task's status log (no open decision of its own) hits a transient read
-# failure during the fleet-wide fold. Before the fix, scan_open_decisions_
-# snapshot's per-task `|| return 1` aborted the whole scan on that one
-# unrelated failure, and print_status_sections then discarded every
-# already-prepared section rather than showing a partial result - so the
-# drain went completely silent, indistinguishable from "nothing is open".
+# failure while the drain acknowledges the presented snapshot. Before the fix,
+# status_acknowledge_presented_snapshot's per-task `|| return 1` - it reads
+# each task's new span through status_new_lines_since_cursor - aborted the
+# whole fleet-wide pass on that one unrelated failure, and print_status_
+# sections returned before preparing a single section, so the drain went
+# completely silent, indistinguishable from "nothing is open".
 # The very next drain (no status append, no ack) recomputed cleanly and
 # showed all the open decisions again unchanged, which is exactly the
 # self-correcting-but-dangerous pattern reported: a captain turn that lands
