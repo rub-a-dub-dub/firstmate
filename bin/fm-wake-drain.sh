@@ -590,7 +590,7 @@ print_status_sections() {  # <task-and-endpoint-snapshot> [<fully-presented-task
 
 print_status_presentation() {  # [<deduped-raw-rows>]
   local rows=${1:-} lock="$STATE/.status-presentation-lock" snapshot annotation_manifest fully_presented='' rc=0
-  local lock_rc holder_pid notice_owed=0
+  local lock_rc holder_pid
   if fm_lock_acquire_wait_bounded "$lock" "$PRESENTATION_LOCK_TIMEOUT"; then
     :
   else
@@ -622,9 +622,8 @@ print_status_presentation() {  # [<deduped-raw-rows>]
     fi
   fi
   if [ "$rc" -eq 0 ] && [ -n "$snapshot" ]; then
-    print_status_sections "$snapshot" "$fully_presented" || { rc=1; notice_owed=1; }
+    print_status_sections "$snapshot" "$fully_presented" || { rc=1; print_status_sections_incomplete_notice; }
   fi
-  [ "$notice_owed" -eq 0 ] || print_status_sections_incomplete_notice
   fm_lock_release "$lock"
   return "$rc"
 }
