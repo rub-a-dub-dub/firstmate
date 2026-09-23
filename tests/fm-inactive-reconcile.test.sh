@@ -451,6 +451,25 @@ test_prose_and_escapes_around_terminal_line_reconcile_once() {
   pass "prose and backslash escapes do not defeat the ledger claim"
 }
 
+# A child that has written only continuation prose has declared no event at all,
+# so the head the fallback records is that prose line. The ledger claim reads the
+# log the same way the fallback did, prose fall back included.
+test_prose_only_head_reconciles_with_the_fallback() {
+  make_world inactive-ledger-prose-head; bind_secondmate local
+  write_child "$MATE" child 'Starting on the assignment now.'
+  FM_FAKE_CREW_STATE='done' run_reconcile "$MATE" --startup
+  [ "$(grep -c 'inactive-outcome-mate-child-done' "$MAIN/state/mate.status")" = 1 ] \
+    || fail "inactive fallback did not publish exactly once"
+
+  printf 'done: landed the work\n' >> "$MATE/state/child.status"
+  FM_FAKE_CREW_STATE='done' run_reconcile "$MATE"
+  [ "$(wc -l < "$MAIN/state/mate.status" | tr -d ' ')" = 1 ] \
+    || fail "one completion was published twice under a prose-only head: $(cat "$MAIN/state/mate.status")"
+  [ "$(outcome_count "$MATE" reported)" = 2 ] \
+    || fail "the raced ledger event was not durably reconciled with the fallback receipt"
+  pass "a prose-only recorded head still claims the fallback delivery"
+}
+
 # An intervening progress line means the next terminal line is a new completion,
 # not a late ledger rendering of the inactive fallback.
 test_progress_after_inactive_delivery_starts_a_new_event() {
@@ -959,6 +978,7 @@ test_pr_field_requires_recorded_pr_or_ready_signal_line
 test_terminal_line_during_state_read_yields_to_ledger_delivery
 test_terminal_line_after_inactive_delivery_is_not_reported_twice
 test_prose_and_escapes_around_terminal_line_reconcile_once
+test_prose_only_head_reconciles_with_the_fallback
 test_late_resolved_does_not_redeliver_a_terminal_ledger
 test_progress_after_inactive_delivery_starts_a_new_event
 test_long_terminal_lines_have_distinct_receipts
