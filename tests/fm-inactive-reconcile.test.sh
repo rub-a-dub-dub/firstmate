@@ -220,29 +220,6 @@ test_late_resolved_does_not_redeliver_a_terminal_ledger() {
   pass "a captain answer landing after a terminal ledger line does not redeliver the outcome"
 }
 
-# The same late-answer shape in a MAIN home, where no secondmate ledger-first
-# pass runs and the inactive path is the only route to the captain. Once a
-# resolved:/note: trails the child's own done:, bin/fm-crew-state.sh's
-# current-state read reports `unknown` for that log - the fake stands in for
-# exactly that verdict - so terminality has to come from the child's own
-# terminal declaration or the finished child is never presented at all.
-test_main_direct_late_resolved_still_presents_the_outcome() {
-  make_world main-late-answer
-  write_child "$MAIN" child 'needs-decision [key=d1]: adopt A or B'
-  printf 'done: report ready at data/child/report.md\n' >> "$MAIN/state/child.status"
-  printf 'resolved [key=d1]: answered: go with A\n' >> "$MAIN/state/child.status"
-  age "$MAIN/state/child.meta" "$MAIN/state/child.status" "$MAIN/state/child.turn-ended"
-  FM_FAKE_CREW_STATE='unknown' run_reconcile "$MAIN" --startup
-  [ "$(wake_count "$MAIN" 'inactive-outcome:')" = 1 ] \
-    || fail "a late resolved: line hid the child's own done: from the main presentation path"
-  [ "$(outcome_count "$MAIN" pending)" = 1 ] \
-    || fail "no presentation receipt was retained for the finished child"
-  grep -q 'state=done' "$MAIN"/state/terminal-outcomes/*.pending \
-    || fail "the presented outcome did not carry the child's declared done state"
-  pass "a main-home child's terminal declaration survives a late captain answer"
-}
-
-
 # A terminal record written as a multi-line block belongs to the ledger path
 # whether the block lands before or during the state read: it is delivered once,
 # under the ledger's own outcome key, and the inactive fallback stays out of it.
@@ -962,7 +939,6 @@ test_pr_field_requires_recorded_pr_or_ready_signal_line
 test_terminal_line_during_state_read_yields_to_ledger_delivery
 test_terminal_line_after_inactive_delivery_is_not_reported_twice
 test_late_resolved_does_not_redeliver_a_terminal_ledger
-test_main_direct_late_resolved_still_presents_the_outcome
 test_progress_after_inactive_delivery_starts_a_new_event
 test_long_terminal_lines_have_distinct_receipts
 test_secondmate_partial_ledger_line_waits_for_newline

@@ -363,10 +363,9 @@ notice_parent_report_failed() { # <record> <fingerprint> <payload>
 # status_current_state_line rather than the bare last event: a decision-closing
 # resolved: or an informational note: appended after the outcome does not
 # retract it. That is deliberately NOT bin/fm-crew-state.sh's current-state
-# read, whose tier-3 rule drops a done:/failed: once any event trails it -
-# "has this child declared an outcome" and "what is it doing now" are different
-# questions. Both reconciliation paths below therefore settle terminality
-# through THIS reader, so neither disowns an outcome the other would deliver.
+# read, which drops a done:/failed: once any event trails it - "has this child
+# declared an outcome" and "what is it doing now" are different questions, and
+# only the first decides whether a ledger event is this path's to deliver.
 child_terminal_ledger_line() { # <status>
   local status=$1 snapshot last marker='__FM_LEDGER_SNAPSHOT_END__'
   [ -f "$status" ] && [ ! -L "$status" ] && [ -s "$status" ] || return 1
@@ -497,7 +496,7 @@ report_child() { # <id>
 }
 
 reconcile_direct_child_locked() { # <id> <meta> <secondmate-id-or-empty> <timeout>
-  local id=$1 meta=$2 self=${3:-} timeout=$4 status turn last age state_line state ledger pr incarnation fingerprint outcome_key payload kind state_rc=0
+  local id=$1 meta=$2 self=${3:-} timeout=$4 status turn last age state_line state pr incarnation fingerprint outcome_key payload kind state_rc=0
   [ -f "$meta" ] && [ ! -L "$meta" ] || return 0
   kind=$(meta_field "$meta" kind)
   [ "$kind" = secondmate ] && return 0
@@ -523,11 +522,7 @@ reconcile_direct_child_locked() { # <id> <meta> <secondmate-id-or-empty> <timeou
   case "$state_line" in
     'state: done '*) state='done' ;;
     'state: failed '*) state='failed' ;;
-    *)
-      [ -z "$self" ] || return 0
-      ledger=$(child_terminal_ledger_line "$status") || return 0
-      state=$(status_line_verb "$ledger")
-      ;;
+    *) return 0 ;;
   esac
   pr=$(pr_for_task "$meta")
   incarnation=$(meta_incarnation "$meta")
