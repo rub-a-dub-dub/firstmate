@@ -362,10 +362,13 @@ notice_parent_report_failed() { # <record> <fingerprint> <payload>
 # Once that race is ruled out, the returned line is derived through
 # status_current_state_line rather than the bare last event: a decision-closing
 # resolved: or an informational note: appended after the outcome does not
-# retract it. That is deliberately NOT bin/fm-crew-state.sh's current-state
-# read, which drops a done:/failed: once any event trails it - "has this child
-# declared an outcome" and "what is it doing now" are different questions, and
-# only the first decides whether a ledger event is this path's to deliver.
+# retract it. This answers a different question from bin/fm-crew-state.sh's
+# current-state read, which reports no current state at all once any event
+# trails a done:/failed: - "has this child declared an outcome" versus "what
+# is it doing now". The two are meant to differ here, and only the secondmate
+# ledger path consults this reader: every call below is gated on a secondmate
+# home, and the main-home reconcile arm settles terminality from crew-state
+# alone.
 child_terminal_ledger_line() { # <status>
   local status=$1 snapshot last marker='__FM_LEDGER_SNAPSHOT_END__'
   [ -f "$status" ] && [ ! -L "$status" ] && [ -s "$status" ] || return 1
