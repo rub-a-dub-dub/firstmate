@@ -429,7 +429,7 @@ EOF
 # Print the consolidated OPEN DECISIONS section: every still-open
 # needs-decision/blocked, fleet-wide, folded from the durable status logs by
 # fm-classify-lib.sh's status_open_decisions fold (via its cursor-backed
-# scan_open_decisions_incremental wrapper) rather than from the annotations
+# scan_open_decisions_snapshot wrapper) rather than from the annotations
 # above, so a decision buried under later unrelated appends cannot be silently
 # missed. Informational `note:` lines and pending-reply resolutions are not
 # decisions; print_unread_status_section owns their one-shot surface. Runs on
@@ -441,15 +441,11 @@ EOF
 # fm-classify-lib.sh's "incremental (cursor-backed) open-decisions fold").
 # Bounded and silent: prints nothing when no decision is open, which is the
 # common case.
-print_open_decisions_section() {
-  local snapshot=${1:-} open task key verb note line item_bytes=220 global_bytes=4000
+print_open_decisions_section() {  # <task-and-endpoint-snapshot>
+  local snapshot=$1 open task key verb note line item_bytes=220 global_bytes=4000
   local output='' used=0 shown=0 omitted=0 bytes
 
-  if [ -n "$snapshot" ]; then
-    open=$(scan_open_decisions_snapshot "$STATE" "$snapshot") || return 1
-  else
-    open=$(scan_open_decisions_incremental "$STATE") || return 1
-  fi
+  open=$(scan_open_decisions_snapshot "$STATE" "$snapshot") || return 1
   [ -n "$open" ] || return 0
 
   while IFS=$(printf '\t') read -r task key verb note; do
@@ -557,20 +553,27 @@ EOF
 # from "computed, and genuinely nothing is open or unread": that silence is
 # exactly what let a captain-facing OPEN DECISIONS section vanish for a drain
 # even though several tasks' needs-decision/blocked lines were still open and
-# unresolved in their own durable status logs (a failure on any ONE task aborts
+# unresolved in their own durable status logs: a failure on any ONE task aborts
 # the whole acknowledge pass via its `|| return 1` before a single section is
-# prepared, the annotation pass aborts the same way before the sections are
-# even reached, and the preparation that follows is itself all-or-nothing).
+# prepared, and the preparation that follows is itself all-or-nothing. A failing
+# annotation pass no longer suppresses the sections - print_status_presentation
+# falls through and computes whatever still can be - but it still owes this
+# notice, because the rows it dropped were part of the same presentation.
 # Print this notice on every such failure instead of returning silently, so an
 # empty presentation can only ever mean the passes ran to completion and found
-# nothing - never that they could not be computed. It is emitted from the single
-# boundary in print_status_presentation that sees every one of those failures,
-# so no failure path can be added that returns without it.
+# nothing - never that they could not be computed. print_status_presentation
+# emits it from one place for every failure it observes, so no new failure
+# path inside those passes can return without it.
 print_status_sections_incomplete_notice() {
   printf 'STATUS PRESENTATION INCOMPLETE: unread status, outcome backstop, OPEN DECISIONS, and record divergence could not be fully computed this drain (a status log or cursor read/write failed); do not read this drain'"'"'s silence as nothing open or unread - retry on the next drain.\n'
 }
 
-print_status_sections() {
+# Returns 0 when the whole presentation computed, delivered and committed; 1
+# when a pass could not be computed; 2 when the prepared bytes were computed but
+# could not be delivered to the consumer. A 2 leaves the receipt uncommitted, so
+# the next drain replays this presentation in full - and nothing further may be
+# written to a consumer that has already failed to receive it.
+print_status_sections() {  # <task-and-endpoint-snapshot> [<fully-presented-task-ids>]
   local snapshot=${1:-} fully_presented=${2:-} acknowledged prepared
   if [ -z "$snapshot" ]; then snapshot=$(status_presentation_snapshot "$STATE") || return 1; fi
   [ -n "$snapshot" ] || return 0
@@ -590,7 +593,7 @@ print_status_sections() {
   # leave the receipt behind so the next drain can recover the presentation.
   if ! command cat "$prepared"; then
     rm -f -- "$prepared"
-    return 1
+    return 2
   fi
   if ! status_commit_presentation_snapshot "$STATE" "$acknowledged"; then
     rm -f -- "$prepared"
@@ -637,7 +640,10 @@ print_status_presentation() {  # [<deduped-raw-rows>]
     if [ "$notice_owed" -ne 0 ]; then fully_presented=''; rc=1; fi
   fi
   if [ -n "$snapshot" ]; then
-    print_status_sections "$snapshot" "$fully_presented" || { rc=1; notice_owed=1; }
+    print_status_sections "$snapshot" "$fully_presented" || {
+      if [ "$?" -eq 2 ]; then notice_owed=0; else notice_owed=1; fi
+      rc=1
+    }
   fi
   [ "$notice_owed" -eq 0 ] || print_status_sections_incomplete_notice
   fm_lock_release "$lock"

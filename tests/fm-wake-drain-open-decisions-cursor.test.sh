@@ -2,7 +2,7 @@
 # tests/fm-wake-drain-open-decisions-cursor.test.sh - end-to-end behavior tests
 # for the incremental, cursor-backed OPEN DECISIONS scan
 # (fm-classify-lib.sh's status_open_decisions_incremental /
-# scan_open_decisions_incremental, wired into bin/fm-wake-drain.sh). These drive
+# scan_open_decisions_snapshot, wired into bin/fm-wake-drain.sh). These drive
 # the REAL drain script across MANY successive invocations over a status log
 # that keeps growing, and assert both the printed output and a bounded-cost
 # property, not the fold's own source text. tests/fm-wake-drain-open-decisions.test.sh
