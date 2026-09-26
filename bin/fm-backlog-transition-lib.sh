@@ -47,16 +47,16 @@
 # replay would reject. The validator pins the data path to this home's configured
 # root before any recovery mutation, then re-runs exactly that close.
 # `tasks-axi done` on an already-closed task backfills links
-# without moving the close date, so replay is idempotent. A row retention has
-# already archived out of the backlog reads back identically to one that never
-# existed, and that absence is the outcome the close was trying to reach, so
-# the close itself and replay both retire the record rather than failing a
-# cleanup that reached its goal or retrying forever against a row that can
-# never come back. Neither pretends a close landed: the transition reports the
-# absence through FM_BACKLOG_CLOSE_ROW_ABSENT and replay through its own
-# `absent` result, so each caller can say what actually happened. Only a
-# genuine lookup failure (an unreadable backlog, a misconfigured backend, the
-# wrong home) is preserved for a later retry. Spawn needs no marker:
+# without moving the close date, so replay is idempotent. A row that has left
+# the active backlog entirely - closed and aged out of done_keep retention, or
+# removed outright - can never be closed again, so a confirmed NOT_FOUND from
+# the row probe retires the record instead of recording a retry that can never
+# land. That path never pretends a close landed: it reports the absence through
+# FM_BACKLOG_CLOSE_ROW_ABSENT and names the completion link the retirement
+# could not apply, so a merged PR or report is never discarded silently.
+# A genuine active-row lookup failure (an unreadable backlog, a misconfigured
+# backend, the wrong home) is preserved as an error for a later retry.
+# Spawn needs no marker:
 # it publishes the meta first, so a crash
 # leaves the meta itself as the evidence that the row is owed a start.
 # A captain-held row uses the same record with a `mode=retain` line: replay then
@@ -114,6 +114,12 @@ FM_BACKLOG_CLOSE_REPLAY_RESULT=
 # backlog, so the close it was asked for was accepted without one landing.
 # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
 FM_BACKLOG_CLOSE_ROW_ABSENT=0
+# Set by fm_backlog_close_marker_replay with an absent result: the completion
+# link the retired record carried, named by fm_backlog_retain_deliverable so the
+# operator that result asks to reconcile is told which artifact the retirement
+# could not apply, and empty when the record carried none.
+# shellcheck disable=SC2034 # Output global, read by the sourcing caller.
+FM_BACKLOG_CLOSE_REPLAY_DELIVERABLE=
 
 # Bounded execution is fm-timeout-lib.sh's alone; source it rather than
 # re-deriving a deadline here. It is stateless, so the memoisation reason this
@@ -1048,6 +1054,10 @@ fm_backlog_dispatch_rollback() {
   return 0
 }
 
+# A close whose row the probe positively reports as gone from the backlog can
+# never land, so the record retires rather than promising a retry. Only that
+# confirmed NOT_FOUND is accepted: a probe that errors, times out, or still
+# finds the row keeps the original close failure and the pending record with it.
 fm_backlog_close_transition() {
   local meta=$1 marker=$2 data=$3 id=$4 state=$5 close_error
   shift 5
@@ -1421,11 +1431,17 @@ fm_backlog_reconcile_marker_ack() {  # <state-dir> <id>
 
 # A close transition that reached a row already gone from the backlog retires
 # the record without one landing, so label the replay by what it reached rather
-# than by the transition having returned 0.
-fm_backlog_close_replay_result() {  # <cleanup-incomplete>
-  local outcome=closed
-  [ "$FM_BACKLOG_CLOSE_ROW_ABSENT" != 1 ] || outcome=absent
-  if [ "$1" = 1 ]; then
+# than by the transition having returned 0. Retiring that record discards the
+# only durable copy of the completion link it carried, so name that link too:
+# the caller cannot ask for a reconciliation it can no longer identify.
+fm_backlog_close_replay_result() {  # <cleanup-incomplete> [flag value]...
+  local incomplete=$1 outcome=closed
+  shift
+  if [ "$FM_BACKLOG_CLOSE_ROW_ABSENT" = 1 ]; then
+    outcome=absent
+    FM_BACKLOG_CLOSE_REPLAY_DELIVERABLE=$(fm_backlog_retain_deliverable "$@")
+  fi
+  if [ "$incomplete" = 1 ]; then
     FM_BACKLOG_CLOSE_REPLAY_RESULT=${outcome}_incomplete
   else
     FM_BACKLOG_CLOSE_REPLAY_RESULT=$outcome
@@ -1445,6 +1461,8 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
   local recorded_utc
   local args=() mode_flags=()
   FM_BACKLOG_CLOSE_REPLAY_RESULT=noop
+  FM_BACKLOG_CLOSE_REPLAY_DELIVERABLE=
+  FM_BACKLOG_CLOSE_ROW_ABSENT=0
   fm_backlog_directory_present "$state" "state directory" || return 1
   [ -e "$marker" ] || [ -L "$marker" ] || return 0
   marker_name=${marker##*/}
@@ -1511,7 +1529,8 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
       fi
       if fm_backlog_atomic_transition close '' "$marker" "$data" "$id" "$state" \
           "${args[@]+"${args[@]}"}"; then
-        fm_backlog_close_replay_result "$cleanup_incomplete"
+        fm_backlog_close_replay_result "$cleanup_incomplete" \
+          "${args[@]+"${args[@]}"}"
         return 0
       fi
       return 1
@@ -1548,12 +1567,12 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
         FM_BACKLOG_CLOSE_REPLAY_RESULT=retain_unresolved
         return 0
       fi
+      # The row this recorded close was for has left the backlog entirely, so
+      # nothing can ever land it; retiring the record is the only safe move.
+      FM_BACKLOG_CLOSE_ROW_ABSENT=1
       fm_backlog_close_marker_remove "$marker" "$state" || return 1
-      if [ "$cleanup_incomplete" = 1 ]; then
-        FM_BACKLOG_CLOSE_REPLAY_RESULT=absent_incomplete
-      else
-        FM_BACKLOG_CLOSE_REPLAY_RESULT=absent
-      fi
+      fm_backlog_close_replay_result "$cleanup_incomplete" \
+        "${args[@]+"${args[@]}"}"
       return 0
       ;;
   esac
@@ -1566,7 +1585,8 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
         FM_BACKLOG_CLOSE_REPLAY_RESULT=retained
       fi
     else
-      fm_backlog_close_replay_result "$cleanup_incomplete"
+      fm_backlog_close_replay_result "$cleanup_incomplete" \
+        "${args[@]+"${args[@]}"}"
     fi
     return 0
   fi

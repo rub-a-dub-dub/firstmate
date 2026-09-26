@@ -12,11 +12,10 @@
 # record being removed, the intended transition is recorded in
 # state/<id>.backlog-close first, so a process killed between the halves leaves
 # the next session start enough to finish it; a landed close removes that record,
-# and so does a row that has already left this backlog, which the close accepts
-# and reports as an absence rather than as a landing
-# (bin/fm-backlog-transition-lib.sh owns that acceptance and its signal).
-# A close that fails for any other reason is fatal and loud, preserves its
-# pending-close record, and is retried by the next session start.
+# and so does a row the probe confirms has left the backlog entirely, because no
+# later retry could ever land it. Every other close failure stays fatal and
+# loud, preserves its pending-close record, and is retried by the next session
+# start. bin/fm-backlog-transition-lib.sh owns those outcomes and their signals.
 # The transition is skipped on a
 # config/backlog-backend=manual home and in a markdown home that keeps no
 # data/backlog.md; those cases print the manual follow-up. A configured
@@ -1423,7 +1422,7 @@ backlog_done_args() {
 # invariant). This prints what already happened, so the follow-up wording stays
 # only where a human still owes the edit.
 backlog_refresh_reminder() {
-  local backlog_display root backend=markdown
+  local backlog_display root backend=markdown deliverable
   [ "$KIND" = secondmate ] && return 0
   [ "$CLEANUP_RECOVERY" = orca ] && return 0
   if root=$(fm_backlog_root "$DATA"); then
@@ -1439,7 +1438,13 @@ backlog_refresh_reminder() {
   if [ "$BACKLOG_CLOSED" = 1 ] && [ "$BACKLOG_TRANSITION" = retain ]; then
     printf '%s\n' "Backlog: $ID stays open in $backlog_display, still held for the captain with its deliverable recorded. Relay the question and close it only with bin/fm-captain-hold.sh answer."
   elif [ "$BACKLOG_CLOSED" = 1 ] && [ "$BACKLOG_ROW_ABSENT" = 1 ]; then
-    printf '%s\n' "Backlog: $ID had already left $backlog_display, so cleanup recorded no close there. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due."
+    deliverable=$(fm_backlog_retain_deliverable \
+      "${BACKLOG_DONE_ARGS[@]+"${BACKLOG_DONE_ARGS[@]}"}")
+    if [ -n "$deliverable" ]; then
+      printf '%s\n' "Backlog: $ID had already left $backlog_display, so cleanup recorded no close there and its completion link ($deliverable) was never applied - reconcile that artifact by hand. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due."
+    else
+      printf '%s\n' "Backlog: $ID had already left $backlog_display, so cleanup recorded no close there and it recorded no completion link to reconcile. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due."
+    fi
   elif [ "$BACKLOG_CLOSED" = 1 ]; then
     printf '%s\n' "Backlog: $ID is closed in $backlog_display. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due."
   else
