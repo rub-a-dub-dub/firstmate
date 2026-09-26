@@ -621,22 +621,14 @@ fm_backlog_row_probe() {  # <data-dir> <id>
 # bound exists to catch is separated by a `done_keep` eviction rather than by
 # hours.
 fm_backlog_archive_row_probe() {  # <data-dir> <id> <recorded-utc>
-  local data authorized_data=$1 id=$2 recorded_utc=${3:-} archive
+  local authorized_data=$1 id=$2 recorded_utc=${3:-} archive
   FM_BACKLOG_ARCHIVE_ROW_RESULT=error
   FM_BACKLOG_ARCHIVE_ROW_ERROR=
-  if ! data=$(fm_backlog_data_absolute "$authorized_data"); then
+  archive=$(fm_backlog_archive_file "$authorized_data") || {
     FM_BACKLOG_ARCHIVE_ROW_ERROR="data directory cannot be resolved: $authorized_data"
     return 1
-  fi
-  if ! fm_backlog_recorded_utc_valid "$recorded_utc"; then
-    FM_BACKLOG_ARCHIVE_ROW_RESULT=not_found
-    return 0
-  fi
-  archive=$(fm_backlog_archive_file "$data") || {
-    FM_BACKLOG_ARCHIVE_ROW_ERROR=$FM_BACKLOG_TRANSITION_ERROR
-    return 1
   }
-  if [ ! -e "$archive" ] && [ ! -L "$archive" ]; then
+  if ! fm_backlog_recorded_utc_valid "$recorded_utc"; then
     FM_BACKLOG_ARCHIVE_ROW_RESULT=not_found
     return 0
   fi
