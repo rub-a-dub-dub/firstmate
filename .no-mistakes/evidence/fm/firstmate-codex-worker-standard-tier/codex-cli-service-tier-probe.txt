@@ -1,0 +1,94 @@
+$ codex --version
+codex-cli 0.154.0
+
+$ grep service_tier ~/.codex/config.toml   # captain's interactive default
+6:service_tier = "priority"
+
+--- A) captain's own session: no session override (inherits priority) ---
+$ codex exec --skip-git-repo-check 'Reply with exactly: TIER_OK'
+Reading additional input from stdin...
+OpenAI Codex v0.154.0
+--------
+workdir: /private/tmp
+model: gpt-5.6-sol
+provider: openai
+approval: on-request
+sandbox: read-only
+reasoning effort: high
+reasoning summaries: none
+session id: 01a0e004-bd10-78d0-919c-1917568841fa
+--------
+user
+Reply with exactly: TIER_OK
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart Failed
+hook: SessionStart Failed
+hook: SessionStart Failed
+codex
+TIER_OK
+tokens used
+15 627
+TIER_OK
+
+--- B) Firstmate worker launch: session override to the standard tier ---
+$ codex exec -c 'service_tier="default"' --skip-git-repo-check 'Reply with exactly: TIER_OK'
+Reading additional input from stdin...
+OpenAI Codex v0.154.0
+--------
+workdir: /private/tmp
+model: gpt-5.6-sol
+provider: openai
+approval: on-request
+sandbox: read-only
+reasoning effort: high
+reasoning summaries: none
+session id: 01a0e005-008f-7401-92a2-55af1e962e34
+--------
+user
+Reply with exactly: TIER_OK
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart Failed
+hook: SessionStart Failed
+hook: SessionStart Failed
+codex
+TIER_OK
+tokens used
+12 043
+TIER_OK
+
+--- C) precedence control: an unsupported session value overrides the user-level priority and is reported ---
+$ codex exec -c 'service_tier="bogus-tier"' --skip-git-repo-check 'Reply with exactly: TIER_OK'
+Reading additional input from stdin...
+OpenAI Codex v0.154.0
+--------
+workdir: /private/tmp
+model: gpt-5.6-sol
+provider: openai
+approval: on-request
+sandbox: read-only
+reasoning effort: high
+reasoning summaries: none
+session id: 01a0e005-148a-7d80-a032-4097ce32a6d1
+--------
+user
+Reply with exactly: TIER_OK
+warning: Configured service tier `bogus-tier` is not advertised as supported for model `gpt-5.6-sol` and will be omitted from requests.
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart Failed
+hook: SessionStart Failed
+hook: SessionStart Failed
+codex
+TIER_OK
+tokens used
+12 043
+TIER_OK
+
+--- captain's config after all three runs (unchanged) ---
+$ grep service_tier ~/.codex/config.toml
+6:service_tier = "priority"

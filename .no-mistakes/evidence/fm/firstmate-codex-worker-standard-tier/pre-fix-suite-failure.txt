@@ -1,0 +1,24 @@
+ok - allowlist=absent preserves the operational floor and filters only when opted in
+ok - allowlist=missing-config preserves the operational floor and filters only when opted in
+ok - allowlist=enabled preserves the operational floor and filters only when opted in
+ok - allowlist=empty preserves the operational floor and filters only when opted in
+ok - invalid allowlist names refuse before launch or task publication
+ok - inaccessible config with present allowlist refuses before launch or task publication
+ok - inaccessible config with absent allowlist refuses before launch or task publication
+ok - inaccessible ancestor with present allowlist refuses before launch or task publication
+ok - inaccessible ancestor with absent allowlist refuses before launch or task publication
+ok - secondmate launch inherits the allowlist for subsequent worker launches
+ok - local inheritance preserves the allowlist on source errors and mirrors proven absence
+ok - remote inheritance preserves the allowlist on source errors and mirrors proven absence
+ok - fm-spawn: actual ship/scout launch commands deliver the worker role contract
+ok - no --model/--effort records defaults and types the claude launch instructions
+ok - non-cursor launches clear inherited Cursor identity markers
+ok - relative home overrides ignore CDPATH and become absolute before spawn launch construction
+ok - FM_HOME defaults resolve relative paths and preserve absolute spellings
+ok - absolute override spellings are preserved in spawn launch paths
+ok - unresolvable relative spawn overrides fail with named diagnostics
+ok - active crew-dispatch profile requires an explicit harness for ship spawns
+ok - active crew-dispatch profile requires an explicit harness for scout spawns
+not ok - explicit harness launch did not thread model and effort (missing: 'codex --model 'gpt-5' -c 'model_reasoning_effort="high"' -c 'service_tier="default"' --dangerously-bypass-approvals-and-sandbox')
+--- output ---
+env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI codex --model 'gpt-5' -c 'model_reasoning_effort="high"' --dangerously-bypass-approvals-and-sandbox -c "notify=[\"bash\",\"-c\",\"touch '/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-spawn-dispatch-profile.2Y9kw6/profile-explicit/home/state/profile-explicit-z13.turn-ended'\"]" "$('/Users/crossbow/.no-mistakes/worktrees/00644a303d6a/01M3FZ1JFZZ904JNWC394QCT0M/bin/fm-operational-input.sh' encode launch-brief < '/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-spawn-dispatch-profile.2Y9kw6/profile-explicit/home/data/profile-explicit-z13/launch-brief.md')"
