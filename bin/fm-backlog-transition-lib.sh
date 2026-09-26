@@ -611,15 +611,26 @@ fm_backlog_row_probe() {  # <data-dir> <id>
 # predate this record therefore reads `not_found`, which is the truth about
 # THIS retention: nothing answered it.
 #
+# Comparing the two dates at all depends on both writers sharing a clock base,
+# and they do: tasks-axi dates its headings in LOCAL time, deliberately, to
+# match this project's own convention (its markdown backend's `today()` builds
+# the string from getFullYear/getMonth/getDate and says so - "Local date
+# (firstmate's dates are local ...), not UTC" - as does derive.js's
+# currentLocalDate). The record's stamp is therefore taken in local time too
+# (fm_backlog_close_marker_write), the one deliberate exception to this repo's
+# `date -u` convention. Were the two bases to diverge by a day, a heading
+# landing behind the stamp would read `not_found` and escalate an already
+# answered call - so a tasks-axi release that switched to UTC must break the
+# regression that archives against a same-day stamp rather than pass quietly.
+# A `done_keep = 0` home archives in the same minute the row closes, so there is
+# no eviction delay to absorb such a skew.
+#
 # A `not_found` result - no match, a match only under earlier headings, a
 # record carrying no recorded_utc (written before the stamp existed), an
 # unparseable or missing heading above the match, or no archive file at all -
 # means nothing here can attribute an answer to this retention. That is the
 # closed-safe default a read failure or format surprise also falls to: it
-# routes the caller to escalation, never to a false "answered". A day of clock
-# skew between the two writers resolves the same way, since the reuse this
-# bound exists to catch is separated by a `done_keep` eviction rather than by
-# hours.
+# routes the caller to escalation, never to a false "answered".
 fm_backlog_archive_row_probe() {  # <data-dir> <id> <recorded-utc>
   local authorized_data=$1 id=$2 recorded_utc=${3:-} archive
   FM_BACKLOG_ARCHIVE_ROW_RESULT=error
@@ -1287,16 +1298,18 @@ fm_backlog_close_marker_stage() {  # <temporary-path> <id> <data-dir> <spawn-gen
 }
 
 # Record the exact close a teardown is about to perform. The record is stamped
-# with the UTC day it is written; that stamp is what later bounds an archived-row
-# hit to this retention rather than to an earlier incarnation of a reused id
-# (fm_backlog_archive_row_probe).
+# with the day it is written, in the LOCAL clock base tasks-axi dates its archive
+# headings in rather than this repo's usual `date -u` (see
+# fm_backlog_archive_row_probe, which owns that cross-tool dependency); that
+# stamp is what later bounds an archived-row hit to this retention rather than to
+# an earlier incarnation of a reused id.
 fm_backlog_close_marker_write() {  # <state-dir> <id> <data-dir> <spawn-gen> [flag...]
   local state=$1 id=$2 data=$3 spawn_gen=$4 marker tmp recorded_utc
   fm_backlog_directory_present "$state" "state directory" || return 1
   shift 4
   marker=$(fm_backlog_close_marker_path "$state" "$id") || return 1
   tmp="$state/.$id.backlog-close.${BASHPID:-$$}"
-  recorded_utc=$(date -u +%Y-%m-%d) || return 1
+  recorded_utc=$(date +%Y-%m-%d) || return 1
   fm_backlog_close_marker_stage "$tmp" "$id" "$data" "$spawn_gen" "$state" 0 \
     "$recorded_utc" "$@" || return 1
   fm_backlog_atomic_transition publish "$tmp" "$marker" "pending-close record" "$state" \

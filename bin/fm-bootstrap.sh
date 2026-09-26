@@ -1459,6 +1459,7 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ] && local_phase; then
   else
     BOOTSTRAP_BACKLOG_GATE_STATUS=$?
     if [ "$BOOTSTRAP_BACKLOG_GATE_STATUS" -eq 2 ]; then
+      backlog_reconcile_record_report
       echo "error: bootstrap cannot access configured backlog data directory $DATA ($FM_BACKLOG_TRANSITION_ERROR)" >&2
       exit 1
     fi
@@ -1469,6 +1470,7 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ] && local_phase; then
   else
     BOOTSTRAP_BACKLOG_RECONCILE_STATUS=$?
     if [ "$BOOTSTRAP_BACKLOG_RECONCILE_STATUS" -eq 2 ]; then
+      backlog_reconcile_record_report
       exit 1
     fi
   fi
@@ -1477,7 +1479,10 @@ fi
 # Read-only, and owed to the captain on EVERY session start - so it sits outside
 # the mutating gate above, which a detect-only read-only session skips, and
 # after it, so a record the replay just retired reports on that same start. The
-# deferred network pass never repeats it: the local pass already printed it.
+# two fatal arms inside that gate emit it themselves before they exit, since
+# they never reach here; each of those arms exits, so no session start can print
+# a record twice. The deferred network pass never repeats it either: the local
+# pass already printed it.
 local_phase && backlog_reconcile_record_report
 
 # Local detection: presence, version floors, and configuration. Nothing here

@@ -2161,6 +2161,49 @@ test_recovery_recognizes_a_retain_row_answered_then_archived() {
   pass "recovery does not ask the captain to re-decide a call already answered before its row aged into the archive"
 }
 
+# The archive bound compares the record's stamp against tasks-axi's own
+# `## Archived <date>` heading, so the two must share a clock base. tasks-axi
+# dates in local time on purpose, which is why the stamp is taken with `date`
+# rather than this repo's usual `date -u`. The sibling test above deliberately
+# predates its archival, so it would still pass if the bases diverged; this one
+# makes the same-day comparison production always makes, on a `done_keep = 0`
+# home that archives in the same minute the row closes. A tasks-axi release
+# that switched its headings to UTC, or a regression that reverted the stamp to
+# `date -u`, turns this red west of UTC instead of silently escalating a call
+# the captain already answered.
+test_recovery_recognizes_a_same_day_archived_answer() {
+  local case_dir home id marker out
+  id=atomic-heal-answered-archived-same-day-b31
+  case_dir=$(make_home heal-answered-archived-same-day)
+  home=$(home_of "$case_dir")
+  printf '%s\n' 'backend = "markdown"' '' '[markdown]' \
+    'path = "data/backlog.md"' 'archive = "data/done-archive.md"' \
+    'done_keep = 0' > "$home/.tasks.toml"
+  add_item "$case_dir" "$id"
+  start_item "$case_dir" "$id"
+  tasks-axi hold "$id" --reason "captain decision pending" --kind captain \
+    --file "$(backlog_of "$case_dir")" >/dev/null
+  tasks-axi "done" "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  (cd "$home" \
+    && tasks-axi prune --keep 0 --state "done" --file "$(backlog_of "$case_dir")" >/dev/null)
+  [ -z "$(row_state "$case_dir" "$id")" ] \
+    || fail "the fixture's pruned row is still visible to tasks-axi show"
+  assert_grep "$id" "$home/data/done-archive.md" \
+    "the fixture did not archive the answered row"
+  marker="$home/state/$id.backlog-close"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-answered-same-day\nrecorded_utc=%s\nmode=retain\narg=--pr\narg=https://github.com/example/repo/pull/25\n' \
+    "$id" "$home/data" "$(date +%Y-%m-%d)" > "$marker"
+
+  out=$(run_bootstrap "$case_dir")
+  assert_absent "$home/state/$id.backlog-reconcile" \
+    "a row archived the same day its close was recorded resurfaced as an unresolved reconcile record - the record's stamp and tasks-axi's archive heading no longer share a clock base"
+  assert_contains "$out" "the captain had already answered its call" \
+    "a same-day archived answer was not recognized as answered"
+  assert_absent "$marker" \
+    "a same-day archived answer left its retain marker to retry forever"
+  pass "an answer archived the same day the close was recorded is recognized, so the stamp shares tasks-axi's clock base"
+}
+
 # Defect: fm_backlog_archive_row_probe attributed an archived `- [x] <id> - `
 # line to the calling retention by id alone, against an append-only archive that
 # accumulates forever. A backlog id may be reused once an earlier incarnation
@@ -2441,6 +2484,47 @@ test_recovery_reconcile_record_reports_when_the_backend_cannot_be_resolved() {
   assert_contains "$out" "PR $pr" \
     "the re-reported reconcile line lost the deliverable it was carrying"
   pass "a reconcile record is re-reported even when this home's backlog backend cannot be resolved"
+}
+
+# Defect: the every-session-start report ran only after the mutating block, so
+# the block's own fatal arm suppressed it. The home above escapes that arm only
+# because a lone reconcile record leaves the gate kind at `secondmate`, which
+# short-circuits to a harmless skip. Any ordinary live ship record - or any
+# coexisting pending close, a state fm_backlog_reconcile_marker_write now leaves
+# in place deliberately until an ack - promotes the gate kind, drives the
+# unresolvable backend to a hard error, and killed session start with the
+# unacknowledged deliverable never printed, on that start and every later one.
+test_recovery_reconcile_record_reports_when_a_promoted_gate_kind_cannot_resolve() {
+  local case_dir home id pr other reconcile_marker out
+  pr=https://github.com/example/repo/pull/24
+  for other in live-ship pending-close; do
+    id="atomic-heal-retain-unresolved-gate-$other-b30"
+    case_dir=$(make_home "heal-retain-unresolved-gate-$other")
+    home=$(home_of "$case_dir")
+    reconcile_marker="$home/state/$id.backlog-reconcile"
+    printf 'id=%s\ndata=%s\nspawn_gen=spawn-%s\nmode=retain\narg=--pr\narg=%s\n' \
+      "$id" "$home/data" "$id" "$pr" > "$reconcile_marker"
+    if [ "$other" = live-ship ]; then
+      write_task_meta "$case_dir" "$id-neighbour" ship no-mistakes \
+        "spawn_gen=spawn-$id-neighbour"
+    else
+      printf 'id=%s\ndata=%s\nspawn_gen=spawn-%s-neighbour\n' \
+        "$id-neighbour" "$home/data" "$id" > "$home/state/$id-neighbour.backlog-close"
+    fi
+    rm -f "$home/.tasks.toml"
+    ln -s missing-backend.toml "$home/.tasks.toml"
+
+    out=$(run_bootstrap "$case_dir") || true
+    assert_present "$reconcile_marker" \
+      "the $other home retired a reconcile record nobody acknowledged"
+    assert_contains "$out" "BACKLOG_RECONCILE: $id:" \
+      "a home holding a $other beside its reconcile record went silent about the record when its backlog gate errored"
+    assert_contains "$out" "PR $pr" \
+      "the $other home's reconcile line lost the deliverable it was carrying"
+    assert_equals 1 "$(printf '%s\n' "$out" | grep -c "BACKLOG_RECONCILE: $id:")" \
+      "the $other home printed the same reconcile record more than once in a single session start"
+  done
+  pass "a reconcile record still reports when a promoted gate kind cannot resolve the backlog backend"
 }
 
 # A captain-held task can pause for a decision before producing any artifact,
@@ -3537,6 +3621,7 @@ test_recovery_replays_a_close_an_interrupted_cleanup_left_open
 test_recovery_backfills_a_recorded_link_on_an_already_done_item
 test_recovery_reports_incomplete_cleanup_for_an_answered_retain
 test_recovery_recognizes_a_retain_row_answered_then_archived
+test_recovery_recognizes_a_same_day_archived_answer
 test_recovery_escalates_a_reused_id_whose_archived_answer_predates_the_record
 test_recovery_escalates_an_unstamped_record_over_an_unattributable_archived_answer
 test_recovery_reconcile_record_survives_being_unread
@@ -3545,6 +3630,7 @@ test_recovery_refuses_to_overwrite_an_unacknowledged_reconcile_record
 test_recovery_reconcile_record_reports_when_backlog_transitions_are_skipped
 test_recovery_reconcile_record_reports_in_a_read_only_session_start
 test_recovery_reconcile_record_reports_when_the_backend_cannot_be_resolved
+test_recovery_reconcile_record_reports_when_a_promoted_gate_kind_cannot_resolve
 test_recovery_reconcile_record_reports_when_no_deliverable_was_recorded
 test_recovery_reconcile_record_preserves_incomplete_cleanup_warning
 test_recovery_preserves_a_close_when_the_backlog_cannot_be_read
