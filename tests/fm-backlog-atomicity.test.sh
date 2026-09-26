@@ -1930,8 +1930,10 @@ test_completion_accepts_a_row_already_archived_by_retention() {
     "teardown kept the task record for a row already gone from the backlog"
   assert_contains "$out" "had already left" \
     "teardown accepted the absence without telling the operator the row was gone"
-  assert_contains "$out" "completion link (local main)" \
-    "teardown discarded the completion link its close could not apply"
+  assert_contains "$out" "completion link (local main) could not be confirmed as applied" \
+    "teardown asserted the recorded link was never applied, which a close killed after its write had landed disproves"
+  assert_not_contains "$out" "was never applied" \
+    "teardown claimed the link was never applied without proving no write landed"
   assert_not_contains "$out" "is closed in" \
     "teardown reported a close it never ran as landed in a backlog holding no row"
   pass "completion accepts a row retention already archived as the close it was reaching for"

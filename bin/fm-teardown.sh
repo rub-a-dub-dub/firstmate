@@ -1442,7 +1442,7 @@ backlog_refresh_reminder() {
     deliverable=$(fm_backlog_retain_deliverable \
       "${BACKLOG_DONE_ARGS[@]+"${BACKLOG_DONE_ARGS[@]}"}")
     if [ -n "$deliverable" ]; then
-      disposition="its completion link ($deliverable) was never applied - reconcile that artifact by hand."
+      disposition="its completion link ($deliverable) could not be confirmed as applied and should be checked."
     else
       disposition="it recorded no completion link to reconcile."
     fi
