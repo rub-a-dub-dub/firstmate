@@ -2137,7 +2137,10 @@ test_recovery_recognizes_a_retain_row_answered_then_archived() {
   [ -z "$(row_state "$case_dir" "$id")" ] \
     || fail "the fixture's pruned row is still visible to tasks-axi show"
   marker="$(home_of "$case_dir")/state/$id.backlog-close"
-  printf 'id=%s\ndata=%s\nspawn_gen=spawn-answered-archived\nmode=retain\narg=--pr\narg=https://github.com/example/repo/pull/15\n' \
+  # recorded_utc predates the archival tasks-axi just performed, which is the
+  # real order of events: the teardown recorded this close, was interrupted, and
+  # the captain's answer aged into the archive afterwards.
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-answered-archived\nrecorded_utc=2020-01-01\nmode=retain\narg=--pr\narg=https://github.com/example/repo/pull/15\n' \
     "$id" "$(home_of "$case_dir")/data" > "$marker"
 
   out=$(run_bootstrap "$case_dir")
@@ -2150,6 +2153,82 @@ test_recovery_recognizes_a_retain_row_answered_then_archived() {
   assert_contains "$out" "the captain had already answered its call" \
     "an answered-then-archived retain was not recognized as answered"
   pass "recovery does not ask the captain to re-decide a call already answered before its row aged into the archive"
+}
+
+# Defect: fm_backlog_archive_row_probe attributed an archived `- [x] <id> - `
+# line to the calling retention by id alone, against an append-only archive that
+# accumulates forever. A backlog id may be reused once an earlier incarnation
+# has been pruned into the archive, and that old line then made a genuinely
+# unanswered captain call read as `answered`: the marker was deleted and its
+# recorded deliverable dropped instead of being retired into a durable
+# reconcile record. The archive is tasks-axi's own generated rendering, so the
+# fixture writes the heading shape the sibling test above pins against a real
+# `tasks-axi prune`.
+test_recovery_escalates_a_reused_id_whose_archived_answer_predates_the_record() {
+  local case_dir home id pr marker archive out
+  id=atomic-heal-archived-id-reuse-b28
+  pr=https://github.com/example/repo/pull/22
+  case_dir=$(make_home heal-archived-id-reuse)
+  home=$(home_of "$case_dir")
+  add_item "$case_dir" "$id"
+  tasks-axi hold "$id" --reason "captain decision pending" --kind captain \
+    --file "$(backlog_of "$case_dir")" >/dev/null
+  tasks-axi rm "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  [ -z "$(row_state "$case_dir" "$id")" ] \
+    || fail "the fixture's removed row is still visible to tasks-axi show"
+  archive="$home/data/done-archive.md"
+  printf '%s\n' '# Done archive' '' '## Archived 2020-01-01' '' \
+    "- [x] $id - the earlier incarnation of this reused slug" > "$archive"
+  marker="$home/state/$id.backlog-close"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-archived-id-reuse\nrecorded_utc=2026-02-01\nmode=retain\narg=--pr\narg=%s\n' \
+    "$id" "$home/data" "$pr" > "$marker"
+
+  out=$(run_bootstrap "$case_dir")
+  assert_absent "$marker" \
+    "the unanswered retain marker was left on the pending-close glob to retry forever"
+  assert_not_contains "$out" "had already answered" \
+    "an earlier incarnation's archived line made a genuinely unanswered call read as answered"
+  assert_present "$home/state/$id.backlog-reconcile" \
+    "an unanswered call whose reused id was archived earlier lost its deliverable instead of retiring it into a reconcile record"
+  assert_contains "$out" "BACKLOG_RECONCILE: $id:" \
+    "the unanswered call whose reused id appears in the archive went unreported"
+  assert_contains "$out" "PR $pr" \
+    "the reconcile record dropped the deliverable the unanswered call had recorded"
+  pass "recovery escalates an unanswered call whose only archived line belongs to an earlier incarnation of a reused id"
+}
+
+# A pending-close record written before the recorded_utc stamp existed carries
+# nothing that can attribute an archived line to it, so it must escalate rather
+# than take the `answered` shortcut on an unattributable hit. The archive here is
+# dated far later than any plausible record, so only the missing stamp can
+# explain the outcome.
+test_recovery_escalates_an_unstamped_record_over_an_unattributable_archived_answer() {
+  local case_dir home id pr marker archive out
+  id=atomic-heal-archived-unstamped-b29
+  pr=https://github.com/example/repo/pull/23
+  case_dir=$(make_home heal-archived-unstamped)
+  home=$(home_of "$case_dir")
+  add_item "$case_dir" "$id"
+  tasks-axi hold "$id" --reason "captain decision pending" --kind captain \
+    --file "$(backlog_of "$case_dir")" >/dev/null
+  tasks-axi rm "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  archive="$home/data/done-archive.md"
+  printf '%s\n' '# Done archive' '' '## Archived 2099-01-01' '' \
+    "- [x] $id - archived under a heading no record can be dated against" > "$archive"
+  marker="$home/state/$id.backlog-close"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-archived-unstamped\nmode=retain\narg=--pr\narg=%s\n' \
+    "$id" "$home/data" "$pr" > "$marker"
+
+  out=$(run_bootstrap "$case_dir")
+  assert_absent "$marker" \
+    "an unstamped retain marker was left on the pending-close glob to retry forever"
+  assert_not_contains "$out" "had already answered" \
+    "an unstamped record claimed an archived answer it cannot attribute to itself"
+  assert_present "$home/state/$id.backlog-reconcile" \
+    "an unstamped record's deliverable was dropped instead of retired into a reconcile record"
+  assert_contains "$out" "PR $pr" \
+    "the reconcile record dropped the deliverable the unstamped record carried"
+  pass "an unstamped pending-close record escalates rather than claiming an archived answer"
 }
 
 # Defect: the reconcile report for a genuinely unresolved retain (no answer
@@ -3450,6 +3529,8 @@ test_recovery_replays_a_close_an_interrupted_cleanup_left_open
 test_recovery_backfills_a_recorded_link_on_an_already_done_item
 test_recovery_reports_incomplete_cleanup_for_an_answered_retain
 test_recovery_recognizes_a_retain_row_answered_then_archived
+test_recovery_escalates_a_reused_id_whose_archived_answer_predates_the_record
+test_recovery_escalates_an_unstamped_record_over_an_unattributable_archived_answer
 test_recovery_reconcile_record_survives_being_unread
 test_recovery_reconcile_report_renders_a_note_deliverable_readably
 test_recovery_refuses_to_overwrite_an_unacknowledged_reconcile_record

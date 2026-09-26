@@ -63,7 +63,9 @@
 # Those are not the same outcome and must not be reported the same way: the
 # first needs nothing further, the second still owes the captain a decision.
 # Telling them apart means checking the archive (fm_backlog_archive_row_probe)
-# before concluding absence; a hit there is routed through the identical
+# before concluding absence; a hit there that is dated to THIS retention - the
+# record's own `recorded_utc` stamp bounds it, so an earlier incarnation of a
+# reused id cannot answer for it - is routed through the identical
 # `answered`/`answered_incomplete` handling a live Done row gets. A genuine
 # miss retires the marker under `retain_unresolved` and is never silently
 # reported once and forgotten: see
@@ -124,6 +126,22 @@ fm_backlog_control_bytes_valid() {  # <allow-newline: 0|1> <od-bytes>
   printf '%s\n' "$2" | awk -v allow_newline="$1" '
     { for (i = 1; i <= NF; i++) if (($i < 32 && !(allow_newline && $i == 10)) || $i == 127) exit 1 }
   '
+}
+
+# The one spelling a pending-close record's `recorded_utc` stamp is accepted in,
+# shared by the schema validator that reads it and the archive probe that bounds
+# a match against it, so neither can drift into accepting what the other cannot
+# compare. An empty stamp is a record written before the field existed and is
+# not valid here; the probe resolves that to `not_found`.
+fm_backlog_recorded_utc_valid() {  # <value>
+  case "$1" in
+    [0-9][0-9][0-9][0-9]-0[1-9]-[0-3][0-9]|[0-9][0-9][0-9][0-9]-1[0-2]-[0-3][0-9]) ;;
+    *) return 1 ;;
+  esac
+  case "${1#*-*-}" in
+    00|3[2-9]) return 1 ;;
+  esac
+  return 0
 }
 
 fm_backlog_directory_present() {
@@ -581,29 +599,38 @@ fm_backlog_row_probe() {  # <data-dir> <id>
 # `## Archived <date>` heading. Grep for that line rather than trying to
 # parse the archive as a task file.
 #
-# A hit is attributed to the calling retention by id alone. The archived line
-# records no spawn generation, and the pending-close record carries no
-# timestamp to compare against the `## Archived <date>` heading above the
-# match, so nothing here distinguishes one incarnation of a reused id from
-# another. This probe therefore assumes a backlog id is never reused once an
-# earlier incarnation of it has been archived: in a home that does reuse one,
-# the older incarnation's archived line makes a genuinely unanswered call read
-# as `answered`, and its recorded deliverable is dropped rather than retired
-# into a reconcile record. Bounding that would mean stamping the record and
-# parsing the archive's date headings, which is a wider schema and format
-# dependency than this lookup owns.
+# The archived line records no spawn generation, so a hit is attributed to the
+# calling retention by id AND by date: it counts only when it sits under a
+# `## Archived <date>` heading dated on or after the day the pending-close
+# record was recorded (recorded_utc, stamped by
+# fm_backlog_close_marker_stage). A backlog id may be reused - nothing refuses
+# `add` for a slug whose earlier incarnation was pruned into the archive - and
+# without that bound the older incarnation's archived line makes a genuinely
+# unanswered call read as `answered`, dropping its recorded deliverable instead
+# of retiring it into a reconcile record. An id whose only archived lines
+# predate this record therefore reads `not_found`, which is the truth about
+# THIS retention: nothing answered it.
 #
-# A `not_found` result - no match, or no archive file at all - means the
-# archive has nothing either; this is a closed-safe default: a read failure or
-# format surprise also falls to `not_found`, which routes the caller to
-# escalation, never to a false "answered".
-fm_backlog_archive_row_probe() {  # <data-dir> <id>
-  local data authorized_data=$1 id=$2 archive escaped_id pattern
+# A `not_found` result - no match, a match only under earlier headings, a
+# record carrying no recorded_utc (written before the stamp existed), an
+# unparseable or missing heading above the match, or no archive file at all -
+# means nothing here can attribute an answer to this retention. That is the
+# closed-safe default a read failure or format surprise also falls to: it
+# routes the caller to escalation, never to a false "answered". A day of clock
+# skew between the two writers resolves the same way, since the reuse this
+# bound exists to catch is separated by a `done_keep` eviction rather than by
+# hours.
+fm_backlog_archive_row_probe() {  # <data-dir> <id> <recorded-utc>
+  local data authorized_data=$1 id=$2 recorded_utc=${3:-} archive
   FM_BACKLOG_ARCHIVE_ROW_RESULT=error
   FM_BACKLOG_ARCHIVE_ROW_ERROR=
   if ! data=$(fm_backlog_data_absolute "$authorized_data"); then
     FM_BACKLOG_ARCHIVE_ROW_ERROR="data directory cannot be resolved: $authorized_data"
     return 1
+  fi
+  if ! fm_backlog_recorded_utc_valid "$recorded_utc"; then
+    FM_BACKLOG_ARCHIVE_ROW_RESULT=not_found
+    return 0
   fi
   archive=$(fm_backlog_archive_file "$data") || {
     FM_BACKLOG_ARCHIVE_ROW_ERROR=$FM_BACKLOG_TRANSITION_ERROR
@@ -617,9 +644,22 @@ fm_backlog_archive_row_probe() {  # <data-dir> <id>
     FM_BACKLOG_ARCHIVE_ROW_RESULT=not_found
     return 0
   fi
-  escaped_id=$(printf '%s' "$id" | sed 's/[.[\*^$]/\\&/g')
-  pattern="^- \\[x\\] ${escaped_id} - "
-  if grep -Eq -- "$pattern" "$archive" 2>/dev/null; then
+  if [ "$(awk -v id="$id" -v stamp="$recorded_utc" '
+    function serial(value) {
+      if (value !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) return -1
+      gsub(/-/, "", value)
+      return value + 0
+    }
+    BEGIN { prefix = "- [x] " id " - "; want = serial(stamp); archived = -1 }
+    substr($0, 1, 12) == "## Archived " {
+      split(substr($0, 13), heading, /[ \t]/)
+      archived = serial(heading[1])
+      next
+    }
+    substr($0, 1, length(prefix)) == prefix {
+      if (archived >= 0 && archived >= want) { print "found"; exit }
+    }
+  ' "$archive" 2>/dev/null)" = found ]; then
     FM_BACKLOG_ARCHIVE_ROW_RESULT=found
   else
     FM_BACKLOG_ARCHIVE_ROW_RESULT=not_found
@@ -1020,14 +1060,16 @@ fm_backlog_close_marker_validate() {  # <marker-path> <authorized-data-dir> <exp
   local marker=$1 authorized_data data_resolved expected_id=$3 state=$4
   local id='' data='' marker_spawn_gen='' cleanup_incomplete=0 mode=close line raw_bytes arg_value
   local url_tail url_authority url_path url_host url_port host_rest host_label host_valid
-  local percent_tail percent_valid
+  local percent_tail percent_valid recorded_utc=''
   local id_count=0 data_count=0 spawn_gen_count=0 cleanup_incomplete_count=0 mode_count=0
+  local recorded_utc_count=0
   local args=()
   FM_BACKLOG_CLOSE_VALIDATED_ID=
   FM_BACKLOG_CLOSE_VALIDATED_DATA=
   FM_BACKLOG_CLOSE_VALIDATED_SPAWN_GEN=
   FM_BACKLOG_CLOSE_VALIDATED_CLEANUP_INCOMPLETE=0
   FM_BACKLOG_CLOSE_VALIDATED_MODE=close
+  FM_BACKLOG_CLOSE_VALIDATED_RECORDED_UTC=
   FM_BACKLOG_CLOSE_VALIDATED_ARGS=()
   fm_backlog_record_present "$marker" "pending-close record" "$state" || return 1
   raw_bytes=$(fm_backlog_bytes_of_file "$marker" 2>/dev/null) || {
@@ -1044,6 +1086,7 @@ fm_backlog_close_marker_validate() {  # <marker-path> <authorized-data-dir> <exp
       data=*) data=${line#data=}; data_count=$((data_count + 1)) ;;
       spawn_gen=*) marker_spawn_gen=${line#spawn_gen=}; spawn_gen_count=$((spawn_gen_count + 1)) ;;
       cleanup_incomplete=*) cleanup_incomplete=${line#cleanup_incomplete=}; cleanup_incomplete_count=$((cleanup_incomplete_count + 1)) ;;
+      recorded_utc=*) recorded_utc=${line#recorded_utc=}; recorded_utc_count=$((recorded_utc_count + 1)) ;;
       mode=*) mode=${line#mode=}; mode_count=$((mode_count + 1)) ;;
       arg=*) args+=("${line#arg=}") ;;
       *) FM_BACKLOG_TRANSITION_ERROR="unreadable pending-close record $marker"; return 1 ;;
@@ -1089,6 +1132,14 @@ fm_backlog_close_marker_validate() {  # <marker-path> <authorized-data-dir> <exp
       return 1
       ;;
   esac
+  if [ "$recorded_utc_count" -gt 1 ]; then
+    FM_BACKLOG_TRANSITION_ERROR="unreadable pending-close record $marker"
+    return 1
+  fi
+  if [ "$recorded_utc_count" -eq 1 ] && ! fm_backlog_recorded_utc_valid "$recorded_utc"; then
+    FM_BACKLOG_TRANSITION_ERROR="invalid recorded date in pending-close record $marker"
+    return 1
+  fi
   case "$data" in
     /*) ;;
     *) FM_BACKLOG_TRANSITION_ERROR="invalid data directory in pending-close record $marker"; return 1 ;;
@@ -1188,15 +1239,16 @@ fm_backlog_close_marker_validate() {  # <marker-path> <authorized-data-dir> <exp
   FM_BACKLOG_CLOSE_VALIDATED_SPAWN_GEN=$marker_spawn_gen
   FM_BACKLOG_CLOSE_VALIDATED_CLEANUP_INCOMPLETE=$cleanup_incomplete
   FM_BACKLOG_CLOSE_VALIDATED_MODE=$mode
+  FM_BACKLOG_CLOSE_VALIDATED_RECORDED_UTC=$recorded_utc
   FM_BACKLOG_CLOSE_VALIDATED_ARGS=("${args[@]+"${args[@]}"}")
 }
 
 # A leading `--retain` flag records the captain-held transition (`mode=retain`)
 # instead of a close; the remaining flags are the same completion links either
 # transition records.
-fm_backlog_close_marker_stage() {  # <temporary-path> <id> <data-dir> <spawn-gen> <state-dir> <cleanup-incomplete: 0|1> [--retain] [flag...]
-  local tmp=$1 id=$2 data spawn_gen=$4 state=$5 cleanup_incomplete=$6 arg previous_arg=''
-  local mode=close serialized_args=()
+fm_backlog_close_marker_stage() {  # <temporary-path> <id> <data-dir> <spawn-gen> <state-dir> <cleanup-incomplete: 0|1> <recorded-utc> [--retain] [flag...]
+  local tmp=$1 id=$2 data spawn_gen=$4 state=$5 cleanup_incomplete=$6 recorded_utc=$7
+  local arg previous_arg='' mode=close serialized_args=()
   data=$(fm_backlog_data_absolute "$3") || {
     FM_BACKLOG_TRANSITION_ERROR="data directory cannot be resolved: $3"
     return 1
@@ -1210,7 +1262,11 @@ fm_backlog_close_marker_stage() {  # <temporary-path> <id> <data-dir> <spawn-gen
     0|1) ;;
     *) FM_BACKLOG_TRANSITION_ERROR="invalid pending-close cleanup state"; return 1 ;;
   esac
-  shift 6
+  if [ -n "$recorded_utc" ] && ! fm_backlog_recorded_utc_valid "$recorded_utc"; then
+    FM_BACKLOG_TRANSITION_ERROR="invalid pending-close recorded date $recorded_utc"
+    return 1
+  fi
+  shift 7
   if [ "${1:-}" = --retain ]; then
     mode=retain
     shift
@@ -1228,6 +1284,7 @@ fm_backlog_close_marker_stage() {  # <temporary-path> <id> <data-dir> <spawn-gen
     printf 'data=%s\n' "$data"
     printf 'spawn_gen=%s\n' "$spawn_gen"
     printf 'cleanup_incomplete=%s\n' "$cleanup_incomplete"
+    [ -z "$recorded_utc" ] || printf 'recorded_utc=%s\n' "$recorded_utc"
     [ "$mode" = close ] || printf 'mode=%s\n' "$mode"
     for arg in "${serialized_args[@]+"${serialized_args[@]}"}"; do
       printf 'arg=%s\n' "$arg"
@@ -1237,23 +1294,32 @@ fm_backlog_close_marker_stage() {  # <temporary-path> <id> <data-dir> <spawn-gen
     || { rm -f "$tmp"; return 1; }
 }
 
-# Record the exact close a teardown is about to perform.
+# Record the exact close a teardown is about to perform. The record is stamped
+# with the UTC day it is written; that stamp is what later bounds an archived-row
+# hit to this retention rather than to an earlier incarnation of a reused id
+# (fm_backlog_archive_row_probe).
 fm_backlog_close_marker_write() {  # <state-dir> <id> <data-dir> <spawn-gen> [flag...]
-  local state=$1 id=$2 data=$3 spawn_gen=$4 marker tmp
+  local state=$1 id=$2 data=$3 spawn_gen=$4 marker tmp recorded_utc
   fm_backlog_directory_present "$state" "state directory" || return 1
   shift 4
   marker=$(fm_backlog_close_marker_path "$state" "$id") || return 1
   tmp="$state/.$id.backlog-close.${BASHPID:-$$}"
-  fm_backlog_close_marker_stage "$tmp" "$id" "$data" "$spawn_gen" "$state" 0 "$@" || return 1
+  recorded_utc=$(date -u +%Y-%m-%d) || return 1
+  fm_backlog_close_marker_stage "$tmp" "$id" "$data" "$spawn_gen" "$state" 0 \
+    "$recorded_utc" "$@" || return 1
   fm_backlog_atomic_transition publish "$tmp" "$marker" "pending-close record" "$state" \
     || { rm -f "$tmp"; return 1; }
 }
 
-fm_backlog_close_marker_mark_cleanup_incomplete() {  # <state-dir> <marker-path> <id> <data-dir> <spawn-gen> [flag...]
-  local state=$1 marker=$2 id=$3 data=$4 spawn_gen=$5 tmp
-  shift 5
+# Amends the record fm_backlog_close_marker_write already published rather than
+# recording a new one, so it carries that record's own stamp through instead of
+# re-dating it to the replay that is amending it.
+fm_backlog_close_marker_mark_cleanup_incomplete() {  # <state-dir> <marker-path> <id> <data-dir> <spawn-gen> <recorded-utc> [flag...]
+  local state=$1 marker=$2 id=$3 data=$4 spawn_gen=$5 recorded_utc=$6 tmp
+  shift 6
   tmp="$state/.$id.backlog-close.${BASHPID:-$$}"
-  fm_backlog_close_marker_stage "$tmp" "$id" "$data" "$spawn_gen" "$state" 1 "$@" || return 1
+  fm_backlog_close_marker_stage "$tmp" "$id" "$data" "$spawn_gen" "$state" 1 \
+    "$recorded_utc" "$@" || return 1
   fm_backlog_atomic_transition publish "$tmp" "$marker" "pending-close record" "$state" \
     || { rm -f "$tmp"; return 1; }
 }
@@ -1319,6 +1385,7 @@ fm_backlog_reconcile_marker_ack() {  # <state-dir> <id>
 fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data-dir>
   local state=$1 marker=$2 marker_name expected_id
   local id data marker_spawn_gen meta meta_spawn_gen row_state cleanup_incomplete mode
+  local recorded_utc
   local args=() mode_flags=()
   FM_BACKLOG_CLOSE_REPLAY_RESULT=noop
   fm_backlog_directory_present "$state" "state directory" || return 1
@@ -1334,6 +1401,7 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
   marker_spawn_gen=$FM_BACKLOG_CLOSE_VALIDATED_SPAWN_GEN
   cleanup_incomplete=$FM_BACKLOG_CLOSE_VALIDATED_CLEANUP_INCOMPLETE
   mode=$FM_BACKLOG_CLOSE_VALIDATED_MODE
+  recorded_utc=$FM_BACKLOG_CLOSE_VALIDATED_RECORDED_UTC
   [ "$mode" = close ] || mode_flags=(--retain)
   args=("${FM_BACKLOG_CLOSE_VALIDATED_ARGS[@]+"${FM_BACKLOG_CLOSE_VALIDATED_ARGS[@]}"}")
   meta="$state/$id.meta"
@@ -1350,7 +1418,8 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
       return 0
     fi
     fm_backlog_close_marker_mark_cleanup_incomplete "$state" "$marker" "$id" "$data" \
-      "$marker_spawn_gen" "${mode_flags[@]+"${mode_flags[@]}"}" "${args[@]+"${args[@]}"}" \
+      "$marker_spawn_gen" "$recorded_utc" "${mode_flags[@]+"${mode_flags[@]}"}" \
+      "${args[@]+"${args[@]}"}" \
       || return 1
     cleanup_incomplete=1
     fm_backlog_atomic_transition remove "$meta" "the interrupted task record" "$state" \
@@ -1401,8 +1470,10 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
         # into the archive before this replay ever catches it in the `done`
         # live state above. Check there before concluding the call was never
         # answered: an already-answered call must never resurface as an
-        # outstanding one.
-        if ! fm_backlog_archive_row_probe "$data" "$id"; then
+        # outstanding one. The record's stamp bounds which archived lines can
+        # answer for it, so the reverse mistake - an earlier incarnation of a
+        # reused id answering for this one - cannot happen either.
+        if ! fm_backlog_archive_row_probe "$data" "$id" "$recorded_utc"; then
           FM_BACKLOG_TRANSITION_ERROR=$FM_BACKLOG_ARCHIVE_ROW_ERROR
           return 1
         fi
