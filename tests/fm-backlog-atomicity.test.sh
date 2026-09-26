@@ -2789,6 +2789,8 @@ test_recovery_retires_a_close_for_a_row_archived_by_retention() {
     "an archived row's absence was reported as a lookup failure instead of a completed close"
   assert_contains "$out" "had already left this backlog" \
     "a retired pending close was resolved silently, leaving the operator to infer it"
+  assert_contains "$out" "BACKLOG_RECONCILE: $id: the recorded backlog close was retired" \
+    "the retirement was reported under a prefix the agent contract treats as no-action, so its unapplied completion link is never acted on"
   assert_contains "$out" "completion link (local main)" \
     "retiring the record discarded the completion link it carried without naming it"
   pass "recovery retires a pending close whose row already left the backlog through retention"
@@ -2815,6 +2817,8 @@ test_recovery_retires_a_close_for_a_row_removed_without_closing() {
     "a removed row's confirmed absence was reported as a lookup failure"
   assert_contains "$out" "had already left this backlog" \
     "a retired pending close was resolved silently, leaving the operator to infer it"
+  assert_contains "$out" "BACKLOG_RECONCILE: $id: the recorded backlog close was retired" \
+    "the retirement was reported under a prefix the agent contract treats as no-action, so its unapplied completion link is never acted on"
   assert_contains "$out" "completion link (PR https://example.test/pr/7)" \
     "retiring the record discarded the merged PR it carried without naming it"
   pass "recovery retires a pending close whose row was removed without closing, naming its link"
@@ -2846,6 +2850,8 @@ test_recovery_reports_a_row_that_left_the_backlog_mid_close() {
     "a close whose row left the backlog mid-replay was left to retry forever"
   assert_contains "$out" "had already left this backlog" \
     "replay hid that its close found no row to land against"
+  assert_contains "$out" "BACKLOG_RECONCILE: $id: the recorded backlog close was retired" \
+    "the retirement was reported under a prefix the agent contract treats as no-action, so its unapplied completion link is never acted on"
   assert_not_contains "$out" "that an interrupted cleanup left open" \
     "replay reported a close as landed against a row that had left the backlog"
   pass "recovery reports a close whose row left the backlog inside its own replay window"

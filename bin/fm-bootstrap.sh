@@ -99,8 +99,9 @@
 #          never starts a captain-held or closed item, and reconciliation never
 #          reads or writes another home; the fleet snapshot's classifier and
 #          bin/fm-secondmate-reconcile.sh's nudge stay as backstops. Replayed
-#          transitions, retired records, and restored In-flight rows print
-#          BOOTSTRAP_INFO facts.
+#          transitions and restored In-flight rows print BOOTSTRAP_INFO facts;
+#          a record retired without landing its close leaves an unapplied
+#          completion link, so it reports through BACKLOG_RECONCILE instead.
 #          The `code-root <file>` variant is a detect-only local check that runs
 #          even in a read-only session; detect_code_root_backlog_fork owns what
 #          it reports.
@@ -1337,7 +1338,7 @@ backlog_record_reconcile() {
           if [ "$FM_BACKLOG_CLOSE_REPLAY_RESULT" = absent_incomplete ]; then
             disposition="$disposition, and its endpoint or local copy may remain and should be reconciled"
           fi
-          echo "BOOTSTRAP_INFO: retired the pending close for $label; its backlog row had already left this backlog, so no close was left to land and $disposition"
+          echo "BACKLOG_RECONCILE: $label: the recorded backlog close was retired because its backlog row had already left this backlog, so no close was left to land; $disposition"
           ;;
         stale)
           echo "BOOTSTRAP_INFO: discarded a pending close for $label recorded by a superseded incarnation; the incarnation now on record still owes its own close"

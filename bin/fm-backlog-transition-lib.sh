@@ -54,8 +54,11 @@
 # land. That path never pretends a close landed: it reports the absence through
 # FM_BACKLOG_CLOSE_ROW_ABSENT and names the completion link the retirement
 # could not apply, so a merged PR or report is never discarded silently.
-# A genuine active-row lookup failure (an unreadable backlog, a misconfigured
-# backend, the wrong home) is preserved as an error for a later retry.
+# Absence is whatever this home's configured backend answers: a NOT_FOUND from
+# it is trusted, and nothing distinguishes a row that aged out from one this
+# backlog never carried. Only a lookup ERROR - an unreadable backlog, an
+# unresolvable or incompatible backend, any non-NOT_FOUND failure - is preserved
+# as an error for a later retry.
 # Spawn needs no marker:
 # it publishes the meta first, so a crash
 # leaves the meta itself as the evidence that the row is owed a start.
