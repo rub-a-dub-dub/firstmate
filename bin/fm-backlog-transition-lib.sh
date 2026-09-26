@@ -110,8 +110,9 @@ FM_BACKLOG_ARCHIVE_ROW_ERROR=
 # cleanup that never finished removing the endpoint or local copy.
 # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
 FM_BACKLOG_CLOSE_REPLAY_RESULT=
-# Set by fm_backlog_close_transition: 1 when the row had already left the
-# backlog, so the close it was asked for was accepted without one landing.
+# Set by fm_backlog_close_transition, and by fm_backlog_close_marker_replay when
+# it reaches an already-absent row: 1 when the row had already left the backlog,
+# so the close it was asked for was accepted without one landing.
 # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
 FM_BACKLOG_CLOSE_ROW_ABSENT=0
 # Set by fm_backlog_close_marker_replay with an absent result: the completion

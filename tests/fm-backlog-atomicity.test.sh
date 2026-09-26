@@ -2016,6 +2016,8 @@ test_interrupted_cleanup_of_an_archived_row_still_warns_about_its_endpoint() {
   assert_absent "$marker" \
     "a close for a row already gone from the backlog was left to retry forever"
   assert_absent "$home/state/$id.meta" "restart retained the interrupted task record"
+  assert_contains "$out" "had already left this backlog" \
+    "replay reported a landed close for a row that had left the backlog"
   assert_contains "$out" "endpoint or local copy may remain" \
     "retiring an unlandable close silently dropped the orphaned-cleanup warning"
   pass "restart retiring an archived row's close still warns that cleanup never finished"
