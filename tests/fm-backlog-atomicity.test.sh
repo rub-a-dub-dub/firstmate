@@ -1931,11 +1931,17 @@ test_completion_keeps_a_close_whose_row_lookup_fails() {
     "teardown discarded the close it still owes after an unconfirmed absence"
   assert_contains "$out" "could not be closed" \
     "teardown hid that the close never landed"
+  assert_contains "$out" "that absence could not be confirmed because this home's backlog row could not be read" \
+    "teardown reported the close's not-found error as the cause while acting on a failed backlog read"
+  assert_contains "$out" "backlog is unreadable" \
+    "teardown discarded the backlog read failure that is the only thing left to fix"
+  assert_contains "$out" "retries the confirmation" \
+    "teardown did not say what the surviving record's retry will settle"
   assert_contains "$out" "the next session start retries it" \
     "teardown dropped the retry the surviving record exists for"
   assert_not_contains "$out" "had already left" \
     "teardown claimed a row had left the backlog without confirming it"
-  pass "completion keeps a recorded close when the row lookup cannot confirm the absence"
+  pass "completion keeps a recorded close when the row lookup cannot confirm the absence, naming the read failure"
 }
 
 test_completion_fails_loudly_and_records_the_close_it_still_owes() {

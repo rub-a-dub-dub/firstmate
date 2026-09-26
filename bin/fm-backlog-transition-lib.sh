@@ -1060,8 +1060,11 @@ fm_backlog_dispatch_rollback() {
 
 # A close whose row the probe positively reports as gone from the backlog can
 # never land, so the record retires rather than promising a retry. Only that
-# confirmed NOT_FOUND is accepted: a probe that errors, times out, or still
-# finds the row keeps the original close failure and the pending record with it.
+# confirmed NOT_FOUND is accepted, and the pending record survives every other
+# answer: a probe that still finds the row keeps the original close failure
+# alone, while a probe that errors or times out reports that failure together
+# with the read error that left the absence unconfirmed, so the refusal names
+# the reason it actually acted on rather than the close error it did not.
 fm_backlog_close_transition() {
   local meta=$1 marker=$2 data=$3 id=$4 state=$5 close_error
   shift 5
@@ -1071,7 +1074,11 @@ fm_backlog_close_transition() {
     close_error=$FM_BACKLOG_TRANSITION_ERROR
     if fm_backlog_row_probe "$data" "$id" \
        || [ "$FM_BACKLOG_ROW_RESULT" != not_found ]; then
-      FM_BACKLOG_TRANSITION_ERROR=$close_error
+      if [ "$FM_BACKLOG_ROW_RESULT" = error ]; then
+        FM_BACKLOG_TRANSITION_ERROR="$close_error; that absence could not be confirmed because this home's backlog row could not be read ($FM_BACKLOG_ROW_ERROR), so the next session start retries the confirmation"
+      else
+        FM_BACKLOG_TRANSITION_ERROR=$close_error
+      fi
       return 1
     fi
     FM_BACKLOG_CLOSE_ROW_ABSENT=1
