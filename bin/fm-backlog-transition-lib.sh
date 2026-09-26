@@ -65,7 +65,8 @@
 # Telling them apart means checking the archive (fm_backlog_archive_row_probe)
 # before concluding absence; a hit there that is dated to THIS retention - the
 # record's own `recorded_utc` stamp bounds it, so an earlier incarnation of a
-# reused id cannot answer for it - is routed through the identical
+# reused id cannot answer for it once that incarnation's archival fell on a
+# calendar day before the stamp - is routed through the identical
 # `answered`/`answered_incomplete` handling a live Done row gets. A genuine
 # miss retires the marker under `retain_unresolved` and is never silently
 # reported once and forgotten: see
@@ -611,6 +612,17 @@ fm_backlog_row_probe() {  # <data-dir> <id>
 # predate this record therefore reads `not_found`, which is the truth about
 # THIS retention: nothing answered it.
 #
+# The bound's granularity is the calendar day, because neither the archived line
+# nor its heading carries anything finer. It excludes an earlier incarnation only
+# when that incarnation's archival fell on a day BEFORE the stamp; a same-day
+# reuse is a known, accepted limit. On a home that archives immediately
+# (`done_keep = 0` - `tasks-axi done` prunes with that default in the same
+# minute it closes a row) an id closed and archived in the morning, re-filed
+# that afternoon, and then held and lost leaves behind an archived line this
+# probe cannot distinguish from an answer to the second incarnation, so such a
+# call can still read `answered`. Excluding it would need a sub-day stamp the
+# archive does not record.
+#
 # Comparing the two dates at all depends on both writers sharing a clock base,
 # and they do: tasks-axi dates its headings in LOCAL time, deliberately, to
 # match this project's own convention (its markdown backend's `today()` builds
@@ -629,8 +641,9 @@ fm_backlog_row_probe() {  # <data-dir> <id>
 # record carrying no recorded_utc (written before the stamp existed), an
 # unparseable or missing heading above the match, or no archive file at all -
 # means nothing here can attribute an answer to this retention. That is the
-# closed-safe default a read failure or format surprise also falls to: it
-# routes the caller to escalation, never to a false "answered".
+# closed-safe default a read failure or format surprise also falls to: it routes
+# the caller to escalation rather than to a false "answered". The same-day reuse
+# above is the one case a false "answered" still survives.
 fm_backlog_archive_row_probe() {  # <data-dir> <id> <recorded-utc>
   local authorized_data=$1 id=$2 recorded_utc=${3:-} archive
   FM_BACKLOG_ARCHIVE_ROW_RESULT=error
@@ -1302,7 +1315,7 @@ fm_backlog_close_marker_stage() {  # <temporary-path> <id> <data-dir> <spawn-gen
 # headings in rather than this repo's usual `date -u` (see
 # fm_backlog_archive_row_probe, which owns that cross-tool dependency); that
 # stamp is what later bounds an archived-row hit to this retention rather than to
-# an earlier incarnation of a reused id.
+# an earlier incarnation of a reused id archived on a day before it.
 fm_backlog_close_marker_write() {  # <state-dir> <id> <data-dir> <spawn-gen> [flag...]
   local state=$1 id=$2 data=$3 spawn_gen=$4 marker tmp recorded_utc
   fm_backlog_directory_present "$state" "state directory" || return 1
@@ -1477,7 +1490,9 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
         # answered: an already-answered call must never resurface as an
         # outstanding one. The record's stamp bounds which archived lines can
         # answer for it, so the reverse mistake - an earlier incarnation of a
-        # reused id answering for this one - cannot happen either.
+        # reused id answering for this one - is excluded whenever that
+        # incarnation was archived on an earlier calendar day; the probe's
+        # header records why a same-day reuse remains a limit.
         if ! fm_backlog_archive_row_probe "$data" "$id" "$recorded_utc"; then
           FM_BACKLOG_TRANSITION_ERROR=$FM_BACKLOG_ARCHIVE_ROW_ERROR
           return 1
