@@ -246,6 +246,32 @@ SH
 # while the row lookup that would confirm that absence fails outright. The
 # absence is then unconfirmed, which is exactly the case a recorded close must
 # survive rather than be retired on.
+# Shadow tasks-axi so the close fails for a reason that is not an absence and
+# the row lookup that follows it also fails. Nothing in that pair says whether
+# the item still exists, so the refusal must not claim it had left the backlog.
+break_close_and_row_probe() {  # <case-dir>
+  local case_dir=$1 real
+  real=$(command -v tasks-axi)
+  cat > "$case_dir/fakebin/tasks-axi" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  done)
+    : > "$case_dir/close-attempted"
+    echo 'error: "backlog is unwritable"' >&2
+    exit 1
+    ;;
+  show)
+    if [ -f "$case_dir/close-attempted" ]; then
+      echo 'error: "backlog is unreadable"' >&2
+      exit 1
+    fi
+    ;;
+esac
+exec "$real" "\$@"
+SH
+  chmod +x "$case_dir/fakebin/tasks-axi"
+}
+
 break_row_probe_after_absent_close() {  # <case-dir>
   local case_dir=$1 real
   real=$(command -v tasks-axi)
@@ -1931,17 +1957,49 @@ test_completion_keeps_a_close_whose_row_lookup_fails() {
     "teardown discarded the close it still owes after an unconfirmed absence"
   assert_contains "$out" "could not be closed" \
     "teardown hid that the close never landed"
-  assert_contains "$out" "that absence could not be confirmed because this home's backlog row could not be read" \
+  assert_contains "$out" "could not be read to confirm whether the item still exists" \
     "teardown reported the close's not-found error as the cause while acting on a failed backlog read"
   assert_contains "$out" "backlog is unreadable" \
     "teardown discarded the backlog read failure that is the only thing left to fix"
-  assert_contains "$out" "retries the confirmation" \
+  assert_contains "$out" "retries this close" \
     "teardown did not say what the surviving record's retry will settle"
   assert_contains "$out" "the next session start retries it" \
     "teardown dropped the retry the surviving record exists for"
   assert_not_contains "$out" "had already left" \
     "teardown claimed a row had left the backlog without confirming it"
   pass "completion keeps a recorded close when the row lookup cannot confirm the absence, naming the read failure"
+}
+
+# The same refusal reached from a close that never reported an absence. Both the
+# close and the row lookup fail for unrelated reasons, so nothing establishes
+# whether the row is still there; the message must name both failures and claim
+# no absence, because the record it keeps exists to retry the close itself.
+test_completion_refusal_claims_no_absence_when_the_close_never_reported_one() {
+  local case_dir home id out rc=0
+  id=atomic-close-unreadable-b13
+  case_dir=$(make_home close-unreadable)
+  home=$(home_of "$case_dir")
+  add_item "$case_dir" "$id"
+  start_item "$case_dir" "$id"
+  write_task_meta "$case_dir" "$id" ship local-only "spawn_gen=spawn-close-unreadable"
+  break_close_and_row_probe "$case_dir"
+
+  out=$(run_teardown "$case_dir" "$id") || rc=$?
+  rm -f "$case_dir/fakebin/tasks-axi"
+  [ "$rc" -ne 0 ] || fail "teardown reported success after a close that never landed"
+  assert_present "$home/state/$id.backlog-close" \
+    "teardown discarded the close it still owes"
+  assert_contains "$out" "backlog is unwritable" \
+    "teardown dropped the close failure that is the reason it refused"
+  assert_contains "$out" "backlog is unreadable" \
+    "teardown dropped the row-read failure that left the item's existence unsettled"
+  assert_not_contains "$out" "absence" \
+    "teardown asserted an absence for a close that never reported one"
+  assert_not_contains "$out" "had already left" \
+    "teardown claimed the row had left the backlog with no absence ever reported"
+  assert_contains "$out" "retries this close" \
+    "teardown did not say the surviving record exists to retry the close"
+  pass "completion refuses without claiming an absence when the close never reported one"
 }
 
 test_completion_fails_loudly_and_records_the_close_it_still_owes() {
@@ -3862,6 +3920,7 @@ test_control_character_data_path_is_refused_before_cleanup
 test_completion_preserves_records_when_meta_removal_fails
 test_completion_accepts_a_row_already_archived_by_retention
 test_completion_keeps_a_close_whose_row_lookup_fails
+test_completion_refusal_claims_no_absence_when_the_close_never_reported_one
 test_completion_fails_loudly_and_records_the_close_it_still_owes
 test_interrupted_destructive_cleanup_leaves_a_recoverable_close
 test_interrupted_cleanup_of_an_archived_row_still_warns_about_its_endpoint
