@@ -639,18 +639,24 @@ run_bootstrap_detect_only() {  # <case-dir>
     "$BOOTSTRAP" 2>&1
 }
 
-# Every path and content hash under the two trees a session start reconciles:
-# this home's task records and its backlog. Compared across a run to prove a
-# read-only session start changed neither.
+# Every path and content checksum under the two trees a session start
+# reconciles: this home's task records and its backlog. Compared across a run to
+# prove a read-only session start changed neither. cksum rather than shasum
+# because shasum is a Perl script absent from minimal images, where a failed
+# checksum would silently degrade every entry to a bare path and make the
+# comparison pass for any in-place rewrite. Returns non-zero when even cksum is
+# missing so the caller fails loudly instead: `fail` here would only exit the
+# command substitution this runs inside.
 records_and_backlog_digest() {  # <home>
   local path
+  command -v cksum >/dev/null 2>&1 || return 1
   find "$1/state" "$1/data" -print 2>/dev/null | LC_ALL=C sort | while IFS= read -r path; do
     if [ -L "$path" ]; then
       printf 'link %s -> %s\n' "${path#"$1"/}" "$(readlink "$path")"
     elif [ -d "$path" ]; then
       printf 'dir  %s\n' "${path#"$1"/}"
     else
-      printf 'file %s %s\n' "${path#"$1"/}" "$(shasum "$path" | cut -d' ' -f1)"
+      printf 'file %s %s\n' "${path#"$1"/}" "$(cksum < "$path")"
     fi
   done
 }
@@ -2394,9 +2400,11 @@ test_recovery_reconcile_record_reports_in_a_read_only_session_start() {
   printf 'id=%s\ndata=%s\nspawn_gen=spawn-retain-unresolved-detect-only\nmode=retain\narg=--pr\narg=%s\n' \
     "$id" "$home/data" "$pr" > "$reconcile_marker"
 
-  before=$(records_and_backlog_digest "$home")
+  before=$(records_and_backlog_digest "$home") \
+    || fail "no checksum tool is available to prove a read-only session start changed nothing"
   out=$(run_bootstrap_detect_only "$case_dir")
-  after=$(records_and_backlog_digest "$home")
+  after=$(records_and_backlog_digest "$home") \
+    || fail "no checksum tool is available to prove a read-only session start changed nothing"
 
   assert_contains "$out" "BACKLOG_RECONCILE: $id:" \
     "a read-only session start went silent about a reconcile record nobody had acknowledged"
