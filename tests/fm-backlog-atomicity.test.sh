@@ -629,6 +629,32 @@ run_bootstrap() {  # <case-dir>
     "$BOOTSTRAP" 2>&1
 }
 
+# The read-only session start fm-session-start.sh runs when another live session
+# holds the fleet lock, and the one --reemit repeats after a /clear.
+run_bootstrap_detect_only() {  # <case-dir>
+  local case_dir=$1
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$(home_of "$case_dir")" \
+    FM_BOOTSTRAP_NETWORK=skip FM_BOOTSTRAP_DETECT_ONLY=1 \
+    PATH="$case_dir/fakebin:$PATH" \
+    "$BOOTSTRAP" 2>&1
+}
+
+# Every path and content hash under the two trees a session start reconciles:
+# this home's task records and its backlog. Compared across a run to prove a
+# read-only session start changed neither.
+records_and_backlog_digest() {  # <home>
+  local path
+  find "$1/state" "$1/data" -print 2>/dev/null | LC_ALL=C sort | while IFS= read -r path; do
+    if [ -L "$path" ]; then
+      printf 'link %s -> %s\n' "${path#"$1"/}" "$(readlink "$path")"
+    elif [ -d "$path" ]; then
+      printf 'dir  %s\n' "${path#"$1"/}"
+    else
+      printf 'file %s %s\n' "${path#"$1"/}" "$(shasum "$path" | cut -d' ' -f1)"
+    fi
+  done
+}
+
 run_reconcile() {  # <case-dir> <args...>
   local case_dir=$1
   shift
@@ -2273,6 +2299,35 @@ test_recovery_reconcile_record_reports_when_backlog_transitions_are_skipped() {
   pass "a reconcile record is re-reported even when this home's backlog transitions are skipped"
 }
 
+# Defect: reading a reconcile record mutates nothing, but the report was
+# reachable only from inside the mutating sweep FM_BOOTSTRAP_DETECT_ONLY skips.
+# A read-only session start - the one another session's fleet lock forces, and
+# the one --reemit repeats after a /clear or a compaction - therefore handed the
+# captain a digest with the unacknowledged deliverable missing from it, though
+# the record is owed on EVERY session start until it is acked.
+test_recovery_reconcile_record_reports_in_a_read_only_session_start() {
+  local case_dir home id pr reconcile_marker before after out
+  id=atomic-heal-retain-unresolved-detect-only-b27
+  pr=https://github.com/example/repo/pull/21
+  case_dir=$(make_home heal-retain-unresolved-detect-only)
+  home=$(home_of "$case_dir")
+  reconcile_marker="$home/state/$id.backlog-reconcile"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-retain-unresolved-detect-only\nmode=retain\narg=--pr\narg=%s\n' \
+    "$id" "$home/data" "$pr" > "$reconcile_marker"
+
+  before=$(records_and_backlog_digest "$home")
+  out=$(run_bootstrap_detect_only "$case_dir")
+  after=$(records_and_backlog_digest "$home")
+
+  assert_contains "$out" "BACKLOG_RECONCILE: $id:" \
+    "a read-only session start went silent about a reconcile record nobody had acknowledged"
+  assert_contains "$out" "PR $pr" \
+    "the read-only session start's reconcile line lost the deliverable it was carrying"
+  assert_equals "$before" "$after" \
+    "a read-only session start changed this home's records or backlog while reporting a reconcile record"
+  pass "a reconcile record is reported in a read-only session start without mutating the home"
+}
+
 # Defect: a home whose only backlog state was a surviving reconcile record had
 # its gate kind promoted to ship, which ran the full backend resolution. When
 # that resolution errored the session start died before reconciliation ran at
@@ -3399,6 +3454,7 @@ test_recovery_reconcile_record_survives_being_unread
 test_recovery_reconcile_report_renders_a_note_deliverable_readably
 test_recovery_refuses_to_overwrite_an_unacknowledged_reconcile_record
 test_recovery_reconcile_record_reports_when_backlog_transitions_are_skipped
+test_recovery_reconcile_record_reports_in_a_read_only_session_start
 test_recovery_reconcile_record_reports_when_the_backend_cannot_be_resolved
 test_recovery_reconcile_record_reports_when_no_deliverable_was_recorded
 test_recovery_reconcile_record_preserves_incomplete_cleanup_warning

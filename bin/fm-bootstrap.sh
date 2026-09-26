@@ -106,8 +106,9 @@
 #          secondmate_liveness_sweep, secondmate_handoff_resume, x_mode_setup,
 #          fleet_sync) while still
 #          printing every read-only detect line
-#          above; the TANGLE line switches to advisory-only wording with no
-#          checkout command. Used by
+#          above and every unacknowledged BACKLOG_RECONCILE record, which is
+#          read-only and owed to the captain on every session start; the TANGLE
+#          line switches to advisory-only wording with no checkout command. Used by
 #          fm-session-start.sh's read-only path when another live session holds
 #          the fleet lock, so a second concurrent session never race-mutates
 #          secondmate homes, pending handoff outboxes and receiver wakes,
@@ -1225,8 +1226,9 @@ crew_dispatch_validate() {
 # .backlog-close glob without deleting them precisely so a missed digest costs
 # nothing but a repeat of the next one. Only an explicit
 # `bin/fm-backlog-reconcile.sh ack <id>` ever clears one. Reading a record needs
-# nothing from the backlog, so this reports for as long as the record exists,
-# including on a home whose backlog transitions the gate below skips.
+# nothing from the backlog and mutates nothing, so this reports for as long as
+# the record exists, including on a home whose backlog transitions the gate
+# below skips and in a read-only FM_BOOTSTRAP_DETECT_ONLY session start.
 backlog_reconcile_record_report() {
   local marker label deliverable disposition
   for marker in "$STATE"/*.backlog-reconcile; do
@@ -1275,7 +1277,6 @@ backlog_record_reconcile() {
       echo "error: backlog reconciliation cannot access configured data directory $DATA ($FM_BACKLOG_TRANSITION_ERROR)" >&2
       return 2
     fi
-    backlog_reconcile_record_report
     return 0
   fi
   # Keep the wake/lock library's source-time state-directory creation inside
@@ -1319,9 +1320,10 @@ backlog_record_reconcile() {
           echo "BOOTSTRAP_INFO: the captain had already answered the call for $label before cleanup finished; its endpoint or local copy may remain and should be reconciled"
           ;;
         retain_unresolved)
-          # Reported by backlog_reconcile_record_report below, which runs this
-          # same session start (the rename already landed) and every session
-          # start after it, not just this one.
+          # Reported by backlog_reconcile_record_report, which this session
+          # start still reaches after this sweep returns (the rename already
+          # landed) and every session start after it reaches too, not just this
+          # one.
           ;;
       esac
     else
@@ -1330,8 +1332,6 @@ backlog_record_reconcile() {
     fm_lock_release "$meta_lock"
     fm_lock_release "$control_lock"
   done
-
-  backlog_reconcile_record_report
 
   # A home that owns no records has nothing to pair, so it never pays for a
   # backlog read. A pending close remains authoritative even when replay failed:
@@ -1473,6 +1473,12 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ] && local_phase; then
     fi
   fi
 fi
+
+# Read-only, and owed to the captain on EVERY session start - so it sits outside
+# the mutating gate above, which a detect-only read-only session skips, and
+# after it, so a record the replay just retired reports on that same start. The
+# deferred network pass never repeats it: the local pass already printed it.
+local_phase && backlog_reconcile_record_report
 
 # Local detection: presence, version floors, and configuration. Nothing here
 # leaves this machine, so it stays on the session-start critical path.
