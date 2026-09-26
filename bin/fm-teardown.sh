@@ -1422,7 +1422,8 @@ backlog_done_args() {
 # invariant). This prints what already happened, so the follow-up wording stays
 # only where a human still owes the edit.
 backlog_refresh_reminder() {
-  local backlog_display root backend=markdown deliverable
+  local backlog_display root backend=markdown deliverable disposition
+  local dispatch_next="Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due."
   [ "$KIND" = secondmate ] && return 0
   [ "$CLEANUP_RECOVERY" = orca ] && return 0
   if root=$(fm_backlog_root "$DATA"); then
@@ -1441,12 +1442,13 @@ backlog_refresh_reminder() {
     deliverable=$(fm_backlog_retain_deliverable \
       "${BACKLOG_DONE_ARGS[@]+"${BACKLOG_DONE_ARGS[@]}"}")
     if [ -n "$deliverable" ]; then
-      printf '%s\n' "Backlog: $ID had already left $backlog_display, so cleanup recorded no close there and its completion link ($deliverable) was never applied - reconcile that artifact by hand. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due."
+      disposition="its completion link ($deliverable) was never applied - reconcile that artifact by hand."
     else
-      printf '%s\n' "Backlog: $ID had already left $backlog_display, so cleanup recorded no close there and it recorded no completion link to reconcile. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due."
+      disposition="it recorded no completion link to reconcile."
     fi
+    printf '%s\n' "Backlog: $ID had already left $backlog_display, so cleanup recorded no close there and $disposition $dispatch_next"
   elif [ "$BACKLOG_CLOSED" = 1 ]; then
-    printf '%s\n' "Backlog: $ID is closed in $backlog_display. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due."
+    printf '%s\n' "Backlog: $ID is closed in $backlog_display. $dispatch_next"
   else
     printf '%s\n' "Backlog: $ID just finished ($BACKLOG_SKIP_REASON). Update $backlog_display - move $ID to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due."
   fi
