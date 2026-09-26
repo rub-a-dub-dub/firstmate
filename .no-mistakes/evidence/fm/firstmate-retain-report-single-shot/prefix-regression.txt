@@ -1,0 +1,11 @@
+
+### test_recovery_reports_incomplete_cleanup_for_an_answered_retain  (against base bin/ 6ad419da)
+not ok - replay claimed cleanup finished even though its own surviving meta record proved cleanup was still interrupted (unexpected: 'finished the interrupted cleanup for atomic-heal-answered-incomplete-b17; the captain had already answered its call')
+--- output ---
+BOOTSTRAP_INFO: finished the interrupted cleanup for atomic-heal-answered-incomplete-b17; the captain had already answered its call
+
+### test_recovery_recognizes_a_retain_row_answered_then_archived  (against base bin/ 6ad419da)
+not ok - an answered-then-archived retain marker was left to retry forever
+
+### test_recovery_reconcile_record_survives_being_unread  (against base bin/ 6ad419da)
+not ok - a genuinely unresolved retain's deliverable was destroyed instead of retained for reconciliation

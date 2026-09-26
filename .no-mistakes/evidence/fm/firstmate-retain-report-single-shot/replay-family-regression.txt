@@ -1,0 +1,42 @@
+ok - recovery uses the parent of a trailing-slash data record
+ok - completion refuses to report success while its item is still open, and records what it owes
+ok - restart recovers closes recorded before destructive cleanup
+ok - session start retries a close whose marker could not be removed
+ok - session start reports owned backlog rows it cannot read
+ok - session start marks an item In flight when this home already owns a worker for it
+ok - session start rejects internal worker-record symlinks
+ok - session start rejects symlinked worker records
+ok - session start finishes a close an interrupted cleanup recorded but never landed
+ok - recovery backfills recorded links onto already Done items
+ok - recovery does not claim an interrupted cleanup finished when only the captain's answer closed the row
+ok - recovery does not ask the captain to re-decide a call already answered before its row aged into the archive
+ok - an answer archived the same day the close was recorded is recognized, so the stamp shares tasks-axi's clock base
+ok - recovery escalates an unanswered call whose only archived line belongs to an earlier incarnation of a reused id
+ok - an unstamped pending-close record escalates rather than claiming an archived answer
+ok - a genuinely unresolved retain's reconcile report survives being unread until explicitly acknowledged
+ok - a reconcile report names a note deliverable in the spelling the captain reads everywhere else
+ok - a second unresolved retain never overwrites an unacknowledged reconcile record
+ok - a reconcile record is re-reported even when this home's backlog transitions are skipped
+ok - a reconcile record is reported in a read-only session start without mutating the home
+ok - a reconcile record is re-reported even when this home's backlog backend cannot be resolved
+ok - a reconcile record still reports when a promoted gate kind cannot resolve the backlog backend
+ok - a reconcile record with no deliverable survives and reports its true disposition
+ok - durable reconcile records preserve incomplete-cleanup warnings across reports
+ok - session start preserves a pending close across a transient backlog read failure
+ok - recovery preserves incomplete-cleanup evidence across a failed replay
+ok - session start finishes a close for the matching meta incarnation
+ok - recovery preserves closes for ambiguous task incarnations
+ok - recovery preserves both records when meta removal fails
+ok - recovery preserves closes beside symlinked metadata
+ok - recovery binds close-marker identity to its locked filename
+ok - recovery rejects close markers targeting another home's data
+ok - recovery validates an unterminated final marker field
+ok - recovery rejects lexical traversal before resolving marker data
+ok - recovery rejects marker control bytes before parsing
+ok - recovery rejects malformed PR URL values
+ok - a retained pending close is never started by reconciliation
+ok - recovery rejects close-marker arguments outside its protocol
+ok - recovery reports and rejects dangling symlink close markers
+ok - session start drops a close recorded for an older meta incarnation
+ok - session start rejects an unversioned close marker
+ok - session start leaves a captain-held item where the captain put it

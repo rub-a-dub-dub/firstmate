@@ -1,0 +1,15 @@
+ok - session start finishes a close an interrupted cleanup recorded but never landed
+ok - recovery does not claim an interrupted cleanup finished when only the captain's answer closed the row
+ok - recovery does not ask the captain to re-decide a call already answered before its row aged into the archive
+ok - an answer archived the same day the close was recorded is recognized, so the stamp shares tasks-axi's clock base
+ok - recovery escalates an unanswered call whose only archived line belongs to an earlier incarnation of a reused id
+ok - an unstamped pending-close record escalates rather than claiming an archived answer
+ok - a genuinely unresolved retain's reconcile report survives being unread until explicitly acknowledged
+ok - a reconcile report names a note deliverable in the spelling the captain reads everywhere else
+ok - a second unresolved retain never overwrites an unacknowledged reconcile record
+ok - a reconcile record is re-reported even when this home's backlog transitions are skipped
+ok - a reconcile record is reported in a read-only session start without mutating the home
+ok - a reconcile record is re-reported even when this home's backlog backend cannot be resolved
+ok - a reconcile record still reports when a promoted gate kind cannot resolve the backlog backend
+ok - a reconcile record with no deliverable survives and reports its true disposition
+ok - durable reconcile records preserve incomplete-cleanup warnings across reports

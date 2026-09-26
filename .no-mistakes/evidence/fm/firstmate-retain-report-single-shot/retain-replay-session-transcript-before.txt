@@ -1,0 +1,68 @@
+================================================================
+firstmate retain-replay - operator session transcript (BEFORE the fix)
+bin/ under test : 6ad419da (base)
+tasks-axi       : 0.2.6
+================================================================
+
+### INTENT 1 - a call the captain answered while cleanup was still interrupted
+
+what the killed teardown left behind (the task's own .meta record still there => cleanup never finished):
+
+$ ls state/
+fix-login-answered.backlog-close
+fix-login-answered.meta
+
+$ fm-bootstrap.sh   # next session start
+BOOTSTRAP_INFO: finished the interrupted cleanup for fix-login-answered; the captain had already answered its call
+
+### INTENT 2 - an unresolved retain deliverable must survive being unread
+
+$ fm-bootstrap.sh   # session start 1 - nobody is watching this terminal
+BACKLOG_RECONCILE: ship-dark-mode: the captain-held call could not be returned to Queued after an interrupted cleanup because its backlog row no longer exists; its recorded deliverable (PR https://github.com/example/repo/pull/16) should be reconciled with the captain
+
+$ ls state/
+
+$ cat state/ship-dark-mode.backlog-reconcile
+cat: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-backlog-atomicity.bfKUUn/e2e-retain-unresolved/home/state/ship-dark-mode.backlog-reconcile: No such file or directory
+
+$ fm-bootstrap.sh   # session start 2, next morning - is the deliverable still reported?
+(no backlog diagnostics printed)
+
+$ FM_BOOTSTRAP_DETECT_ONLY=1 fm-bootstrap.sh   # read-only session start
+(no backlog diagnostics printed)
+
+$ fm-backlog-reconcile.sh ack ship-dark-mode-typo   # mistyped id must refuse, record untouched
+bin/fm-backlog-reconcile.sh: no such command on this build
+(exit 127)
+
+$ fm-backlog-reconcile.sh ack ship-dark-mode   # the captain has now settled it
+bin/fm-backlog-reconcile.sh: no such command on this build
+(exit 127)
+
+$ fm-bootstrap.sh   # session start 4 - acknowledged, so nothing left to report
+(no backlog diagnostics printed)
+
+### INTENT 3 - a call answered, then aged out of the live backlog into the archive
+
+$ tasks-axi show migrate-schema   # the live backlog has no row for it at all
+state: (absent - no live row)
+
+$ cat data/done-archive.md   # the captain's answer is on record here
+## Archived 2026-09-26
+- [x] migrate-schema - item for migrate-schema (kind: ship) (done 2026-09-26) (hold: captain decision pending) (hold-kind: captain)
+
+$ fm-bootstrap.sh   # must recognize the answer, not re-ask the captain
+BACKLOG_RECONCILE: migrate-schema: the captain-held call could not be returned to Queued after an interrupted cleanup because its backlog row no longer exists; its recorded deliverable (PR https://github.com/example/repo/pull/15) should be reconciled with the captain
+
+$ ls state/   # no reconcile record should be manufactured
+
+### INTENT 3b - the same slug re-filed later: a stale archived line must not answer for it
+
+the old incarnation of 'fix-login' is archived; the captain re-files the same slug for new work:
+
+$ fm-bootstrap.sh
+BACKLOG_RECONCILE: fix-login: the captain-held call could not be returned to Queued after an interrupted cleanup because its backlog row no longer exists; its recorded deliverable (PR https://github.com/example/repo/pull/31) should be reconciled with the captain
+
+$ ls state/
+
+================================================================

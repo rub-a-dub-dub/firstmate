@@ -1,0 +1,9 @@
+1..8
+ok - an interrupted cleanup keeps the captain call recoverable and session start retains it
+ok - an answer before cleanup replay preserves the retained report
+ok - an unusable pending-close record names its reason instead of a bare refusal
+ok - an unsupported relocated report does not wedge the captain's answer
+ok - cleanup retains captain calls in the configured backlog
+ok - release and scout report retention distinguish deliveries from rejected merge answers
+ok - cleanup leaves a captain-held work item open with its deliverable, and only an answer closes it
+ok - merge approval releases before zero-retention cleanup records completion
