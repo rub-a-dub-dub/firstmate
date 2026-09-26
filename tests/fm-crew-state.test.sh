@@ -378,6 +378,54 @@ outcome: passed
 EOF
 }
 
+# The 2026-09-20 firstmate-lint-debt-blocking-prs incident shape: outcome
+# passed with pr_state open, still holding for the captain's merge word.
+run_passed_pr_open() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: completed
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: "https://github.com/o/r/pull/1"
+  pr_state: open
+  findings: none
+outcome: passed
+EOF
+}
+
+# The 2026-09-20 firstmate-detect-dropped-ci-event incident shape: a real
+# terminal outcome the reader had no arm for.
+run_passed_with_override() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: completed
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: "https://github.com/o/r/pull/1"
+  pr_state: open
+  findings: none
+outcome: passed-with-override
+EOF
+}
+
+# A run that finished without ever opening a PR: the record states so, which
+# is a known fact and not the absent-field unknown.
+run_passed_pr_none() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: completed
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: ""
+  pr_state: none
+  findings: none
+outcome: passed
+EOF
+}
+
 run_failed() {  # <branch>
   cat <<EOF
 run:
@@ -528,6 +576,51 @@ test_active_run_is_authoritative() {
   assert_contains "$out" "source: run-step" "active run -> run-step source"
   assert_contains "$out" "validating (running)" "active run reports the step"
   pass "active run-step is authoritative"
+}
+
+# The wedge timer's own recency fact (AGENTS.md/2026-09-20): for a
+# running/fixing run-step that is demonstrably still logging, RUN_DETAIL
+# carries the pipeline's own `activity: recent` verdict
+# (nm_run_activity_is_recent), which bin/fm-classify-lib.sh's
+# crew_run_activity_recent and bin/fm-watch.sh's wedge timer consult so a quiet
+# pane during a healthy fix round is never mistaken for a wedge. It is a
+# POSITIVE fact only: with no active_steps table to judge by, the line says
+# nothing rather than claiming the run went quiet, because a healthy run
+# sampled between two steps has that exact shape. Either way a run record that
+# merely still says running/fixing must never vouch for a quiet pane.
+test_running_run_step_carries_activity_verdict() {
+  reset_fakes
+  local d; d=$(new_case activity-verdict)
+  make_repo_on_branch "$d/wt" fm/feat-av
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-av.meta" "window=fm:fm-feat-av" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_fixing_active_recent fm/feat-av)"
+  local out; out=$(run_crew_state "$d" feat-av)
+  assert_contains "$out" "state: working" "fresh active_steps activity -> working"
+  assert_contains "$out" "source: run-step" "fresh active_steps activity -> run-step source"
+  assert_contains "$out" "activity: recent" "fresh active_steps activity reads recent"
+
+  reset_fakes
+  d=$(new_case activity-verdict-quiet)
+  make_repo_on_branch "$d/wt" fm/feat-avq
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-avq.meta" "window=fm:fm-feat-avq" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_fixing_active_quiet fm/feat-avq)"
+  out=$(run_crew_state "$d" feat-avq)
+  assert_contains "$out" "state: working" "a quiet active_steps entry still reads the run's status word as working"
+  assert_not_contains "$out" "activity:" "a quiet active_steps entry emits no recency claim at all"
+
+  reset_fakes
+  d=$(new_case activity-verdict-absent)
+  make_repo_on_branch "$d/wt" fm/feat-ava
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-ava.meta" "window=fm:fm-feat-ava" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-ava)"
+  out=$(run_crew_state "$d" feat-ava)
+  assert_contains "$out" "state: working" "a running status with no active_steps table remains working"
+  assert_not_contains "$out" "activity:" \
+    "an absent active_steps table states nothing about recency, so a healthy run between steps is not called quiet"
+  pass "a running/fixing run-step carries the pipeline's own activity: recent verdict only as a positive fact"
 }
 
 # (b) needs-decision log + a resumed (running/fixing) run = SUPERSEDED
@@ -953,6 +1046,72 @@ test_terminal_passed() {
   assert_contains "$out" "state: done" "passed run -> done"
   assert_contains "$out" "source: run-step" "passed -> run-step source"
   pass "terminal passed run is authoritative"
+}
+
+# Pins the 2026-09-20 firstmate-lint-debt-blocking-prs fix: outcome=passed
+# must not assert a merge that pr_state disproves.
+test_terminal_passed_open_pr_reads_honest_detail() {
+  reset_fakes
+  local d; d=$(new_case passed-open)
+  make_repo_on_branch "$d/wt" fm/feat-passed-open
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-passed-open.meta" "window=fm:fm-feat-passed-open" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_passed_pr_open fm/feat-passed-open)"
+  local out; out=$(run_crew_state "$d" feat-passed-open)
+  assert_contains "$out" "state: done" "passed run with an open PR still reads done"
+  assert_contains "$out" "PR open, not yet merged" "an open PR's detail must not claim it merged"
+  assert_not_contains "$out" "PR merged" "an open PR must never be reported as merged"
+  pass "terminal passed run with an open PR reads its honest pr_state, not a guessed merge"
+}
+
+# Pins the 2026-09-20 firstmate-detect-dropped-ci-event fix: an unmapped
+# terminal outcome must not degrade to unknown when the run plainly finished.
+test_terminal_passed_with_override_reads_done_not_unknown() {
+  reset_fakes
+  local d; d=$(new_case passed-override)
+  make_repo_on_branch "$d/wt" fm/feat-passed-override
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-passed-override.meta" "window=fm:fm-feat-passed-override" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_passed_with_override fm/feat-passed-override)"
+  local out; out=$(run_crew_state "$d" feat-passed-override)
+  assert_contains "$out" "state: done" "passed-with-override is a real terminal outcome, not unknown"
+  assert_not_contains "$out" "state: unknown" "a finished run must never read as unknown"
+  assert_contains "$out" "PR open, not yet merged" "passed-with-override still reads its honest pr_state"
+  pass "terminal passed-with-override run is classified done, never unknown"
+}
+
+# A run record without the pr_state field proves nothing about the PR either
+# way; the detail must say so rather than assert a landing or its absence.
+test_terminal_passed_absent_pr_state_reads_unknown() {
+  reset_fakes
+  local d; d=$(new_case passed-no-pr-state)
+  make_repo_on_branch "$d/wt" fm/feat-passed-no-pr-state
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-passed-no-pr-state.meta" "window=fm:fm-feat-passed-no-pr-state" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-passed-no-pr-state)"
+  local out; out=$(run_crew_state "$d" feat-passed-no-pr-state)
+  assert_contains "$out" "state: done" "a passed run without pr_state still reads done"
+  assert_contains "$out" "PR merge state unknown" "an absent pr_state must read unknown"
+  assert_not_contains "$out" "no PR opened" "an absent pr_state must not claim no PR was opened"
+  assert_not_contains "$out" "PR merged" "an absent pr_state must not claim a merge"
+  pass "terminal passed run without pr_state reports the merge state as unknown"
+}
+
+# pr_state: none is the record stating no PR was ever opened - a known fact
+# that must stay distinct from the absent-field unknown default.
+test_terminal_passed_pr_state_none_reads_no_pr_opened() {
+  reset_fakes
+  local d; d=$(new_case passed-pr-none)
+  make_repo_on_branch "$d/wt" fm/feat-passed-pr-none
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-passed-pr-none.meta" "window=fm:fm-feat-passed-pr-none" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_passed_pr_none fm/feat-passed-pr-none)"
+  local out; out=$(run_crew_state "$d" feat-passed-pr-none)
+  assert_contains "$out" "state: done" "a passed run that opened no PR still reads done"
+  assert_contains "$out" "no PR opened" "pr_state none is a known fact, not an unknown"
+  assert_not_contains "$out" "merge state unknown" "a stated none must not read as the unknown default"
+  assert_not_contains "$out" "PR merged" "a run that opened no PR must never report a merge"
+  pass "terminal passed run with pr_state none reports no PR opened, not unknown"
 }
 
 test_terminal_failed() {
@@ -2661,6 +2820,7 @@ EOF
 }
 
 test_active_run_is_authoritative
+test_running_run_step_carries_activity_verdict
 test_stale_needs_decision_superseded
 test_stale_blocked_superseded
 test_daemon_claim_over_live_run_reads_run_alive
@@ -2684,6 +2844,10 @@ test_ci_fixing_after_green_stays_working
 test_top_level_fixing_ci_running_after_green_stays_working
 test_top_level_fixing_done_log_stays_working
 test_terminal_passed
+test_terminal_passed_open_pr_reads_honest_detail
+test_terminal_passed_with_override_reads_done_not_unknown
+test_terminal_passed_absent_pr_state_reads_unknown
+test_terminal_passed_pr_state_none_reads_no_pr_opened
 test_terminal_failed
 test_terminal_failed_ci_orphan_after_green_reads_done
 test_terminal_failed_ci_orphan_status_only_reads_done

@@ -17,6 +17,17 @@
 #
 #   state: <working|parked|done|blocked|paused|failed|unknown> · source: <run-step|pane|status-log|remote-endpoint|none> · <detail>
 #
+# For a full (non-coarse) run-step read whose active status is running/fixing
+# AND whose own active_steps[] table reports fresh logging, <detail> also
+# carries the pipeline's `activity: recent` verdict (nm_run_activity_is_recent)
+# - the single fact bin/fm-classify-lib.sh's crew_run_activity_recent consults
+# so the watcher's wedge timer can judge a long-quiet pane by the run's own
+# recency instead of pane idle time alone. It is a POSITIVE fact only: it is
+# absent for every other case (no run, a coarse ledger-only read, a
+# non-running/fixing status, a run sampled between two steps, or a step that
+# has genuinely gone quiet), and callers must read that absence as no recency
+# evidence rather than as a claim that the run has stopped logging.
+#
 # Logic, in order:
 #   1. Resolve worktree + backend target + kind from state/<id>.meta. A meta
 #      recording remote_host= is a remote secondmate: its worktree and endpoint
@@ -50,9 +61,15 @@
 #      the ledger has been asked whether a live sibling run exists.
 #      The run-step is AUTHORITATIVE: running/fixing -> working, ci -> working,
 #      awaiting_approval/fix_review -> parked (with gate findings), terminal
-#      passed/checks-passed -> done, failed/cancelled -> failed. EXCEPT: while
-#      the active step is ci, `axi status` alone cannot tell "still waiting on
-#      checks" from "checks green, waiting on merge" (see nm_ci_checks_state) -
+#      passed/checks-passed/passed-with-override -> done, failed/cancelled ->
+#      failed. The outcome NAME is not proof of a merge: passed and
+#      passed-with-override read their PR detail off the run's own pr_state
+#      field (nm_outcome_pr_detail) rather than asserting merged/closed from
+#      the outcome alone (2026-09-20 firstmate-lint-debt-blocking-prs
+#      incident). An unmapped terminal outcome still reads unknown rather than
+#      a guessed done/failed. EXCEPT: while the active step is ci, `axi
+#      status` alone cannot tell "still waiting on checks" from "checks green,
+#      waiting on merge" (see nm_ci_checks_state) -
 #      a ci-step log-tail check overrides working -> done once checks read
 #      green, so a green PR is never silently read as still-validating. And a
 #      terminal FAILED run whose only failure is the ci monitor step, after
@@ -463,6 +480,29 @@ EOF
   [ "$(nm_ci_checks_state)" = green ]
 }
 
+# Honest PR-state clause for a terminal passed/passed-with-override outcome.
+# The outcome NAME alone is not proof of a landing: a run can reach a passed
+# outcome while still holding for the captain's merge word (2026-09-20
+# firstmate-lint-debt-blocking-prs incident - outcome=passed reported
+# alongside pr_state=open in the same status block, with the forge
+# independently confirming merged=false, merged_at=null). Read the run's own
+# pr_state field instead of asserting a merge the outcome name does not
+# prove. merged, open, closed and none are each a fact the run record states;
+# every other value - an absent field from an older no-mistakes, a
+# not-yet-observed state, a spelling this reader does not know - is a single
+# unknown, never a guess in either direction.
+nm_outcome_pr_detail() {
+  local pr_state
+  pr_state=$(strip_quotes "$(nm_field pr_state)")
+  case "$pr_state" in
+    merged) printf 'PR merged' ;;
+    open)   printf 'PR open, not yet merged' ;;
+    closed) printf 'PR closed, not merged' ;;
+    none)   printf 'no PR opened' ;;
+    *)      printf 'PR merge state unknown' ;;
+  esac
+}
+
 # Reclassify a terminal failed run as done (held-for-merge) when
 # nm_failed_run_is_green_held_ci matches, surfacing the run's PR URL so the
 # supervisor reads the concrete review-ready outcome instead of a failure.
@@ -513,10 +553,14 @@ nm_effective_ci_step_status() {
 }
 
 # Root cause of the PR #252 incident (2026-07): for a repo where merge is left
-# to the captain, no-mistakes' ci step (and therefore top-level status/outcome)
-# stays "running" for the ENTIRE CI-monitor phase, including long after GitHub
-# reports every check green - it only reaches outcome=passed once the PR is
-# actually merged (or failed/cancelled if closed). `axi status`'s steps[] table
+# to the captain, no-mistakes' ci step (and therefore top-level status) can
+# stay "running" for the ENTIRE CI-monitor phase, including long after GitHub
+# reports every check green. Do not read outcome=passed itself as proof the PR
+# was merged: the 2026-09-20 firstmate-lint-debt-blocking-prs incident
+# observed outcome=passed reported alongside pr_state=open, so a passed
+# terminal outcome can still be holding for the captain's merge word
+# (nm_outcome_pr_detail is the one owner of deriving an honest reading from
+# the run's own pr_state field for that case). `axi status`'s steps[] table
 # never distinguishes "still waiting on checks" from "checks green, waiting on
 # merge": both read as plain `ci,running,...`. The only place that transition is
 # recorded is the ci step's own log text, e.g. "all CI checks passed - still
@@ -676,10 +720,20 @@ if [ "$HAVE_RUN" = 1 ]; then
     has_gate=0
     nm_has_gate && has_gate=1
 
+    # 2026-09-20 audit of every arm below: checks-passed's "PR ready for
+    # review" and the failed/cancelled arms never assert a landing, so they
+    # stay as they were; only passed and passed-with-override previously
+    # overclaimed a merge from the outcome name alone. The coarse
+    # ledger-fallback case above and the no-outcome status fallback below
+    # were audited the same way and likewise left unchanged: "run
+    # completed"/"ci running"/"validating (...)" assert nothing about a merge.
     if [ -n "$outcome" ]; then
       case "$outcome" in
-        passed)        RUN_STATE="done"; RUN_DETAIL="run passed: PR merged/closed" ;;
+        passed)        RUN_STATE="done"; RUN_DETAIL="run passed: $(nm_outcome_pr_detail)" ;;
         checks-passed) RUN_STATE="done"; RUN_DETAIL="checks green: PR ready for review" ;;
+        passed-with-override)
+          RUN_STATE="done"
+          RUN_DETAIL="run passed (approved past a waived check): $(nm_outcome_pr_detail)" ;;
         failed)
           if nm_reclassify_failed_run_as_held_green; then :; else
             RUN_STATE=failed; RUN_DETAIL="run failed"
@@ -705,7 +759,18 @@ if [ "$HAVE_RUN" = 1 ]; then
     else
       case "$status" in
         ci)             RUN_STATE=working; RUN_DETAIL="ci running" ;;
-        running|fixing) RUN_STATE=working; RUN_DETAIL="validating ($status)" ;;
+        running|fixing)
+          RUN_STATE=working; RUN_DETAIL="validating ($status)"
+          # Surface the pipeline's own recency verdict for the wedge timer
+          # (bin/fm-watch.sh's crew_run_activity_recent, bin/fm-classify-lib.sh):
+          # a quiet pane is not a wedge while the run itself is still logging,
+          # but a run that stopped logging must not vouch for it forever. Only
+          # the positive fact is emitted; saying nothing is the honest reading
+          # of "no active_steps[] table to judge by".
+          if nm_run_activity_is_recent; then
+            RUN_DETAIL="$RUN_DETAIL${SEP}activity: recent"
+          fi
+          ;;
         completed)      RUN_STATE="done"; RUN_DETAIL="run completed" ;;
         failed)
           if nm_reclassify_failed_run_as_held_green; then :; else

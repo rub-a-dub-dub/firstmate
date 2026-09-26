@@ -42,11 +42,15 @@ FM_MERGE_OUTCOME_ALREADY_RECORDED=false
 #   self - this home performed the merge.
 #   poll - this home's merge poll detected the merge, so the canonical outcome
 #          also wakes this home after any upward hop needed by a secondmate.
-# Optional <authority> is yolo, away-grant, attended, or external. Yolo,
-# away-grant, and external are appended to the ledger line; attended remains
-# untagged. The merge entrypoint supplies its authority after forge acceptance,
-# while the poll supplies the persisted identity-bound value or external when
-# no matching record proves that this home authorized the merge.
+# Optional <authority> is yolo, away-grant, attended, attended-ci-waived, or
+# external. Yolo, away-grant, attended-ci-waived, and external are appended to
+# the ledger line; attended remains untagged. attended-ci-waived is
+# bin/fm-merge-authority-lib.sh's tag for an attended merge that used
+# bin/fm-pr-merge.sh's --waive-no-ci-evidence escape, so the waiver survives
+# in this captain-facing outcome. The merge entrypoint supplies its authority
+# after forge acceptance, while the poll supplies the persisted
+# identity-bound value or external when no matching record proves that this
+# home authorized the merge.
 #
 # Returns 0 when the outcome is recorded (or already was), 2 on an invalid
 # request, 3 when this home's own role or parent binding cannot be read well
@@ -63,7 +67,7 @@ fm_merge_outcome_report() {  # <home> <state> <task-id> <pr-url> <origin> [autho
   FM_MERGE_OUTCOME_ALREADY_RECORDED=false
   case "$origin" in self|poll) ;; *) return 2 ;; esac
   case "$authority" in
-    yolo|away-grant|external) suffix=" $authority" ;;
+    yolo|away-grant|external|attended-ci-waived) suffix=" $authority" ;;
     attended|'') ;;
     *) return 2 ;;
   esac

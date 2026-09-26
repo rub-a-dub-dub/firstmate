@@ -905,6 +905,26 @@ fm_backend_agent_state() {  # <backend> <target>
   esac
 }
 
+# fm_backend_endpoint_absent: 0 only when <target> exists nowhere on <backend>,
+# so the task's agent cannot be running in it at any address. This is a
+# STRICTLY stronger claim than a `missing` agent state, which says only that
+# the recorded address stopped resolving: a renamed tmux session or a window
+# moved out of the recorded one both read `missing` while the agent keeps
+# running somewhere else. Callers that are about to CREATE a replacement
+# endpoint must ask this, because there the difference decides whether a second
+# agent joins a worktree that already has one. Each backend proves absence over
+# its own whole surface rather than over the recorded address alone; a backend
+# with no such probe reports "not absent", so it simply never qualifies.
+fm_backend_endpoint_absent() {  # <backend> <target>
+  local backend=$1 target=$2
+  fm_backend_source "$backend" || return 1
+  case "$backend" in
+    tmux) fm_backend_tmux_endpoint_absent "$target" ;;
+    herdr) fm_backend_herdr_endpoint_absent "$target" ;;
+    *) return 1 ;;
+  esac
+}
+
 # Backward-compatible three-state view for existing callers. An
 # authoritatively missing endpoint is confidently not a live agent, while every
 # ambiguous, unreadable, or unverified result stays unknown.

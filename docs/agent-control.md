@@ -32,7 +32,7 @@ A recorded `harness=` is not always an exact adapter name: a task launched from 
 | --- | --- | --- |
 | `interrupt` | Deliver the harness's verified interrupt sequence while leaving the agent running. | Delivery succeeds while the endpoint still exists and the agent is still alive where the backend can classify that; cancellation is confirmed only from an adapter-owned acknowledgement and otherwise reports `cancel=unconfirmed`. |
 | `exit` | Stop the agent, preserving the endpoint, the worktree, and every uncommitted change. | The backend's recovery-grade classifier reports the agent gone. Already-stopped is idempotent success. |
-| `relaunch` | Replace the running agent with a new one in the same endpoint and worktree, on the exact recorded adapter or an explicitly chosen harness, model, and effort. | The new agent is alive on the recorded endpoint, and the durable record names the harness that is actually running. |
+| `relaunch` | Replace the agent with a new one in the same worktree, on the exact recorded adapter or an explicitly chosen harness, model, and effort. The endpoint is adopted when the recorded one is agent-free, or recreated fresh when its address no longer resolves AND the task's endpoint is then found nowhere on the whole backend, so no agent of its can be running at any address. | The new agent is alive on the (adopted or recreated) endpoint, and the durable record names the harness and endpoint that are actually running. |
 
 An exit that delivers lifecycle input but cannot prove the agent stopped fails with `exit=unconfirmed`, reports the observed agent state and any interrupt cancellation claim, and never claims that nothing changed.
 Interrupt never rewrites busy state as proof of its own success.
@@ -68,8 +68,9 @@ It is not deterministic across the verified adapters: codex, grok, and gemini re
 3. **Record the note.**
    A ship or scout relaunch requires `--note`, because the replacement inherits the local copy but none of the conversation; the note is appended to the instructions it reads.
    A secondmate relaunch does not require one and never rewrites its standing charter.
-4. **Stop the old agent** through the `exit` verb, with its postcondition.
-5. **Launch the replacement** through its single owner, `bin/fm-spawn.sh --relaunch`, which adopts the recorded endpoint and worktree instead of creating either, clears the previous harness's per-task wiring, and arms a fresh busy generation.
+4. **Stop the old agent** through the `exit` verb, with its postcondition - skipped only when the recorded endpoint reads `missing` AND a sweep of the whole backend finds the task's endpoint nowhere on it, since there is then provably no agent left to stop.
+   A `missing` endpoint that the sweep still finds under another address is not skipped: it falls through to `exit`, which refuses, so the relaunch stops before the agent is touched.
+5. **Launch the replacement** through its single owner, `bin/fm-spawn.sh --relaunch`, which reuses the recorded worktree and either adopts the recorded endpoint or, if it is `missing` and the same backend-wide sweep comes back empty, recreates one fresh through the same creation path a first spawn uses, clears the previous harness's per-task wiring, and arms a fresh busy generation.
 
 Switching harness is therefore one ordinary relaunch rather than a separate mechanism.
 
@@ -79,6 +80,9 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
 - A launch failure **after** the agent is stopped restores the prior durable record, keeps the progress note so a later recovery still has it, marks the journal `failed:launching`, and reports plainly that no agent is running and where the work is preserved.
 - If the launch owner already published the new record but no running agent can be confirmed, the new record is kept: the task is recorded on the new harness with no agent confirmed, which is exactly what recovery reconciles.
   Rewriting it back to the old harness would be a second, worse inaccuracy.
+- A relaunch that recreated an endpoint and then failed before publishing the new record removes that endpoint again: the surviving record still names the absent one, so nothing else could ever account for it.
+  If it cannot be removed, the failure says so and names it rather than leaving it silently behind.
+  Once the new record is published it names the recreated endpoint, so that endpoint is kept.
 
 ## Fail-closed boundaries
 
@@ -99,7 +103,12 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
   zellij, orca, and cmux are refused rather than reported as successful blind.
 - An ambiguous or unreadable endpoint state refuses.
   Only a positively classified state acts.
-- `fm-spawn --relaunch` independently refuses unless the recorded endpoint is positively agent-free, so a replacement can never join a live agent.
+- `fm-spawn --relaunch` independently refuses unless the recorded endpoint reads positively agent-free (`dead`), or is `missing` and then found nowhere on the whole backend, so a replacement can never join a live agent; an ambiguous or unreadable read still refuses, because absence of evidence there is not evidence of absence.
+  `missing` on its own is NOT that proof. It says the recorded address stopped resolving - which a reboot causes, but so does a renamed tmux session or a window moved out of the recorded one, and in those the agent is still alive at a different address.
+  So a `missing` read is accepted only once `fm_backend_endpoint_absent` proves the endpoint gone across the backend's whole surface rather than at the recorded address alone: tmux scans every session's window inventory for the task's pinned window name, while Herdr asks the server about the recorded pane id - an identity it never re-points at another pane - so `pane_not_found`, or a server positively stopped, is itself that proof.
+  Asking "could this task's agent still be alive" directly is what makes the recreate path reachable at all: the weaker proxy of whether a tmux server happens to be running could never answer it, because recreating the first of several parked tasks starts a server and a firstmate running inside tmux always has one.
+  A `missing` read whose endpoint the backend can still account for - a window found under another session, a pane the server still resolves - refuses like any other unproven state, because recreating there would put a second agent in a worktree that already has one.
+  A `dead` endpoint is adopted; an accepted `missing` one has no pane left to adopt, so it is recreated fresh through the same endpoint-creation path a first spawn uses, opened directly in the task's recorded worktree rather than in the spawning project.
   It also requires the shell to be in the recorded worktree: tmux refuses immediately when it is not, while Herdr sends one `cd` to the recorded path and refuses unless a subsequent path read confirms the move.
 
 ## Capability matrix
@@ -121,4 +130,5 @@ The empirical basis for each adapter's value is the `harness-adapters` skill's v
 
 - `tests/fm-control.test.sh` - the adapter contract for its verified-harness lane (adapters outside the lane pin their control mechanics in their own harness suites), the backend capability matrix, exact-id scoping, the closed verb list, the busy, idle, dead, and idempotent lifecycle cases, and marker non-regression, all against a stubbed session provider.
 - `tests/fm-control-relaunch.test.sh` - the relaunch transaction: identity preservation, harness switching, the progress note, checkpoint refusals, and rollback after a failed launch.
+  It also pins the recreate path: the backend-wide absence proof and the refusal when that sweep still finds the endpoint elsewhere, recreation in the recorded worktree with the replacement verified on its new endpoint, every task parked across a reboot restarting rather than only the one that restarts the server, and both cleanup outcomes for a recreated endpoint.
 - `tests/fm-control-herdr-smoke.test.sh` - the second state-verified backend against the real herdr binary, on an isolated throwaway lab session.

@@ -2353,6 +2353,26 @@ fm_backend_herdr_agent_state() {  # <target>
   esac
 }
 
+# fm_backend_herdr_endpoint_absent: 0 only when the recorded pane exists
+# nowhere on this backend, so the task's agent cannot be running in it. Unlike
+# a tmux window name, a Herdr pane id is an identity rather than an address: it
+# is never re-pointed at another pane, so a server that answers pane_not_found
+# has proven the pane itself is gone. A stopped server proves the same thing
+# for every pane in the session. Both are re-read here rather than inferred
+# from the agent-state verdict the caller already has, so the decision to
+# CREATE a replacement rests on its own positive evidence.
+#
+# Fails closed: an unreadable pane read over a server that is not positively
+# stopped reports "not absent".
+fm_backend_herdr_endpoint_absent() {  # <target>
+  fm_backend_herdr_parse_target "$1" || return 1
+  case "$(fm_backend_herdr_pane_presence_state "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")" in
+    dead) return 0 ;;
+    present) return 1 ;;
+  esac
+  [ "$(fm_backend_herdr_server_running_state "$FM_BACKEND_HERDR_SESSION")" = stopped ]
+}
+
 # Backward-compatible three-state view for callers that only need a yes/no
 # agent verdict. The detailed state contract is owned by fm_backend_agent_state.
 fm_backend_herdr_agent_alive() {  # <target>

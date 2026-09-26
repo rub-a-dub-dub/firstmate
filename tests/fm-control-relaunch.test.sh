@@ -56,6 +56,66 @@ make_tmux_stub() {  # <dir>
 #!/usr/bin/env bash
 set -u
 D=$FM_FAKE_DIR
+# The server's shape, so the relaunch guard's backend-wide sweep can be told
+# apart from the recorded address simply going stale:
+#   $D/sessions      - every session on the server, one per line.
+#   $D/win.<session> - that session's window inventory. A session with no such
+#                      file shares the default $D/windows inventory.
+#   $D/no-server     - the whole server is gone (a reboot). Every read fails
+#                      with tmux's own no-server text until new-session starts
+#                      one, which is exactly how recreating one parked task
+#                      brings the server back for the rest.
+#   $D/no-session    - names the one session that is no longer there (e.g.
+#                      renamed), so reads scoped to it fail while the
+#                      server-wide inventory still answers.
+tmux_no_server_error() {
+  printf 'no server running on /tmp/tmux-1000/default\n' >&2
+  exit 1
+}
+tmux_target_session() {  # <target>
+  local t=${1#=}
+  t=${t%%:*}
+  printf '%s' "$t"
+}
+if [ -e "$D/no-server" ]; then
+  case "${1:-}" in
+    new-session)
+      rm -f "$D/no-server"
+      shift
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          -s) printf '%s\n' "$2" >> "$D/sessions"; shift 2 ;;
+          *) shift ;;
+        esac
+      done
+      exit 0 ;;
+    list-sessions|list-windows|has-session|display-message|send-keys|capture-pane|kill-window)
+      tmux_no_server_error ;;
+  esac
+fi
+case "${1:-}" in
+  list-sessions) [ -f "$D/sessions" ] && cat "$D/sessions"; exit 0 ;;
+  has-session)
+    shift
+    target=
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -t) target=$2; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    grep -qxF "$(tmux_target_session "$target")" "$D/sessions" 2>/dev/null
+    exit $? ;;
+  new-session)
+    shift
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -s) grep -qxF "$2" "$D/sessions" 2>/dev/null || printf '%s\n' "$2" >> "$D/sessions"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    exit 0 ;;
+esac
 case "${1:-}" in
   send-keys)
     shift
@@ -105,12 +165,79 @@ case "${1:-}" in
             : > "$FM_FAKE_CWD_RACE_READY"
             /bin/sleep 1
           fi
+          # $D/cwd-settle counts down the reads that still report $D/cwd-stale
+          # instead of the pane's real path - the tmux/WSL transient where a
+          # brand-new window names an unrelated checkout until its shell
+          # catches up.
+          if [ -s "$D/cwd-settle" ]; then
+            remaining=$(cat "$D/cwd-settle")
+            if [ "$remaining" -gt 0 ]; then
+              printf '%s' "$((remaining - 1))" > "$D/cwd-settle"
+              cat "$D/cwd-stale"; printf '\n'; exit 0
+            fi
+          fi
           cat "$D/cwd"; printf '\n'; exit 0 ;;
       esac
     done
     printf 'fakepane\n'; exit 0 ;;
   capture-pane) printf '╭────╮\n│    │\n╰────╯\n'; exit 0 ;;
-  list-windows) [ -f "$D/windows" ] && cat "$D/windows"; exit 0 ;;
+  list-windows)
+    shift
+    target=
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -t) target=$2; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    session=$(tmux_target_session "$target")
+    if [ -e "$D/no-session" ] && [ "$(cat "$D/no-session")" = "$session" ]; then
+      printf "can't find session: %s\n" "$session" >&2
+      exit 1
+    fi
+    if [ -f "$D/win.$session" ]; then
+      cat "$D/win.$session"
+      exit 0
+    fi
+    [ -f "$D/windows" ] && cat "$D/windows"; exit 0 ;;
+  new-window)
+    # fm_backend_tmux_create_task's -dP -F '#{window_id}' capture, used only
+    # when a missing endpoint's replacement window is created fresh. Record
+    # the created window's name so a later list-windows (the liveness check
+    # on the NEW endpoint) finds it instead of reading missing forever, and
+    # model a real new window's cwd: tmux opens the pane in -c's directory, so
+    # that is what pane_current_path reports from the first read on.
+    shift
+    wname=
+    wcwd=
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -n) wname=$2; shift 2 ;;
+        -c) wcwd=$2; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    [ -z "$wname" ] || printf '%s\n' "$wname" >> "$D/windows"
+    [ -z "$wcwd" ] || printf '%s' "$wcwd" > "$D/cwd"
+    printf '%s\n' "${FM_FAKE_NEW_WINDOW_ID:-@99}"
+    exit 0 ;;
+  kill-window)
+    # fm_backend_tmux_kill targets "=<session>:=<window>"; drop that window so
+    # a later list-windows reflects its removal.
+    shift
+    target=
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -t) target=$2; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    wname=${target##*:=}
+    if [ -n "$wname" ] && [ -f "$D/windows" ]; then
+      remaining=$(grep -vxF -- "$wname" "$D/windows" || true)
+      if [ -n "$remaining" ]; then printf '%s\n' "$remaining" > "$D/windows"; else : > "$D/windows"; fi
+    fi
+    exit 0 ;;
 esac
 exit 0
 SH
@@ -132,15 +259,22 @@ new_case() {
   printf 'claude' > "$dir/fake/command"
   printf 'claude' > "$dir/fake/becomes"
   printf '%s\n' "fm-$id" > "$dir/fake/windows"
+  printf 'fmses\n' > "$dir/fake/sessions"
   make_tmux_stub "$dir"
   printf '%s\n' "$dir"
 }
 
-# add_ship_task <case-dir> <id> [harness]
+# add_ship_task <case-dir> <id> [harness] [worktree]
+# A second and later task in the same case dir shares its project, so only the
+# first initializes the repo; each still gets its own worktree.
 add_ship_task() {
   local dir=$1 id=$2 harness=${3:-claude}
-  local home="$dir/home" proj="$dir/proj" wt="$dir/wt"
-  fm_git_worktree "$proj" "$wt" "task-$id"
+  local home="$dir/home" proj="$dir/proj" wt=${4:-$dir/wt}
+  if [ -d "$proj" ]; then
+    git -C "$proj" worktree add --quiet -b "task-$id" "$wt"
+  else
+    fm_git_worktree "$proj" "$wt" "task-$id"
+  fi
   mkdir -p "$home/data/$id"
   cat > "$home/data/$id/brief.md" <<EOF
 # Task
@@ -181,6 +315,7 @@ run_control() {  # <case-dir> <args...>
     FM_REAL_GIT="${FM_REAL_GIT:-}" FM_FAKE_GIT_FAILURE="${FM_FAKE_GIT_FAILURE:-}" \
     FM_REAL_MV="${FM_REAL_MV:-}" FM_FAKE_COMPLETE_JOURNAL_MV_FAIL="${FM_FAKE_COMPLETE_JOURNAL_MV_FAIL:-}" \
     FM_FAKE_META_PUBLISH_MV_FAIL="${FM_FAKE_META_PUBLISH_MV_FAIL:-}" \
+    FM_FAKE_META_PUBLISH_MV_LOSE="${FM_FAKE_META_PUBLISH_MV_LOSE:-}" \
     FM_FAKE_TRACE_PREPARE="${FM_FAKE_TRACE_PREPARE:-}" \
     FM_FAKE_TRACE_RELEASE="${FM_FAKE_TRACE_RELEASE:-}" \
     FM_FAKE_META_WRITER_READY="${FM_FAKE_META_WRITER_READY:-}" \
@@ -233,6 +368,16 @@ fi
 if [ -n "${FM_FAKE_META_PUBLISH_MV_FAIL:-}" ]; then
   for path in "$@"; do
     [ "$path" != "$FM_FAKE_META_PUBLISH_MV_FAIL" ] || exit 1
+  done
+fi
+# A publication whose move lands but whose success cannot be confirmed, which
+# is what fm_backlog_record_publish's post-move readback failure looks like.
+if [ -n "${FM_FAKE_META_PUBLISH_MV_LOSE:-}" ]; then
+  for path in "$@"; do
+    if [ "$path" = "$FM_FAKE_META_PUBLISH_MV_LOSE" ]; then
+      "$FM_REAL_MV" "$@" || true
+      exit 1
+    fi
   done
 fi
 source_path=
@@ -322,6 +467,261 @@ test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint() {
   assert_grep "/exit" "$dir/fake/literal" "the previous agent should have been exited"
   assert_grep "encode launch-brief" "$dir/fake/literal" "the replacement should have been launched"
   pass "fm-control relaunch: a same-harness relaunch replaces the agent in the same endpoint and worktree"
+}
+
+# --- 1a. missing-endpoint relaunch (a reboot-killed terminal backend) -------
+#
+# A `missing` endpoint is authoritatively absent - no server, no pane, no
+# agent - and is strictly safer than `dead`, so a relaunch must recreate it
+# fresh in the recorded worktree instead of refusing (issue: both
+# bin/fm-control.sh's stop step and bin/fm-spawn.sh's own precondition used to
+# refuse on `missing`, and the refusal's own suggested recovery command hit
+# the identical refusal, an unbreakable loop).
+
+test_missing_endpoint_relaunch_recreates_it() {
+  local dir out rc
+  dir=$(new_case gone rlmiss)
+  add_ship_task "$dir" rlmiss claude
+  : > "$dir/fake/windows"
+  : > "$dir/fake/no-server"
+  # Seed the spawning project, not add_ship_task's default fixture cwd (which
+  # already equals the worktree and would pass trivially): only the recreated
+  # window's own -c can move the pane's reported path to the worktree.
+  printf '%s' "$dir/proj" > "$dir/fake/cwd"
+  out=$(TMUX='' run_control "$dir" rlmiss relaunch --note "recover after a reboot killed the terminal backend"); rc=$?
+  expect_code 0 "$rc" "a relaunch onto a positively missing endpoint should succeed"$'\n'"$out"
+  assert_contains "$out" "relaunched rlmiss harness=claude from=claude" "the outcome should name the transition"
+  [ "$(meta_field "$dir" rlmiss window)" != "fmses:fm-rlmiss" ] \
+    || fail "a missing endpoint has no pane left to adopt; it must be recorded as recreated, not reused"
+  [ "$(meta_field "$dir" rlmiss worktree)" = "$dir/wt" ] \
+    || fail "the intact worktree must still be reused, never reallocated"
+  [ "$(journal_field "$dir" rlmiss phase)" = complete ] \
+    || fail "the transaction journal should end complete"
+  assert_no_grep "/exit" "$dir/fake/literal" \
+    "there was no agent left to stop; nothing should have been sent to exit one"
+  [ "$(cat "$dir/fake/cwd")" = "$dir/wt" ] \
+    || fail "the recreated endpoint should have been opened directly in the recorded worktree (got '$(cat "$dir/fake/cwd")')"
+  assert_no_grep "cd -- " "$dir/fake/keys" \
+    "an endpoint born in the recorded worktree needs no keystroke to get there"
+  assert_grep "encode launch-brief" "$dir/fake/literal" "the replacement should have been launched"
+  pass "fm-control relaunch: a positively missing endpoint is recreated fresh, in the recorded worktree, with no agent to stop first"
+}
+
+test_missing_endpoint_relaunch_verifies_the_replacement_on_its_new_endpoint() {
+  local dir out rc
+  dir=$(new_case gone-verify rlmiss2)
+  add_ship_task "$dir" rlmiss2 claude
+  : > "$dir/fake/windows"
+  : > "$dir/fake/no-server"
+  printf '%s' "$dir/proj" > "$dir/fake/cwd"
+  # Unset for a deterministic session name: fm_backend_tmux_container_ensure
+  # reuses the launching shell's own tmux session when TMUX is set, which
+  # would make the recreated endpoint's session name depend on whether this
+  # suite itself happens to run inside a real tmux session.
+  out=$(TMUX='' run_control "$dir" rlmiss2 relaunch --note "recover after a reboot"); rc=$?
+  expect_code 0 "$rc" "relaunch should verify liveness on the recreated endpoint, not the abandoned one"$'\n'"$out"
+  assert_contains "$out" "endpoint=firstmate:fm-rlmiss2" \
+    "the outcome should report the recreated endpoint, not the abandoned one"
+  pass "fm-control relaunch: a recreated endpoint's liveness is proven on its own new endpoint, not the stale recorded one"
+}
+
+# A `missing` read only proves the recorded ADDRESS stopped resolving. While
+# the backend server is still up the agent may be alive at another address -
+# a renamed session, or a window moved out of the recorded one - so recreating
+# there would put a second agent in a worktree that already has one. Both
+# entry points must keep refusing those, and only those, reads.
+
+test_missing_session_over_a_live_server_still_refuses() {
+  local dir out rc
+  dir=$(new_case renamed-session rlrename)
+  add_ship_task "$dir" rlrename claude
+  # `tmux rename-session -t fmses work`: the recorded session name is gone, but
+  # the task's own window - and the agent in it - moved with it, intact.
+  printf 'fmses' > "$dir/fake/no-session"
+  printf 'work\n' > "$dir/fake/sessions"
+  printf 'fm-rlrename\n' > "$dir/fake/win.work"
+  out=$(TMUX='' run_control "$dir" rlrename relaunch --note "should never reach here"); rc=$?
+  expect_code 1 "$rc" "a relaunch onto a renamed session should refuse"$'\n'"$out"
+  assert_contains "$out" "there is no agent to stop" \
+    "the refusal should come from the stop step, before the agent is touched"
+  [ "$(meta_field "$dir" rlrename window)" = "fmses:fm-rlrename" ] \
+    || fail "a refused relaunch must not rewrite the recorded endpoint"
+  [ "$(cat "$dir/fake/command")" = claude ] \
+    || fail "the agent that may still be running elsewhere must not be reported stopped"
+  assert_no_grep "encode launch-brief" "$dir/fake/literal" \
+    "no replacement may be launched while the old agent may still be alive"
+  pass "fm-control relaunch: a recorded session that no longer resolves refuses while the server is still up"
+}
+
+# A recreated pane is brand new, and bin/fm-spawn.sh's own fresh-spawn wait
+# documents that such a pane can name an unrelated checkout for a while before
+# its shell catches up. The proof that the endpoint sits in the recorded
+# worktree must outlast that, or the reboot recovery this change exists for
+# fails on exactly those hosts - after the progress note has already been
+# appended, so each retry appends another.
+test_recreated_endpoint_outwaits_a_slow_settling_pane() {
+  local dir out rc
+  dir=$(new_case slow-settle rlslow)
+  add_ship_task "$dir" rlslow claude
+  : > "$dir/fake/windows"
+  : > "$dir/fake/sessions"
+  : > "$dir/fake/no-server"
+  # Longer than the ~5s an adopted endpoint is given, well inside what a
+  # brand-new pane gets.
+  printf '%s' "$dir/proj" > "$dir/fake/cwd-stale"
+  printf '20' > "$dir/fake/cwd-settle"
+  out=$(TMUX='' run_control "$dir" rlslow relaunch --note "recreate a pane whose path lags"); rc=$?
+  expect_code 0 "$rc" "a recreated pane should be waited out, not refused"$'\n'"$out"
+  [ "$(meta_field "$dir" rlslow window)" = "firstmate:fm-rlslow" ] \
+    || fail "the endpoint should have been recreated (got '$(meta_field "$dir" rlslow window)')"
+  [ "$(meta_field "$dir" rlslow worktree)" = "$dir/wt" ] \
+    || fail "the recorded worktree must be reused, never the stale path the pane reported first"
+  [ "$(journal_field "$dir" rlslow phase)" = complete ] \
+    || fail "the transaction journal should end complete"
+  pass "fm-control relaunch: a recreated pane that reports a stale path at first is waited out, not refused"
+}
+
+test_absent_window_found_in_another_session_still_refuses() {
+  local dir out rc
+  dir=$(new_case moved-window rlmoved)
+  add_ship_task "$dir" rlmoved claude
+  # `tmux move-window` out of the recorded session: the recorded address no
+  # longer resolves, but the window - and its agent - is alive under another.
+  : > "$dir/fake/windows"
+  printf 'fmses\nwork\n' > "$dir/fake/sessions"
+  printf 'fm-rlmoved\n' > "$dir/fake/win.work"
+  out=$(TMUX='' run_control "$dir" rlmoved relaunch --note "should never reach here"); rc=$?
+  expect_code 1 "$rc" "a relaunch onto a moved-away window should refuse"$'\n'"$out"
+  [ "$(meta_field "$dir" rlmoved window)" = "fmses:fm-rlmoved" ] \
+    || fail "a refused relaunch must not rewrite the recorded endpoint"
+  [ "$(cat "$dir/fake/win.work")" = "fm-rlmoved" ] \
+    || fail "the endpoint still holding the agent must be left exactly as it was"
+  [ ! -s "$dir/fake/windows" ] \
+    || fail "a refused relaunch must not create a replacement endpoint (created: $(cat "$dir/fake/windows"))"
+  assert_no_grep "encode launch-brief" "$dir/fake/literal" \
+    "no replacement may be launched while the old agent may still be alive"
+  pass "fm-control relaunch: a recorded window that the backend-wide sweep still finds elsewhere refuses"
+}
+
+test_absent_window_found_nowhere_recreates() {
+  local dir out rc
+  dir=$(new_case swept-clean rlswept)
+  add_ship_task "$dir" rlswept claude
+  # The server answers and the task's window is in no session's inventory at
+  # all, so nothing on this backend can still be running its agent. Absence of
+  # a server is NOT required: recreating the first of several parked tasks
+  # starts one, and a firstmate inside tmux always has one.
+  : > "$dir/fake/windows"
+  out=$(TMUX='' run_control "$dir" rlswept relaunch --note "recover a task whose window is gone server-wide"); rc=$?
+  expect_code 0 "$rc" "a window absent from every session should recreate"$'\n'"$out"
+  [ "$(meta_field "$dir" rlswept window)" = "firstmate:fm-rlswept" ] \
+    || fail "the endpoint should have been recreated (got '$(meta_field "$dir" rlswept window)')"
+  [ "$(meta_field "$dir" rlswept worktree)" = "$dir/wt" ] \
+    || fail "the recorded worktree must be reused, never reallocated"
+  [ "$(journal_field "$dir" rlswept phase)" = complete ] \
+    || fail "the transaction journal should end complete"
+  pass "fm-control relaunch: a window the backend-wide sweep finds nowhere is recreated, with no server absence required"
+}
+
+# The intent's own scenario: several tasks parked across a reboot. Recreating
+# the first one necessarily starts a tmux server, so a gate that asked only
+# "is a server running" would restore exactly one task and refuse the rest.
+test_multiple_parked_tasks_all_relaunch_after_a_reboot() {
+  local dir out rc id
+  dir=$(new_case reboot-fleet rlfleetA)
+  add_ship_task "$dir" rlfleetA claude
+  add_ship_task "$dir" rlfleetB claude "$dir/wt-rlfleetB"
+  add_ship_task "$dir" rlfleetC claude "$dir/wt-rlfleetC"
+  # A reboot: no server, and no task's window survives anywhere.
+  : > "$dir/fake/windows"
+  : > "$dir/fake/sessions"
+  : > "$dir/fake/no-server"
+  for id in rlfleetA rlfleetB rlfleetC; do
+    out=$(TMUX='' run_control "$dir" "$id" relaunch --note "restart $id after the reboot"); rc=$?
+    expect_code 0 "$rc" "parked task $id should relaunch after the reboot"$'\n'"$out"
+    [ "$(meta_field "$dir" "$id" window)" = "firstmate:fm-$id" ] \
+      || fail "$id should have been recreated (got '$(meta_field "$dir" "$id" window)')"
+    [ "$(journal_field "$dir" "$id" phase)" = complete ] \
+      || fail "$id's transaction journal should end complete"
+  done
+  [ -s "$dir/fake/sessions" ] \
+    || fail "recreating the first task should have started the server the rest then share"
+  pass "fm-control relaunch: every task parked across a reboot restarts, not just the one that restarts the server"
+}
+
+test_spawn_relaunch_refuses_a_missing_address_over_a_live_server() {
+  local dir out rc
+  dir=$(new_case live-server rl43)
+  add_ship_task "$dir" rl43 claude
+  : > "$dir/fake/windows"
+  printf 'fmses\nwork\n' > "$dir/fake/sessions"
+  printf 'fm-rl43\n' > "$dir/fake/win.work"
+  out=$(TMUX='' run_spawn "$dir" rl43 --relaunch --harness claude); rc=$?
+  expect_code 1 "$rc" "recreating an endpoint that still exists elsewhere should refuse"$'\n'"$out"
+  assert_contains "$out" "still exists elsewhere" \
+    "the refusal should name why an unresolvable address is not proof of absence"
+  [ "$(meta_field "$dir" rl43 window)" = "fmses:fm-rl43" ] \
+    || fail "a refused relaunch must not rewrite the recorded endpoint"
+  [ ! -s "$dir/fake/windows" ] \
+    || fail "a refused relaunch must not create a replacement endpoint (created: $(cat "$dir/fake/windows"))"
+  pass "fm-spawn --relaunch: an unresolvable address whose endpoint still exists elsewhere refuses"
+}
+
+test_ambiguous_endpoint_relaunch_still_refuses() {
+  local dir out rc
+  dir=$(new_case ambiguous rlamb)
+  add_ship_task "$dir" rlamb claude
+  printf 'some-unrelated-process' > "$dir/fake/command"
+  out=$(run_control "$dir" rlamb relaunch --note "should never reach here"); rc=$?
+  expect_code 1 "$rc" "a relaunch onto an unattributed endpoint should refuse"
+  assert_contains "$out" "positively classified" \
+    "the refusal should name the missing attribution, never treat ambiguous as absent"
+  [ -z "$(cat "$dir/fake/literal")" ] || fail "an ambiguous endpoint must receive no bytes"
+  [ "$(meta_field "$dir" rlamb window)" = "fmses:fm-rlamb" ] \
+    || fail "a refused relaunch must not touch the recorded endpoint"
+  pass "fm-control relaunch: an endpoint whose process cannot be attributed still refuses, unlike a positively missing one"
+}
+
+test_missing_endpoint_relaunch_removes_its_recreated_endpoint_on_abort() {
+  local dir out rc meta real_mv
+  dir=$(new_case gone-abort rlmiss3)
+  add_ship_task "$dir" rlmiss3 claude
+  : > "$dir/fake/windows"
+  : > "$dir/fake/no-server"
+  printf '%s' "$dir/proj" > "$dir/fake/cwd"
+  meta="$dir/home/state/rlmiss3.meta"
+  real_mv=$(command -v mv)
+  make_mv_failure_stub "$dir"
+  out=$(FM_REAL_MV="$real_mv" FM_FAKE_META_PUBLISH_MV_FAIL="$meta" TMUX='' \
+    run_control "$dir" rlmiss3 relaunch --note "abort after the endpoint is recreated"); rc=$?
+  expect_code 1 "$rc" "a failed metadata publication should fail closed"$'\n'"$out"
+  [ "$(meta_field "$dir" rlmiss3 window)" = "fmses:fm-rlmiss3" ] \
+    || fail "a failed publication should retain the prior durable record"
+  [ ! -s "$dir/fake/windows" ] \
+    || fail "an endpoint recreated by this relaunch is its own until publication names it; an abort must not strand it (left: $(cat "$dir/fake/windows"))"
+  pass "fm-control relaunch: an abort before publication removes the endpoint it recreated, leaving none the durable record cannot name"
+}
+
+test_missing_endpoint_relaunch_keeps_a_recreated_endpoint_its_record_names() {
+  local dir out rc meta real_mv
+  dir=$(new_case gone-published rlmiss4)
+  add_ship_task "$dir" rlmiss4 claude
+  : > "$dir/fake/windows"
+  : > "$dir/fake/no-server"
+  printf '%s' "$dir/proj" > "$dir/fake/cwd"
+  meta="$dir/home/state/rlmiss4.meta"
+  real_mv=$(command -v mv)
+  make_mv_failure_stub "$dir"
+  out=$(FM_REAL_MV="$real_mv" FM_FAKE_META_PUBLISH_MV_LOSE="$meta" TMUX='' \
+    run_control "$dir" rlmiss4 relaunch --note "publication lands but reports failure"); rc=$?
+  expect_code 1 "$rc" "an unconfirmable publication should fail closed"$'\n'"$out"
+  [ "$(meta_field "$dir" rlmiss4 window)" = "firstmate:fm-rlmiss4" ] \
+    || fail "the landed publication should leave the durable record naming the recreated endpoint (got '$(meta_field "$dir" rlmiss4 window)')"
+  grep -qxF "fm-rlmiss4" "$dir/fake/windows" \
+    || fail "an endpoint the published record already names must survive the abort (left: '$(cat "$dir/fake/windows")')"
+  [ "$(journal_field "$dir" rlmiss4 rollback)" = none-new-record-kept ] \
+    || fail "the journal should record that the published replacement record was kept"
+  pass "fm-control relaunch: an abort whose publication already landed keeps the endpoint that record names"
 }
 
 test_relaunch_from_linked_home_preserves_recorded_worktree() {
@@ -1395,9 +1795,44 @@ test_spawn_relaunch_refuses_a_live_agent() {
   add_ship_task "$dir" rl15 claude
   out=$(run_spawn "$dir" rl15 --relaunch --harness claude); rc=$?
   expect_code 1 "$rc" "relaunching into a live endpoint should refuse"
-  assert_contains "$out" "positively agent-free endpoint" "the refusal should demand an agent-free endpoint"
+  assert_contains "$out" "holds a live agent" "the refusal should name the live agent"
   assert_contains "$out" "fm-control.sh rl15 exit" "the refusal should point at the way to stop it"
   pass "fm-spawn --relaunch: refuses to launch a second agent into a live endpoint"
+}
+
+test_spawn_relaunch_recreates_a_missing_endpoint() {
+  local dir out rc
+  dir=$(new_case recreate rl41)
+  add_ship_task "$dir" rl41 claude
+  : > "$dir/fake/windows"
+  : > "$dir/fake/no-server"
+  printf '%s' "$dir/proj" > "$dir/fake/cwd"
+  # Unset for a deterministic session name (see the same note in
+  # test_missing_endpoint_relaunch_verifies_the_replacement_on_its_new_endpoint).
+  out=$(TMUX='' run_spawn "$dir" rl41 --relaunch --harness claude); rc=$?
+  expect_code 0 "$rc" "relaunching a positively missing endpoint should recreate it"$'\n'"$out"
+  [ "$(meta_field "$dir" rl41 window)" = "firstmate:fm-rl41" ] \
+    || fail "a missing endpoint should be recreated through the ordinary fresh-endpoint path (got '$(meta_field "$dir" rl41 window)')"
+  [ "$(meta_field "$dir" rl41 worktree)" = "$dir/wt" ] \
+    || fail "the recorded worktree must be reused, never a new one"
+  [ "$(cat "$dir/fake/cwd")" = "$dir/wt" ] \
+    || fail "the recreated endpoint should have been opened directly in the recorded worktree (got '$(cat "$dir/fake/cwd")')"
+  assert_no_grep "cd -- " "$dir/fake/keys" \
+    "an endpoint born in the recorded worktree needs no keystroke to get there"
+  pass "fm-spawn --relaunch: a positively missing endpoint is recreated in the recorded worktree, not adopted"
+}
+
+test_spawn_relaunch_refuses_an_ambiguous_endpoint() {
+  local dir out rc
+  dir=$(new_case unattributed rl42a)
+  add_ship_task "$dir" rl42a claude
+  printf 'some-unrelated-process' > "$dir/fake/command"
+  out=$(run_spawn "$dir" rl42a --relaunch --harness claude); rc=$?
+  expect_code 1 "$rc" "relaunching onto an unattributed endpoint should refuse"
+  assert_contains "$out" "rather than a positively agent-free or positively absent state" \
+    "the refusal should distinguish an unreadable/ambiguous read from a positively missing one"
+  [ ! -s "$dir/fake/keys" ] || fail "a refused relaunch must send nothing to the pane"
+  pass "fm-spawn --relaunch: an endpoint that cannot be positively classified still refuses, unlike a missing one"
 }
 
 test_spawn_relaunch_refuses_a_symlinked_task_record_before_inspection() {
@@ -1559,6 +1994,16 @@ test_relaunch_moves_a_drifted_item_back_in_flight() {
 }
 
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
+test_missing_endpoint_relaunch_recreates_it
+test_missing_endpoint_relaunch_verifies_the_replacement_on_its_new_endpoint
+test_ambiguous_endpoint_relaunch_still_refuses
+test_missing_session_over_a_live_server_still_refuses
+test_absent_window_found_in_another_session_still_refuses
+test_recreated_endpoint_outwaits_a_slow_settling_pane
+test_absent_window_found_nowhere_recreates
+test_multiple_parked_tasks_all_relaunch_after_a_reboot
+test_missing_endpoint_relaunch_removes_its_recreated_endpoint_on_abort
+test_missing_endpoint_relaunch_keeps_a_recreated_endpoint_its_record_names
 test_relaunch_from_linked_home_preserves_recorded_worktree
 test_relaunch_preserves_durable_task_metadata
 test_relaunch_serializes_concurrent_durable_metadata_publication
@@ -1603,6 +2048,9 @@ test_concurrent_relaunch_is_refused
 test_direct_spawn_relaunch_participates_in_the_lifecycle_lock
 test_promotion_participates_in_the_lifecycle_lock_before_metadata_resolution
 test_spawn_relaunch_refuses_a_live_agent
+test_spawn_relaunch_recreates_a_missing_endpoint
+test_spawn_relaunch_refuses_an_ambiguous_endpoint
+test_spawn_relaunch_refuses_a_missing_address_over_a_live_server
 test_spawn_relaunch_refuses_a_symlinked_task_record_before_inspection
 test_spawn_relaunch_keeps_its_early_meta_lock_continuous
 test_spawn_relaunch_refuses_a_pending_authoritative_close

@@ -37,12 +37,20 @@
 #   validated state/<id>.meta, so --backend, --scout, --secondmate, a project
 #   positional, and batch pairs are all refused alongside it; only harness,
 #   model, and effort may change, which is what makes a harness switch one
-#   ordinary relaunch. It refuses unless the recorded endpoint is positively
-#   agent-free on a backend with a recovery-grade agent-state classifier (tmux
-#   or herdr), and clears the previous harness's per-task wiring before arming
-#   the new incarnation. The replacement still never starts outside the copy
-#   holding the work: a Herdr shell that has drifted out of the recorded
-#   worktree is told once to return, and only a shell that will not go refuses.
+#   ordinary relaunch. It refuses unless the recorded endpoint reads dead
+#   (positively agent-free), or missing with the task's endpoint then found
+#   nowhere on the whole backend, on a backend with a recovery-grade
+#   agent-state classifier (tmux or herdr); any other read - including a
+#   missing address whose endpoint still exists under another one, which proves
+#   only that the recorded address stopped resolving - still refuses. A dead
+#   endpoint is adopted as before; an accepted missing one is recreated fresh
+#   with the same endpoint-creation path a first spawn uses,
+#   born directly in the task's recorded worktree, never a new one. It clears
+#   the previous harness's per-task wiring before arming the new incarnation.
+#   The replacement still never starts outside the copy holding the work: every
+#   endpoint, adopted or recreated, must read back as sitting in the recorded
+#   worktree, and a Herdr shell that has drifted out of it is told once to
+#   return, with only a shell that will not go refusing.
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
 #   positional harness arg still works for back-compat.
 #   --model <name> and --effort <low|medium|high|xhigh|max|ultra> are concrete profile
@@ -515,6 +523,7 @@ MODE_SET=0
 YOLO_SET=0
 TRACEPARENT_SET=0
 RELAUNCH=0
+RELAUNCH_RECREATE_ENDPOINT=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -582,10 +591,12 @@ case "$EFFORT" in
   *) echo "error: --effort must be one of low, medium, high, xhigh, max, ultra" >&2; exit 1 ;;
 esac
 
-# --relaunch reuses an existing task's endpoint, worktree, project, and kind,
-# so every axis this block resolves for a fresh spawn instead comes from that
-# task's own durable record below. Contradicting it on the command line is a
-# refusal rather than a silently-ignored flag.
+# --relaunch reuses an existing task's worktree, project, kind, and backend -
+# and its recorded endpoint too, except when that endpoint is proven absent and
+# recreated on that same recorded backend - so every axis this block resolves
+# for a fresh spawn instead comes from that task's own durable record below.
+# Contradicting it on the command line is a refusal rather than a
+# silently-ignored flag.
 if [ "$RELAUNCH" -eq 1 ]; then
   [ "$BACKEND_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded backend; --backend cannot override it" >&2; exit 1; }
   [ "$KIND_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded kind; --scout/--secondmate cannot override it" >&2; exit 1; }
@@ -937,6 +948,8 @@ RELAUNCH_REPLACEMENT_BUSY_GEN=
 RELAUNCH_REPLACEMENT_HARNESS=
 RELAUNCH_REPLACEMENT_STATE=
 RELAUNCH_REPLACEMENT_WT=
+RELAUNCH_RECREATED_ENDPOINT_CLEANUP=0
+RELAUNCH_RECREATED_ENDPOINT_TARGET=
 CONFIG_INHERIT_LOCK=
 CONFIG_INHERIT_LOCK_HELD=0
 
@@ -967,14 +980,22 @@ parse_orca_worktree_result() {
   fi
 }
 
+# Publication is the single point where the replacement record starts naming
+# this incarnation's endpoint, so it releases every unwind that would otherwise
+# tear that endpoint down - whichever of them happens to own it.
+relaunch_release_published_endpoint_ownership() {
+  RELAUNCH_REPLACEMENT_PENDING=0
+  RELAUNCH_RECREATED_ENDPOINT_CLEANUP=0
+  HERDR_PROJECTION_ABORT_CLEANUP=0
+}
+
 spawn_abort_cleanup() {
   local status=$?
-  if [ "$RELAUNCH_REPLACEMENT_PENDING" = 1 ] \
-     && [ "$SPAWN_META_PUBLISH_STARTED" = 1 ] \
+  if [ "$SPAWN_META_PUBLISH_STARTED" = 1 ] \
      && [ -n "$SPAWN_META_TMP" ] \
      && [ ! -e "$SPAWN_META_TMP" ] \
      && [ ! -L "$SPAWN_META_TMP" ]; then
-    RELAUNCH_REPLACEMENT_PENDING=0
+    relaunch_release_published_endpoint_ownership
   fi
   if [ "$RELAUNCH_REPLACEMENT_PENDING" = 1 ]; then
     RELAUNCH_REPLACEMENT_PENDING=0
@@ -991,6 +1012,16 @@ spawn_abort_cleanup() {
           --gen "$RELAUNCH_REPLACEMENT_BUSY_GEN"; then
         echo "warning: could not retire replacement busy generation after aborted relaunch of $ID" >&2
       fi
+    fi
+  fi
+  # An endpoint recreated for a `missing` relaunch is owned by this process
+  # until publication names it: the surviving durable record still points at
+  # the absent one, so nothing else could ever account for it.
+  if [ "$RELAUNCH_RECREATED_ENDPOINT_CLEANUP" = 1 ]; then
+    RELAUNCH_RECREATED_ENDPOINT_CLEANUP=0
+    if [ -n "$RELAUNCH_RECREATED_ENDPOINT_TARGET" ] \
+       && ! fm_backend_kill "$BACKEND" "$RELAUNCH_RECREATED_ENDPOINT_TARGET" 2>/dev/null; then
+      echo "warning: could not remove the endpoint recreated for the aborted relaunch of $ID ($RELAUNCH_RECREATED_ENDPOINT_TARGET); remove it by hand before retrying" >&2
     fi
   fi
   if [ "$HERDR_PROJECTION_ABORT_CLEANUP" = 1 ] \
@@ -1357,10 +1388,34 @@ if [ "$RELAUNCH" -eq 1 ]; then
     exit 1
   }
   RELAUNCH_STATE=$(fm_backend_agent_state "$BACKEND" "$RELAUNCH_TARGET")
-  [ "$RELAUNCH_STATE" = dead ] || {
-    echo "error: task $ID's endpoint reads '$RELAUNCH_STATE'; a relaunch requires a positively agent-free endpoint (stop the agent first with bin/fm-control.sh $ID exit)" >&2
-    exit 1
-  }
+  # `missing` says the recorded ADDRESS no longer resolves, which is not by
+  # itself proof that no agent exists: a renamed tmux session or a window moved
+  # out of the recorded one both read `missing` while the agent keeps running
+  # somewhere else. Recreating there would be the one outcome the guard exists
+  # to prevent - two agents in one worktree. So the endpoint is recreated only
+  # once fm_backend_endpoint_absent has swept the backend's whole surface and
+  # found this task's endpoint nowhere on it, which answers "could its agent
+  # still be alive" directly. Every `missing` that fails that sweep, like every
+  # ambiguous or unreadable read, still refuses: absence of evidence is not
+  # evidence of absence.
+  case "$RELAUNCH_STATE" in
+    dead) ;;
+    missing)
+      fm_backend_endpoint_absent "$BACKEND" "$RELAUNCH_TARGET" || {
+        echo "error: task $ID's recorded endpoint '$RELAUNCH_TARGET' does not resolve, but an endpoint named for it still exists elsewhere on $BACKEND, so its agent may be alive there; reconcile the task before any relaunch" >&2
+        exit 1
+      }
+      RELAUNCH_RECREATE_ENDPOINT=1
+      ;;
+    alive)
+      echo "error: task $ID's endpoint holds a live agent; a relaunch refuses to join it. Stop it first with bin/fm-control.sh $ID exit" >&2
+      exit 1
+      ;;
+    *)
+      echo "error: task $ID's endpoint reads '$RELAUNCH_STATE' rather than a positively agent-free or positively absent state; reconcile the task before any relaunch" >&2
+      exit 1
+      ;;
+  esac
   RELAUNCH_PRIOR_HARNESS=$(fm_meta_get "$RELAUNCH_META" harness)
   KIND=$(fm_meta_get "$RELAUNCH_META" kind)
   [ -n "$KIND" ] || KIND=ship
@@ -2757,18 +2812,34 @@ if [ -e "$STATE/$ID.backlog-close" ] || [ -L "$STATE/$ID.backlog-close" ]; then
 fi
 
 W="fm-$ID"
-if [ "$RELAUNCH" -eq 1 ]; then
+# A secondmate's home already resolved WT above through the same validation a
+# fresh secondmate spawn uses; every other kind takes the recorded worktree.
+# This applies to both relaunch shapes below - adopting the recorded endpoint
+# and recreating a missing one - since neither acquires a new worktree.
+[ "$RELAUNCH" -ne 1 ] || [ "$KIND" = secondmate ] || WT=$RELAUNCH_WT
+if [ "$RELAUNCH" -eq 1 ] && [ "$RELAUNCH_RECREATE_ENDPOINT" -ne 1 ]; then
   # Adopt the recorded endpoint instead of creating one. This is what keeps a
   # relaunch a REPLACEMENT rather than a second copy of the task: no new
   # terminal, no second worktree, and every uncommitted change left exactly
   # where the previous agent left it.
   T=$RELAUNCH_TARGET
-  # A secondmate's home already resolved WT above through the same validation a
-  # fresh secondmate spawn uses; every other kind takes the recorded worktree.
-  [ "$KIND" = secondmate ] || WT=$RELAUNCH_WT
   WT_TARGET=$T
   SES=${T%%:*}
 else
+  # RELAUNCH_RECREATE_ENDPOINT=1 falls through here too: the recorded endpoint
+  # is positively missing (no server, no pane, no agent left to adopt), so the
+  # replacement gets a genuinely fresh endpoint through the exact same
+  # creation path a first spawn uses - never a second, parallel one - while
+  # WT above still keeps this a replacement in the recorded worktree, not a
+  # new task.
+  #
+  # A fresh spawn's endpoint is born in the project because `treehouse get`
+  # has yet to allocate its worktree; a recreated one already knows the
+  # recorded worktree and is born IN it, so it is provably in the copy holding
+  # the work from its first breath - no keystroke to deliver, no shell startup
+  # to outwait.
+  SPAWN_ENDPOINT_CWD=$PROJ_ABS
+  [ "$RELAUNCH_RECREATE_ENDPOINT" -ne 1 ] || SPAWN_ENDPOINT_CWD=$WT
 case "$BACKEND" in
   tmux)
     SES=$(fm_backend_tmux_container_ensure)
@@ -2779,7 +2850,7 @@ case "$BACKEND" in
     # treehouse cd's into the worktree. WT_TARGET carries that stable id for the
     # rename-critical worktree-detection steps below; the persisted window= handle
     # stays $T (the name form), which is safe now that rename is disabled.
-    WID=$(fm_backend_tmux_create_task "$SES" "$W" "$PROJ_ABS") || exit 1
+    WID=$(fm_backend_tmux_create_task "$SES" "$W" "$SPAWN_ENDPOINT_CWD") || exit 1
     WT_TARGET="$WID"
     ;;
   herdr)
@@ -2831,7 +2902,7 @@ case "$BACKEND" in
           FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_projection_reclaim_task \
             "$HERDR_SES" "$HERDR_PRESENTATION_JOURNAL" "$ID" "$HERDR_LABEL_HOME" \
             "$HERDR_RECOVERY_WORKSPACE_ID" "$HERDR_RECOVERY_TAB_ID" "$HERDR_RECOVERY_PANE_ID" \
-            "$HERDR_PARENT_LABEL" "$W" "$PROJ_ABS"
+            "$HERDR_PARENT_LABEL" "$W" "$SPAWN_ENDPOINT_CWD"
           HERDR_RECLAIM_STATUS=$?
           set -e
           case "$HERDR_RECLAIM_STATUS" in
@@ -2938,7 +3009,7 @@ case "$BACKEND" in
       HERDR_SEEDED_DEFAULT_TAB_ID=${HERDR_CONTAINER_RAW#*$'\t'}
       HERDR_SES=${CONTAINER%%:*}
       HERDR_WORKSPACE_ID=${CONTAINER#*:}
-      HERDR_TASK_IDS=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_create_task "$CONTAINER" "$W" "$PROJ_ABS" "$HERDR_SEEDED_DEFAULT_TAB_ID") || exit 1
+      HERDR_TASK_IDS=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_create_task "$CONTAINER" "$W" "$SPAWN_ENDPOINT_CWD" "$HERDR_SEEDED_DEFAULT_TAB_ID") || exit 1
       read -r HERDR_TAB_ID HERDR_PANE_ID <<EOF
 $HERDR_TASK_IDS
 EOF
@@ -2999,6 +3070,10 @@ EOF
     T="$ORCA_TERMINAL"
     ;;
 esac
+  if [ "$RELAUNCH_RECREATE_ENDPOINT" -eq 1 ] && [ "$HERDR_PROJECTION_ABORT_CLEANUP" != 1 ]; then
+    RELAUNCH_RECREATED_ENDPOINT_CLEANUP=1
+    RELAUNCH_RECREATED_ENDPOINT_TARGET=$T
+  fi
 fi
 if [ "$KIND" = secondmate ]; then
   FM_INHERITABLE_CONFIG=trace-context \
@@ -3248,16 +3323,32 @@ agy_spawn_fail() {  # <detail>
 }
 
 if [ "$RELAUNCH" -eq 1 ]; then
-  # No worktree is acquired: the recorded one is reused as-is. What must be
-  # proven instead is that the adopted endpoint's shell is actually sitting in
-  # that worktree, so the replacement agent starts where the work is rather
-  # than wherever the pane happened to drift.
+  # No worktree is acquired: the recorded one is reused as-is, whether this
+  # incarnation adopted its recorded endpoint or - RELAUNCH_RECREATE_ENDPOINT -
+  # had that endpoint recreated fresh because the previous one was positively
+  # missing. What must be proven either way is that the endpoint's shell is
+  # actually sitting in that worktree: an adopted endpoint might have drifted,
+  # and a recreated one was born there but is still asked to prove it rather
+  # than be taken on trust.
+  # An adopted endpoint has existed for hours, so its path read is settled and
+  # a short budget is right. A recreated one was born milliseconds ago, and a
+  # brand-new pane is exactly what the fresh-spawn wait below documents as
+  # transiently reporting an unrelated stale path before its shell catches up,
+  # so it gets that same budget. Only the wait widens: the read is compared
+  # against a known expected path, so a stale one can delay acceptance but
+  # never produce a false one.
+  relaunch_settle_polls=10
+  relaunch_settle_interval=0.5
+  if [ "$RELAUNCH_RECREATE_ENDPOINT" -eq 1 ]; then
+    relaunch_settle_polls=60
+    relaunch_settle_interval=1
+  fi
   relaunch_wt_real=$(real_path_or_raw "$WT")
   relaunch_seen=
-  for _ in $(seq 1 10); do
+  for _ in $(seq 1 "$relaunch_settle_polls"); do
     relaunch_seen=$(spawn_current_path "$WT_TARGET" || true)
     [ -z "$relaunch_seen" ] || [ "$(real_path_or_raw "$relaunch_seen")" != "$relaunch_wt_real" ] || break
-    sleep 0.5
+    sleep "$relaunch_settle_interval"
   done
   if [ -z "$relaunch_seen" ] || [ "$(real_path_or_raw "$relaunch_seen")" != "$relaunch_wt_real" ]; then
     if [ "$BACKEND" != herdr ]; then
@@ -3269,10 +3360,10 @@ if [ "$RELAUNCH" -eq 1 ]; then
       echo "error: task $ID's endpoint is in '${relaunch_seen:-unknown}' and could not be told to return to its recorded worktree '$WT'; refusing to relaunch an agent outside the copy holding its work" >&2
       exit 1
     }
-    for _ in $(seq 1 10); do
+    for _ in $(seq 1 "$relaunch_settle_polls"); do
       relaunch_seen=$(spawn_current_path "$WT_TARGET" || true)
       [ -z "$relaunch_seen" ] || [ "$(real_path_or_raw "$relaunch_seen")" != "$relaunch_wt_real" ] || break
-      sleep 0.5
+      sleep "$relaunch_settle_interval"
     done
     if [ -z "$relaunch_seen" ] || [ "$(real_path_or_raw "$relaunch_seen")" != "$relaunch_wt_real" ]; then
       echo "error: task $ID's endpoint is in '${relaunch_seen:-unknown}' and did not return to its recorded worktree '$WT' when told to; refusing to relaunch an agent outside the copy holding its work" >&2
@@ -4000,7 +4091,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
     echo "error: replacement task record for $ID could not be published ($FM_BACKLOG_TRANSITION_ERROR)" >&2
     exit 1
   fi
-  RELAUNCH_REPLACEMENT_PENDING=0
+  relaunch_release_published_endpoint_ownership
   SPAWN_META_PUBLISH_STARTED=0
   SPAWN_META_TMP=
 fi

@@ -149,13 +149,16 @@
 # change ordinary sends.
 #
 # Decision closure (answerer-closes): pass --resolve-key <key> (repeatable,
-# before the message) when this send answers an open keyed needs-decision: or
-# blocked: record in the target task's state/<id>.status. fm-send itself
-# appends the closing resolved line to that status file, so the captain-facing
-# OPEN DECISIONS record closes at answer time and never depends on the busy
-# worker writing a matching resolved line. Ordinary keys close with
-# "resolved [key=<key>]: answered: <capped excerpt>". A reserved key
-# (pending-reply-* today; bin/fm-classify-lib.sh's reserved-key guard) is
+# before the message) when this send answers an open needs-decision: or
+# blocked: record in the target task's state/<id>.status - the record's own
+# [key=<slug>] when it has one, or "default" for an unkeyed record, which
+# folds under that shared bucket and which the OPEN DECISIONS row prints like
+# any other key. fm-send itself appends the closing resolved line to that
+# status file, so the captain-facing OPEN DECISIONS record closes at answer
+# time and never depends on the busy worker writing a matching resolved line.
+# Ordinary keys close with "resolved [key=<key>]: answered: <capped excerpt>".
+# A reserved key (pending-reply-* today; bin/fm-classify-lib.sh's
+# reserved-key guard) is
 # closed with the owning library's vocabulary note
 # (fm_pending_reply_close_note_for_key / fm_pending_reply_resolved_note), so
 # the fold actually drops it; a bare answered: note is not a reserved-key

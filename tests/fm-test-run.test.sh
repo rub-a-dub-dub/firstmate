@@ -129,6 +129,7 @@ init_changed_fixture_repo() {
   : >"$repo/bin/fm-supervisor-target-lib.sh"
   : >"$repo/bin/fm-control-lib.sh"
   : >"$repo/bin/fm-timeout-lib.sh"
+  : >"$repo/bin/fm-check-rollup-lib.sh"
   : >"$repo/bin/fm-procevent-quota.sh"
   : >"$repo/bin/fm-quota-axi-lib.sh"
   : >"$repo/bin/fm-quota-choose.sh"
@@ -411,6 +412,18 @@ test_changed_dependency_selection_and_unmapped_failure() {
     "timeout library selects quota polling coverage"
   git -C "$repo" add bin/fm-timeout-lib.sh
   git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm timeout-lib-change
+
+  # The shared check-rollup verdict has two consumers in different families,
+  # and its path is also matched by the broader bin/fm-check* arm that selects
+  # only the merge gate's family.
+  printf '\n' >>"$repo/bin/fm-check-rollup-lib.sh"
+  listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
+  assert_contains "$listed" "tests/fm-pr-merge.test.sh" \
+    "check-rollup library selects merge gate coverage"
+  assert_contains "$listed" "tests/fm-bearings-snapshot.test.sh" \
+    "check-rollup library selects bearings digest coverage"
+  git -C "$repo" add bin/fm-check-rollup-lib.sh
+  git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm check-rollup-lib-change
 
   printf '\n' >>"$repo/src/unmapped.ts"
   set +e

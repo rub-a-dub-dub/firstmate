@@ -23,8 +23,12 @@
 #     normalized current_role, requires_child_metadata, blocked_by_ids,
 #     unresolved_blocker_ids, captain_actionable, hold_set, hold_age_days,
 #     and hold_bucket fields.
-#     Repeated blocker tokens remain ordered; a blocker resolves only when its
-#     structured record is Done, and missing ids stay open.
+#     Repeated blocker tokens remain ordered; a blocker resolves when its
+#     structured record is Done, or when no record for that id exists at all
+#     in this snapshot (already torn down or aged out of retention) - it
+#     stays open only when a record for it exists and is not Done, matching
+#     tasks-axi's own dependency resolution so the two readers of one backlog
+#     cannot disagree on whether a since-archived blocker still blocks.
 #     There is no separate decision type: any captain-held task is the same
 #     primitive, whatever kind its row carries.
 #     hold_bucket is the single classification for every captain hold, decided
@@ -528,7 +532,7 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
           . as $record
           | .unresolved_blocker_ids = [
               $record.blocked_by_ids[] as $blocker
-              | select($resolved_ids[$blocker] != true)
+              | select(($resolved_ids | has($blocker)) and ($resolved_ids[$blocker] != true))
               | $blocker
             ]
           | .current_role =

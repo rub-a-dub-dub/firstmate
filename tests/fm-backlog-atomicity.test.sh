@@ -2301,6 +2301,93 @@ test_recovery_reconcile_record_reports_when_the_backend_cannot_be_resolved() {
   pass "a reconcile record is re-reported even when this home's backlog backend cannot be resolved"
 }
 
+# A captain-held task can pause for a decision before producing any artifact,
+# so its durable reconcile record may legitimately carry no deliverable.
+# The repeated report must distinguish that from a record whose payload was
+# lost, and it must remain present until explicit acknowledgement.
+test_recovery_reconcile_record_reports_when_no_deliverable_was_recorded() {
+  local case_dir id marker reconcile_marker out out2
+  id=atomic-heal-retain-unresolved-bare-b24
+  case_dir=$(make_home heal-retain-unresolved-bare)
+  add_item "$case_dir" "$id"
+  tasks-axi hold "$id" --reason "captain decision pending" --kind captain \
+    --file "$(backlog_of "$case_dir")" >/dev/null
+  tasks-axi rm "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  marker="$(home_of "$case_dir")/state/$id.backlog-close"
+  reconcile_marker="$(home_of "$case_dir")/state/$id.backlog-reconcile"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-retain-unresolved-bare\nmode=retain\n' \
+    "$id" "$(home_of "$case_dir")/data" > "$marker"
+
+  out=$(run_bootstrap "$case_dir")
+  assert_absent "$marker" \
+    "a deliverable-free unresolved retain stayed on the pending-close glob"
+  assert_present "$reconcile_marker" \
+    "a deliverable-free unresolved retain was erased instead of retained for reconciliation"
+  assert_contains "$out" "it recorded no deliverable, so the call's disposition must be settled with the captain" \
+    "a deliverable-free reconcile record did not say what it actually knew"
+  assert_not_contains "$out" "recorded deliverable (" \
+    "a reconcile record that captured nothing pointed at a recorded deliverable"
+
+  out2=$(run_bootstrap "$case_dir")
+  assert_present "$reconcile_marker" \
+    "a repeated report deleted a deliverable-free reconcile record without acknowledgement"
+  assert_contains "$out2" "it recorded no deliverable, so the call's disposition must be settled with the captain" \
+    "a deliverable-free reconcile record was not reported again"
+  pass "a reconcile record with no deliverable survives and reports its true disposition"
+}
+
+# Teardown records cleanup as incomplete before removing the task metadata.
+# If the retained row is also gone, that warning belongs in the durable record
+# and every repeated report, whether or not the task had produced an artifact.
+test_recovery_reconcile_record_preserves_incomplete_cleanup_warning() {
+  local case_dir home id with_pr bare pr with_pr_line bare_line out out2
+  with_pr=atomic-heal-retain-unresolved-incomplete-b25
+  bare=atomic-heal-retain-unresolved-incomplete-bare-b26
+  pr=https://github.com/example/repo/pull/20
+  case_dir=$(make_home heal-retain-unresolved-incomplete)
+  home=$(home_of "$case_dir")
+  for id in "$with_pr" "$bare"; do
+    add_item "$case_dir" "$id"
+    tasks-axi hold "$id" --reason "captain decision pending" --kind captain \
+      --file "$(backlog_of "$case_dir")" >/dev/null
+    tasks-axi rm "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+    write_task_meta "$case_dir" "$id" ship no-mistakes "spawn_gen=spawn-$id"
+  done
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-%s\nmode=retain\narg=--pr\narg=%s\n' \
+    "$with_pr" "$home/data" "$with_pr" "$pr" > "$home/state/$with_pr.backlog-close"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-%s\nmode=retain\n' \
+    "$bare" "$home/data" "$bare" > "$home/state/$bare.backlog-close"
+
+  out=$(run_bootstrap "$case_dir")
+  for id in "$with_pr" "$bare"; do
+    assert_absent "$home/state/$id.meta" \
+      "replay left the interrupted task record for $id behind"
+    assert_absent "$home/state/$id.backlog-close" \
+      "an interrupted unresolved retain for $id stayed on the pending-close glob"
+    assert_present "$home/state/$id.backlog-reconcile" \
+      "an interrupted unresolved retain for $id was erased instead of retained"
+  done
+  with_pr_line=$(printf '%s\n' "$out" | grep -F "BACKLOG_RECONCILE: $with_pr:") \
+    || fail "an interrupted unresolved retain with a deliverable went unreported: $out"
+  bare_line=$(printf '%s\n' "$out" | grep -F "BACKLOG_RECONCILE: $bare:") \
+    || fail "an interrupted unresolved retain without a deliverable went unreported: $out"
+  assert_contains "$with_pr_line" \
+    "its endpoint or local copy may also remain, and its recorded deliverable (PR $pr) should be reconciled with the captain" \
+    "an interrupted reconcile record dropped its cleanup warning or deliverable"
+  assert_contains "$bare_line" \
+    "its endpoint or local copy may also remain, and it recorded no deliverable, so the call's disposition must be settled with the captain" \
+    "a deliverable-free interrupted reconcile record dropped its cleanup warning"
+
+  out2=$(run_bootstrap "$case_dir")
+  assert_contains "$out2" "BACKLOG_RECONCILE: $with_pr:" \
+    "the repeated report dropped an interrupted reconcile record with a deliverable"
+  assert_contains "$out2" "BACKLOG_RECONCILE: $bare:" \
+    "the repeated report dropped an interrupted reconcile record without a deliverable"
+  assert_contains "$out2" "endpoint or local copy may also remain" \
+    "the repeated report dropped the durable incomplete-cleanup warning"
+  pass "durable reconcile records preserve incomplete-cleanup warnings across reports"
+}
+
 test_recovery_preserves_a_close_when_the_backlog_cannot_be_read() {
   local case_dir id out
   id=atomic-heal-read-error-b10
@@ -3313,6 +3400,8 @@ test_recovery_reconcile_report_renders_a_note_deliverable_readably
 test_recovery_refuses_to_overwrite_an_unacknowledged_reconcile_record
 test_recovery_reconcile_record_reports_when_backlog_transitions_are_skipped
 test_recovery_reconcile_record_reports_when_the_backend_cannot_be_resolved
+test_recovery_reconcile_record_reports_when_no_deliverable_was_recorded
+test_recovery_reconcile_record_preserves_incomplete_cleanup_warning
 test_recovery_preserves_a_close_when_the_backlog_cannot_be_read
 test_recovery_retry_preserves_incomplete_cleanup_warning
 test_recovery_finishes_a_close_for_the_same_meta_incarnation

@@ -683,6 +683,14 @@ secondmate_liveness_sweep() {
   # existing ambiguous processes and every transiently unreadable target while
   # adding the missing-session path the original bare-shell and Herdr-husk sweep
   # lacked.
+  # A `missing` tmux verdict is itself only a claim about the recorded
+  # session:window ADDRESS, not about the agent: a renamed session or a
+  # window moved elsewhere reads `missing` too, with the agent still alive
+  # under another address. Before that verdict licenses a relaunch, this
+  # additionally sweeps every tmux session's window inventory for the
+  # recorded window name (fm_backend_endpoint_absent) and skips rather than
+  # relaunches when it is still found anywhere - recreating there would be
+  # the one outcome that duplicates a live agent onto its own worktree.
   # A meta with no window remains owned by secondmate-provisioning recovery.
   # Secondmate homes never contain kind=secondmate meta, so this is naturally a
   # primary-only no-op there. Mid-session liveness remains explicitly out of
@@ -818,6 +826,16 @@ secondmate_liveness_one() {  # <meta> <id>
         cause="confirmed agent absence on existing endpoint"
         fm_backend_kill "$backend" "$target" 2>/dev/null || true
       else
+        # A `missing` tmux address only proves the recorded session:window
+        # stopped resolving - a renamed session or a moved-out window reads
+        # exactly the same while the agent keeps running elsewhere - so this
+        # must additionally prove the window is absent from EVERY session on
+        # the backend before treating it as license to relaunch (the one
+        # outcome that can duplicate a live agent onto its own worktree).
+        if [ "$backend" = tmux ] && ! fm_backend_endpoint_absent "$backend" "$target"; then
+          echo "SECONDMATE_LIVENESS: secondmate $id: skipped: recorded endpoint '$target' does not resolve, but a window named for it still exists elsewhere on $backend, so its agent may be alive there; reconcile the endpoint before any relaunch"
+          return 0
+        fi
         cause="recorded endpoint confidently missing"
       fi
       if out=$(FM_SPAWN_NO_GUARD=1 "$FM_ROOT/bin/fm-spawn.sh" "$id" --secondmate 2>&1); then
