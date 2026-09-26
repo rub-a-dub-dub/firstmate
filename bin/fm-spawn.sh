@@ -272,7 +272,11 @@
 #   Every codex launch (ship, scout, secondmate, and relaunch) carries
 #   `-c 'service_tier="default"'`, which overrides a user's priority tier for
 #   this process only and leaves user-level Codex configuration unchanged.
-#   Launch templates live in launch_template() below; placeholders replaced before launch:
+#   A worker runs unattended with nobody waiting on its tokens, so priority
+#   speed buys nothing while spending the captain's allowance faster; the
+#   captain's own interactive Codex sessions keep whichever tier their config
+#   selects. Model and effort remain the profile's axes and are untouched here.
+# Launch templates live in launch_template() below; placeholders replaced before launch:
 #     __BRIEF__    absolute path to data/<task-id>/brief.md
 #     __CLAUDEPERMFLAG__ the claude permission flag selected by config/claude-permission-mode
 #     __PIBIN__    quoted concrete Pi-family executable path resolved from PATH
