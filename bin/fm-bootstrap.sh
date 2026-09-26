@@ -1331,7 +1331,7 @@ backlog_record_reconcile() {
           ;;
         absent|absent_incomplete)
           if [ -n "$FM_BACKLOG_CLOSE_REPLAY_DELIVERABLE" ]; then
-            disposition="its recorded completion link ($FM_BACKLOG_CLOSE_REPLAY_DELIVERABLE) was never applied and should be reconciled"
+            disposition="its recorded completion link ($FM_BACKLOG_CLOSE_REPLAY_DELIVERABLE) could not be confirmed as applied and should be checked"
           else
             disposition="it recorded no completion link to reconcile"
           fi

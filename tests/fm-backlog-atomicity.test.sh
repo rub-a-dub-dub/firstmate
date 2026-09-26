@@ -2852,6 +2852,10 @@ test_recovery_reports_a_row_that_left_the_backlog_mid_close() {
     "replay hid that its close found no row to land against"
   assert_contains "$out" "BACKLOG_RECONCILE: $id: the recorded backlog close was retired" \
     "the retirement was reported under a prefix the agent contract treats as no-action, so its unapplied completion link is never acted on"
+  assert_contains "$out" "completion link (local main) could not be confirmed as applied" \
+    "replay claimed the recorded link was never applied against a row that was already done before it probed"
+  assert_not_contains "$out" "was never applied" \
+    "replay asserted a link was never applied when its own probe had seen the row done"
   assert_not_contains "$out" "that an interrupted cleanup left open" \
     "replay reported a close as landed against a row that had left the backlog"
   pass "recovery reports a close whose row left the backlog inside its own replay window"
