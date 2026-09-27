@@ -595,7 +595,7 @@ print_status_sections() {  # <task-and-endpoint-snapshot> [<fully-presented-task
 
 print_status_presentation() {  # [<deduped-raw-rows>]
   local rows=${1:-} lock="$STATE/.status-presentation-lock" snapshot annotation_manifest fully_presented='' rc=0
-  local lock_rc holder_pid snapshot_ok=true
+  local lock_rc holder_pid
   if fm_lock_acquire_wait_bounded "$lock" "$PRESENTATION_LOCK_TIMEOUT"; then
     :
   else
@@ -613,11 +613,12 @@ print_status_presentation() {  # [<deduped-raw-rows>]
   # in the captured value. Acknowledging and committing that truncated fleet view
   # would rewrite the shared presentation-cursor manifest without the tasks the
   # read never reached, resetting their unread and outcome-backstop cursors for
-  # good, so rc=1 here keeps the annotation, acknowledge and commit passes below
-  # from running at all rather than presenting a partial fleet view.
+  # good, so the partial capture is discarded here: the empty snapshot is what
+  # keeps the acknowledge and commit passes below from running on a partial fleet
+  # view, and rc=1 keeps the annotation pass off the same capture.
   snapshot=$(status_presentation_snapshot "$STATE") || {
     printf 'STATUS PRESENTATION INCOMPLETE: status snapshot could not be read.\n'
-    snapshot_ok=false
+    snapshot=
     rc=1
   }
   if [ "$rc" -eq 0 ] && [ -n "$rows" ]; then
@@ -636,7 +637,7 @@ print_status_presentation() {  # [<deduped-raw-rows>]
   # Annotation failure does not make the independent fleet-wide sections
   # unsafe. With fully_presented left empty they perform their own cursor reads
   # and either present completely or print their own precise failure notice.
-  if [ "$snapshot_ok" = true ] && [ -n "$snapshot" ]; then
+  if [ -n "$snapshot" ]; then
     print_status_sections "$snapshot" "$fully_presented" || rc=1
   fi
   fm_lock_release "$lock"
