@@ -2326,7 +2326,7 @@ fm_wake_print_annotations() {  # <deduped-raw-rows> [<presentation-snapshot>]
     END {
       for (i = 1; i <= count; i++) print order[i] "\t" mode[order[i]]
     }
-  ') || return 0
+  ') || return 1
 
   # Test-only latency seam for proving that queue appends remain independent of
   # a slow best-effort annotation phase.
@@ -2352,7 +2352,16 @@ fm_wake_print_annotations() {  # <deduped-raw-rows> [<presentation-snapshot>]
     if [ "$mode" = historical ] && fm_wake_signal_seen_current "$STATE" "$path"; then
       continue
     fi
-    offset=$(fm_wake_status_cursor_offset "$path") || continue
+    # A row can outlive normal task teardown. With no safe status file there is
+    # no live annotation to compute, so keep the durable row without calling a
+    # missing file a cursor failure. A cursor failure for a still-readable live
+    # file is different and must be reported below.
+    [ -f "$path" ] && [ -r "$path" ] && [ ! -L "$path" ] || continue
+    # A live row whose presentation cursor cannot be read has not been
+    # annotated. Return failure so the drain can say that plainly on stdout;
+    # silently continuing makes the durable row look fully enriched when it is
+    # not.
+    offset=$(fm_wake_status_cursor_offset "$path") || return 1
     endpoint=
     if [ -n "$snapshot" ]; then
       task=${status_key%.status}

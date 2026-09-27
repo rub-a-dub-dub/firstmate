@@ -543,28 +543,30 @@ EOF
   printf 'RECORD DIVERGENCE: reconcile each one - record the captain'"'"'s own words with bin/fm-captain-hold.sh answer <task> --decision-file <path>, or re-open the status decision when that resolution was not the captain'"'"'s word.\n' || return 1
 }
 
-# A read or write hiccup anywhere in the drain's fleet-wide section passes (one
-# task's status log, one task's open-decisions cursor, the scratch file the
-# sections are prepared into) must never be indistinguishable from "computed,
-# and genuinely nothing is open or unread": that silence is exactly what let a
-# captain-facing OPEN DECISIONS section vanish for a drain even though several
-# tasks' needs-decision/blocked lines were still open and unresolved in their
-# own durable status logs: a failure on any ONE task aborts the whole
-# acknowledge pass via its `|| return 1` before a single section is prepared,
-# and the preparation that follows is itself all-or-nothing.
-# Print this notice on every such failure instead of returning silently, so an
-# empty presentation can only ever mean the passes ran to completion and found
-# nothing - never that they could not be computed. print_status_presentation
-# emits it from one place for every failure it observes, so no new failure
-# path inside those passes can return without it.
-print_status_sections_incomplete_notice() {
-  printf 'STATUS PRESENTATION INCOMPLETE: unread status, outcome backstop, OPEN DECISIONS, and record divergence could not be fully computed this drain (a status log or cursor read/write failed); do not read this drain'"'"'s silence as nothing open or unread - retry on the next drain.\n'
+# A computation failure before the prepared section bytes reach stdout must
+# never be indistinguishable from "computed, and genuinely nothing is open or
+# unread". The caller supplies the failed operation so the notice says both
+# what is missing and why. Receipt persistence is deliberately separate: once
+# every prepared byte reached stdout, only the receipt can be incomplete.
+print_status_sections_incomplete_notice() {  # <reason>
+  local reason=$1
+  printf 'STATUS PRESENTATION INCOMPLETE: unread status, outcome backstop, OPEN DECISIONS, and record divergence could not be fully computed this drain (%s); do not read this drain'"'"'s silence as nothing open or unread - retry on the next drain.\n' "$reason"
+}
+
+print_status_receipt_failure_notice() {
+  printf 'STATUS PRESENTATION RECEIPT FAILED: the status sections above were fully computed and printed, but their presentation receipt could not be committed; they may repeat on the next drain.\n'
 }
 
 print_status_sections() {  # <task-and-endpoint-snapshot> [<fully-presented-task-ids>]
   local snapshot=$1 fully_presented=${2:-} acknowledged prepared
-  acknowledged=$(status_acknowledge_presented_snapshot "$STATE" "$snapshot" "$fully_presented") || return 1
-  prepared=$(mktemp "$STATE/.status-presentation.prepared.XXXXXX") || return 1
+  acknowledged=$(status_acknowledge_presented_snapshot "$STATE" "$snapshot" "$fully_presented") || {
+    print_status_sections_incomplete_notice 'a status log or presentation cursor could not be read'
+    return 1
+  }
+  prepared=$(mktemp "$STATE/.status-presentation.prepared.XXXXXX") || {
+    print_status_sections_incomplete_notice 'the prepared-output file could not be created'
+    return 1
+  }
   if ! {
     print_unread_status_section "$snapshot" \
       && print_status_outcome_backstop_section "$snapshot" \
@@ -572,6 +574,7 @@ print_status_sections() {  # <task-and-endpoint-snapshot> [<fully-presented-task
       && print_record_divergence_section
   } > "$prepared"; then
     rm -f -- "$prepared"
+    print_status_sections_incomplete_notice 'a status log, cursor, or prepared-output write could not be completed'
     return 1
   fi
   # Prepare every section before presentation, but do not commit its receipt
@@ -579,10 +582,12 @@ print_status_sections() {  # <task-and-endpoint-snapshot> [<fully-presented-task
   # leave the receipt behind so the next drain can recover the presentation.
   if ! command cat "$prepared"; then
     rm -f -- "$prepared"
+    print_status_sections_incomplete_notice 'the prepared section bytes could not be delivered to stdout'
     return 1
   fi
   if ! status_commit_presentation_snapshot "$STATE" "$acknowledged"; then
     rm -f -- "$prepared"
+    print_status_receipt_failure_notice
     return 1
   fi
   rm -f -- "$prepared"
@@ -590,7 +595,7 @@ print_status_sections() {  # <task-and-endpoint-snapshot> [<fully-presented-task
 
 print_status_presentation() {  # [<deduped-raw-rows>]
   local rows=${1:-} lock="$STATE/.status-presentation-lock" snapshot annotation_manifest fully_presented='' rc=0
-  local lock_rc holder_pid
+  local lock_rc holder_pid snapshot_ok=true
   if fm_lock_acquire_wait_bounded "$lock" "$PRESENTATION_LOCK_TIMEOUT"; then
     :
   else
@@ -600,7 +605,7 @@ print_status_presentation() {  # [<deduped-raw-rows>]
       printf 'STATUS PRESENTATION SKIPPED: lock remains held by live pid %s after %ss; retry on the next drain.\n' \
         "$holder_pid" "$PRESENTATION_LOCK_TIMEOUT"
     else
-      printf 'wake drain: status presentation lock could not be acquired safely\n' >&2
+      printf 'STATUS PRESENTATION INCOMPLETE: status presentation lock could not be acquired safely; no status annotations or fleet-wide status sections were computed this drain - retry on the next drain.\n'
     fi
     return 1
   fi
@@ -612,17 +617,27 @@ print_status_presentation() {  # [<deduped-raw-rows>]
   # from running at all rather than presenting a partial fleet view.
   snapshot=$(status_presentation_snapshot "$STATE") || {
     printf 'STATUS PRESENTATION INCOMPLETE: status snapshot could not be read.\n'
+    snapshot_ok=false
     rc=1
   }
   if [ "$rc" -eq 0 ] && [ -n "$rows" ]; then
-    fm_wake_print_annotations "$rows" "$snapshot" || rc=1
-    if [ "$rc" -eq 0 ]; then
-      annotation_manifest=$(fm_wake_annotation_manifest "$rows") || rc=1
-      fully_presented=$(printf '%s\n' "$annotation_manifest" | awk -F '\t' '$2 == "direct" { sub(/\.status$/, "", $1); print $1 }') || rc=1
+    if ! fm_wake_print_annotations "$rows" "$snapshot"; then
+      printf 'STATUS ANNOTATION INCOMPLETE: a presentation cursor could not be read; the durable wake rows above remain authoritative, but one or more supplemental status annotations were not computed - retry on the next drain.\n'
+      rc=1
+    elif ! annotation_manifest=$(fm_wake_annotation_manifest "$rows"); then
+      printf 'STATUS ANNOTATION INCOMPLETE: the annotation manifest could not be computed; the durable wake rows above remain authoritative - retry on the next drain.\n'
+      rc=1
+    elif ! fully_presented=$(printf '%s\n' "$annotation_manifest" | awk -F '\t' '$2 == "direct" { sub(/\.status$/, "", $1); print $1 }'); then
+      printf 'STATUS ANNOTATION INCOMPLETE: the set of fully presented annotations could not be computed; the durable wake rows above remain authoritative - retry on the next drain.\n'
+      fully_presented=
+      rc=1
     fi
   fi
-  if [ "$rc" -eq 0 ] && [ -n "$snapshot" ]; then
-    print_status_sections "$snapshot" "$fully_presented" || { rc=1; print_status_sections_incomplete_notice; }
+  # Annotation failure does not make the independent fleet-wide sections
+  # unsafe. With fully_presented left empty they perform their own cursor reads
+  # and either present completely or print their own precise failure notice.
+  if [ "$snapshot_ok" = true ] && [ -n "$snapshot" ]; then
+    print_status_sections "$snapshot" "$fully_presented" || rc=1
   fi
   fm_lock_release "$lock"
   return "$rc"

@@ -1848,14 +1848,68 @@ test_malformed_presentation_lock_reports_acquire_failure() {
 
   FM_STATE_OVERRIDE="$state" FM_STATUS_PRESENTATION_LOCK_TIMEOUT=1 \
     "$DRAIN" > "$out" 2> "$err" || fail "malformed-lock drain failed"
-  grep -F 'wake drain: status presentation lock could not be acquired safely' "$err" >/dev/null \
-    || fail "malformed presentation lock did not report an acquire failure"
+  grep -F 'STATUS PRESENTATION INCOMPLETE: status presentation lock could not be acquired safely' "$out" >/dev/null \
+    || fail "malformed presentation lock did not report its acquire failure on stdout"
+  if grep -F 'wake drain: status presentation lock could not be acquired safely' "$err" >/dev/null; then
+    fail "malformed presentation lock still reported only through the diagnostic channel"
+  fi
   if grep -F 'STATUS PRESENTATION SKIPPED: lock remains held by live pid' "$out" >/dev/null; then
     fail "malformed presentation lock was reported as live-holder contention"
   fi
   grep "$(printf '\tsignal\t')" "$out" >/dev/null \
     || fail "malformed presentation lock dropped the durable wake row"
   pass "malformed presentation locks report acquire failure instead of contention"
+}
+
+# The annotation pass and fleet-wide sections share the presentation cursor,
+# but the former used to treat a cursor-read failure as "skip this live row".
+# Fail exactly the annotation's first cursor read, then let every later read
+# recover, proving the row cannot disappear without a stdout notice.
+test_annotation_cursor_failure_is_reported_on_stdout() {
+  local dir state out err fakebin real_cat manifest status
+  dir=$(make_case annotation-cursor-failure)
+  state="$dir/state"
+  out="$dir/drain.out"
+  err="$dir/drain.err"
+  fakebin="$dir/fakebin"
+  manifest="$state/.status-presentation-cursor"
+  status="$state/task.status"
+  real_cat=$(command -v cat)
+
+  printf 'note: prime the presentation cursor\n' > "$status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "could not prime the annotation cursor fixture"
+  [ -s "$manifest" ] || fail "the annotation cursor fixture wrote no presentation manifest"
+
+  printf 'working: live row must not disappear silently\n' >> "$status"
+  append_wake "$state" signal task.status "signal: $status" \
+    || fail "could not seed the annotation cursor wake"
+  cat > "$fakebin/cat" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ "$#" -eq 1 ] && [ "$1" = "$FM_TEST_CURSOR_MANIFEST" ] \
+  && [ ! -e "$FM_TEST_CURSOR_FAILURE_USED" ]; then
+  : > "$FM_TEST_CURSOR_FAILURE_USED"
+  exit 1
+fi
+exec "$FM_TEST_REAL_CAT" "$@"
+SH
+  chmod +x "$fakebin/cat"
+
+  PATH="$fakebin:$PATH" FM_TEST_REAL_CAT="$real_cat" \
+    FM_TEST_CURSOR_MANIFEST="$manifest" \
+    FM_TEST_CURSOR_FAILURE_USED="$dir/cursor-failure-used" \
+    FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" \
+    || fail "drain failed after the injected annotation cursor failure"
+  grep "$(printf '\tsignal\t')" "$out" >/dev/null \
+    || fail "the annotation cursor failure dropped the durable wake row"
+  if grep -F 'wake annotation:' "$out" >/dev/null; then
+    fail "the failed annotation cursor read still printed an authoritative annotation"
+  fi
+  grep -F 'STATUS ANNOTATION INCOMPLETE: a presentation cursor could not be read' "$out" >/dev/null \
+    || fail "the annotation cursor failure remained silent on stdout: $(command cat "$out")"
+
+  pass "a live row's annotation cursor failure is explicit on stdout"
 }
 
 # Drain-time historical annotation staleness: a turn-ended-only wake row must
@@ -1912,6 +1966,7 @@ test_subshell_lock_ownership_without_bashpid
 test_bounded_lock_handoff_after_contention
 test_live_presentation_holder_is_deadlined_without_weakening_ack
 test_malformed_presentation_lock_reports_acquire_failure
+test_annotation_cursor_failure_is_reported_on_stdout
 test_secondmate_foreign_queue_stall_tracks_progress_and_alerts_once
 test_secondmate_declared_pause_rows_do_not_feed_stall_escalation
 test_secondmate_reprovisioned_queue_starts_a_fresh_interval

@@ -390,6 +390,107 @@ test_trusted_empty_fold_cursor_read_failure_is_not_a_silent_empty() {
   pass "a trusted fold cursor's empty persisted set is not replayed as a computed empty section"
 }
 
+# A trusted NON-empty fold is still stale when this call cannot read the bytes
+# after its cursor. Replaying that set as authoritative can show a decision that
+# the unread span resolved and hide a new decision from the same span. Stage the
+# fold cursor at the first drain while leaving the presentation cursor at the
+# second drain's EOF, so the injected span-read failure reaches only the fold.
+test_trusted_nonempty_fold_cursor_read_failure_is_not_authoritative() {
+  local dir state out err reader cursor saved_cursor task log
+  dir=$(make_case trusted-nonempty-fold-cursor)
+  state="$dir/state"
+  out="$dir/drain.out"
+  err="$dir/drain.err"
+  reader="$dir/fail-reader"
+  task=firstmate-reconcile-fork-with-upstream
+  log="$state/$task.status"
+  cursor="$state/.$task.open-decisions-cursor"
+  saved_cursor="$dir/stale-open-set.cursor"
+
+  printf 'needs-decision [key=old-choice]: choose the old route\n' > "$log"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "bootstrap drain before the trusted nonempty-cursor failure failed"
+  grep -F "$task [key=old-choice] needs-decision: choose the old route" "$out" >/dev/null \
+    || fail "the original decision did not surface before staging the stale fold"
+  cp "$cursor" "$saved_cursor" || fail "could not save the trusted nonempty fold cursor"
+
+  {
+    printf 'resolved [key=old-choice]: the old route is closed\n'
+    printf 'needs-decision [key=new-choice]: choose the new route\n'
+  } >> "$log"
+  append_wake "$state" signal "$task.status" "signal: $log" \
+    || fail "could not seed the direct row that advances the presentation cursor"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" \
+    || fail "clean drain before staging the trusted nonempty cursor failed"
+  grep -F "$task [key=new-choice] needs-decision: choose the new route" "$out" >/dev/null \
+    || fail "the replacement decision did not surface before the injected failure"
+  if grep -F "$task [key=old-choice]" "$out" >/dev/null; then
+    fail "the clean drain still showed the resolved decision: $(command cat "$out")"
+  fi
+  ack_drain_err "$state" "$err" \
+    || fail "could not acknowledge the cursor-staging wake"
+  cp "$saved_cursor" "$cursor" || fail "could not restore the stale trusted open set"
+
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$reader"
+  chmod +x "$reader"
+  FM_STATE_OVERRIDE="$state" FM_STATUS_SPAN_READER="$reader" "$DRAIN" > "$out" \
+    || fail "wake drain failed instead of reporting the stale fold as incomplete"
+  if grep -F 'OPEN DECISIONS (still open' "$out" >/dev/null \
+    || grep -F "$task [key=old-choice]" "$out" >/dev/null \
+    || grep -F "$task [key=new-choice]" "$out" >/dev/null; then
+    fail "a failed fold read printed a stale nonempty set as authoritative: $(command cat "$out")"
+  fi
+  grep -F 'STATUS PRESENTATION INCOMPLETE: unread status, outcome backstop, OPEN DECISIONS' "$out" >/dev/null \
+    || fail "the stale nonempty fold read failure was not reported: $(command cat "$out")"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "recovery drain after the stale nonempty fold failure cleared failed"
+  grep -F "$task [key=new-choice] needs-decision: choose the new route" "$out" >/dev/null \
+    || fail "the new decision did not appear after the fold read recovered: $(command cat "$out")"
+  if grep -F "$task [key=old-choice]" "$out" >/dev/null; then
+    fail "the resolved decision reappeared after the fold read recovered: $(command cat "$out")"
+  fi
+
+  pass "a trusted nonempty fold is never authoritative when its unread span cannot be read"
+}
+
+# Once every section's bytes have reached stdout, a failure to persist the
+# trailing receipt means only that the sections can repeat. It must not relabel
+# those fully computed and printed sections as an incomplete presentation.
+test_receipt_failure_does_not_relabel_printed_sections_incomplete() {
+  local dir state out fakebin real_mv
+  dir=$(make_case receipt-write-failure)
+  state="$dir/state"
+  out="$dir/drain.out"
+  fakebin="$dir/fakebin"
+  real_mv=$(command -v mv)
+
+  printf 'needs-decision [key=route]: choose the presentation route\n' > "$state/task.status"
+  cat > "$fakebin/mv" <<'SH'
+#!/usr/bin/env bash
+set -u
+last=
+for arg in "$@"; do last=$arg; done
+case "$last" in
+  */.status-presentation-cursor) exit 1 ;;
+esac
+exec "$FM_TEST_REAL_MV" "$@"
+SH
+  chmod +x "$fakebin/mv"
+
+  PATH="$fakebin:$PATH" FM_TEST_REAL_MV="$real_mv" FM_STATE_OVERRIDE="$state" \
+    "$DRAIN" > "$out" || fail "drain failed after the injected receipt write failure"
+  grep -F 'task [key=route] needs-decision: choose the presentation route' "$out" >/dev/null \
+    || fail "the receipt failure hid the already-computed sections: $(command cat "$out")"
+  grep -F 'STATUS PRESENTATION RECEIPT FAILED:' "$out" >/dev/null \
+    || fail "the receipt write failure was not reported distinctly: $(command cat "$out")"
+  if grep -F 'STATUS PRESENTATION INCOMPLETE:' "$out" >/dev/null; then
+    fail "a receipt-only failure mislabeled fully printed sections as incomplete: $(command cat "$out")"
+  fi
+
+  pass "a failed presentation receipt never contradicts the complete sections already printed"
+}
+
 # An untrusted per-task fold cursor has no persisted open set to fall back on,
 # so a span-read failure there cannot honestly report "nothing open". The
 # acknowledge and unread-status passes both short-circuit at EOF here, so this
@@ -504,4 +605,6 @@ test_torn_down_task_wake_row_does_not_blank_the_sections
 test_partial_snapshot_does_not_truncate_the_cursor_manifest
 test_untrusted_fold_cursor_read_failure_is_not_a_silent_empty
 test_trusted_empty_fold_cursor_read_failure_is_not_a_silent_empty
+test_trusted_nonempty_fold_cursor_read_failure_is_not_authoritative
+test_receipt_failure_does_not_relabel_printed_sections_incomplete
 test_status_symlink_is_not_followed
