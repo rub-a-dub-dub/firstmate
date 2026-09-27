@@ -2160,11 +2160,13 @@ EOF
 # test_plain_pause_retires_the_default_fold_without_hiding_its_origin.
 # Excluding paused here keeps that worker visible to the watcher while OPEN
 # DECISIONS still retires the row.
-# The wholesale reset below asks whether THIS line emptied the fold, not merely
-# whether the fold is empty, so it fires only for the transition vocabulary
-# status_open_decisions itself hands to the fold - minus paused, per the
-# exclusion above. A line the fold ignores outright (continuation prose, note:,
-# working:) retires nothing, so it must not prune an origin the pause preserved.
+# The reset below exists for the one retirement the per-key arms further down
+# cannot model: _fm_decision_fold_line discards the WHOLE open set on a ship's
+# or scout's done/failed declaration, whatever keys it held, and those arms only
+# ever drop the single key their own line names. Every other verb is already
+# retired per key there - so none of them belongs here, where clearing the whole
+# map would also discard an origin the paused exclusion above deliberately
+# preserved for a still-live blocker under some other key.
 _fm_status_open_decision_origins() {  # <status-file> [<kind>]
   local f=$1 line open='' after key verb note number=0 origins=''
   local resolve held kind
@@ -2177,7 +2179,7 @@ _fm_status_open_decision_origins() {  # <status-file> [<kind>]
     verb=$(status_line_verb "$line")
     if [ -z "$after" ]; then
       case "$verb" in
-        needs-decision|blocked|done|failed|"$resolve"|"$held") origins='' ;;
+        done|failed) origins='' ;;
       esac
     fi
     key=$(_fm_decision_key "$line") || { open=$after; continue; }

@@ -165,6 +165,33 @@ test_a_terminal_after_a_pause_still_retires_the_preserved_origin() {
 
 test_a_terminal_after_a_pause_still_retires_the_preserved_origin
 
+# Answering ONE decision must not silence another. bin/fm-send.sh writes
+# "resolved [key=...]" when the captain answers a keyed question and
+# bin/fm-captain-hold.sh writes "captain-held [key=...]" on a verified transfer;
+# either can empty the fold while an unkeyed blocker the pause preserved is
+# still live, and that blocker has to stay actionable.
+test_answering_one_key_after_a_pause_keeps_another_blocker_actionable() {
+  local dir f record needs answer
+  dir=$(case_dir pause-then-other-key)
+  for answer in 'resolved [key=deploy]: yes, ship' 'captain-held [key=deploy]: handed to the captain'; do
+    f="$dir/$(printf '%s' "$answer" | tr -c 'a-z' -).status"
+    printf 'needs-decision [key=deploy]: ship it?\n' > "$f"
+    printf 'blocked: cannot reach the registry\npaused: waiting for the window\n' >> "$f"
+    printf '%s\n' "$answer" >> "$f"
+
+    record=''; needs=''
+    status_span_first_actionable_record "$f" 0 record needs \
+      || fail "'$answer' left the surviving blocker unactionable"
+    case "$record" in
+      *'blocked: cannot reach the registry'*) ;;
+      *) fail "'$answer' hid a blocker it never named: $record" ;;
+    esac
+  done
+  pass "answering one keyed decision after a pause leaves another key's blocker actionable"
+}
+
+test_answering_one_key_after_a_pause_keeps_another_blocker_actionable
+
 test_unkeyed_needs_decision_retires_via_done_despite_a_mismatched_keyed_resolution() {
   local dir
   dir=$(case_dir unkeyed-needs-decision-retires)
