@@ -2308,8 +2308,9 @@ fm_wake_status_cursor_offset() {  # <validated-status-path> -> already-presented
 
 # O_NOFOLLOW read of every still-unread status byte. min-offset is the
 # already-presented cursor from classify-lib. Lines whose bytes begin before
-# that offset are not replayed. Prints nothing and returns 1 when no unread
-# non-blank line exists.
+# that offset are not replayed. Prints nothing and returns 1 when the span holds
+# no unread non-blank line, and 2 when the span itself could not be read: the
+# caller must not treat an unread span it never read as one with nothing in it.
 fm_wake_unread_events() {  # <validated-status-path> <unused-tail-byte-cap> <min-offset> [<end-offset>]
   local path=$1 min_offset=$3 end_offset=${4:-} result size chunk chunk_start
   local LC_ALL=C
@@ -2335,10 +2336,10 @@ fm_wake_unread_events() {  # <validated-status-path> <unused-tail-byte-cap> <min
       print $buffer or exit 1;
       $remaining -= $read;
     }
-  ' "$path" "$min_offset" "$end_offset" 2>/dev/null) || return 1
+  ' "$path" "$min_offset" "$end_offset" 2>/dev/null) || return 2
   size=${result%%$'\t'*}
   chunk=${result#*$'\t'}
-  case "$size" in ''|*[!0-9]*) return 1 ;; esac
+  case "$size" in ''|*[!0-9]*) return 2 ;; esac
   [ -n "$chunk" ] || return 1
   [ "$min_offset" -lt "$size" ] || return 1
   chunk_start=$min_offset
@@ -2349,7 +2350,7 @@ fm_wake_unread_events() {  # <validated-status-path> <unused-tail-byte-cap> <min
       pos += length($0) + 1
       if ($0 ~ /[^[:space:]]/ && line_start >= min) print $0
     }
-  ') || return 1
+  ') || return 2
   [ -n "$FM_WAKE_UNREAD_LINES" ] || return 1
   FM_WAKE_EVENT_LINE=$(printf '%s\n' "$FM_WAKE_UNREAD_LINES" | tail -1)
   FM_WAKE_EVENT_LINE=$(printf '%s' "$FM_WAKE_EVENT_LINE" | LC_ALL=C tr '\t\r' '  ')
@@ -2360,10 +2361,13 @@ fm_wake_latest_event() {  # <validated-status-path> <tail-byte-cap>
 }
 
 # Print supplemental drain-time context only after the caller has committed the
-# raw queue consumption and released the append lock.
+# raw queue consumption and released the append lock. Returns 1 when any part of
+# the pass could not be computed, whatever the cause: the caller's contract is
+# that such a drain presents nothing as seen at all.
 fm_wake_print_annotations() {  # <deduped-raw-rows> [<presentation-snapshot>]
   local rows=$1 snapshot=${2:-} manifest status_key mode path prefix line task endpoint
-  local snapshot_task snapshot_endpoint _snapshot_ident offset last_event event_line
+  local snapshot_task snapshot_endpoint _snapshot_ident offset last_event event_line events_rc
+  local incomplete=0
   local LC_ALL=C
 
   manifest=$(fm_wake_annotation_manifest "$rows" | awk -F '\t' '
@@ -2380,7 +2384,7 @@ fm_wake_print_annotations() {  # <deduped-raw-rows> [<presentation-snapshot>]
     END {
       for (i = 1; i <= count; i++) print order[i] "\t" mode[order[i]]
     }
-  ') || return 0
+  ') || return 1
 
   # Test-only latency seam for proving that queue appends remain independent of
   # a slow best-effort annotation phase.
@@ -2406,7 +2410,20 @@ fm_wake_print_annotations() {  # <deduped-raw-rows> [<presentation-snapshot>]
     if [ "$mode" = historical ] && fm_wake_signal_seen_current "$STATE" "$path"; then
       continue
     fi
-    offset=$(fm_wake_status_cursor_offset "$path") || continue
+    # A row can outlive normal task teardown. With no safe status file there is
+    # no live annotation to compute, so keep the durable row without calling a
+    # missing file a cursor failure. A cursor failure for a still-readable live
+    # file is different and must be reported below.
+    [ -f "$path" ] && [ -r "$path" ] && [ ! -L "$path" ] || continue
+    # A live row whose presentation cursor cannot be read has not been
+    # annotated. Report the failure so the drain can say that plainly on stdout
+    # and mark nothing as seen, leaving these bytes for the next drain to
+    # annotate; silently continuing makes the durable row look fully enriched
+    # when it is not.
+    offset=$(fm_wake_status_cursor_offset "$path") || {
+      incomplete=1
+      continue
+    }
     endpoint=
     if [ -n "$snapshot" ]; then
       task=${status_key%.status}
@@ -2418,11 +2435,16 @@ EOF
       [ -n "$endpoint" ] || continue
     fi
     if [ -n "$endpoint" ] && [ "$offset" -ge "$endpoint" ]; then continue; fi
-    if ! fm_wake_unread_events "$path" 0 "$offset" "$endpoint"; then
+    events_rc=0
+    fm_wake_unread_events "$path" 0 "$offset" "$endpoint" || events_rc=$?
+    if [ "$events_rc" -ne 0 ]; then
       # Annotation enrichment is supplemental to the already-printed durable
-      # wake rows. A file that disappears, rotates, or becomes unreadable after
-      # the snapshot must not suppress annotations for other status files; the
-      # presentation commit will reject a changed snapshot identity.
+      # wake rows, so a file that disappears, rotates, or becomes unreadable
+      # after the snapshot must not suppress annotations for other status files.
+      # A span that could not be read (rc 2) is not a span with nothing in it:
+      # report it so the drain marks nothing as seen and the unread bytes
+      # survive to the next drain.
+      [ "$events_rc" -ne 2 ] || incomplete=1
       continue
     fi
     last_event=$FM_WAKE_EVENT_LINE
@@ -2445,5 +2467,6 @@ EOF
 $manifest
 EOF
 
+  [ "$incomplete" -eq 0 ] || return 1
   return 0
 }
