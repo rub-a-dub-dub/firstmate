@@ -890,6 +890,44 @@ test_ci_monitoring_no_checks_terminal_surfaces_done() {
   pass "terminal no-checks ci-monitor marker surfaces done"
 }
 
+test_ci_monitoring_declared_no_ci_then_rearm_surfaces_done() {
+  reset_fakes
+  local d; d=$(new_case ci-declared-no-ci-rearm)
+  make_repo_on_branch "$d/wt" fm/feat-cideclarednocirearm
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-cideclarednocirearm.meta" "window=fm:fm-feat-cideclarednocirearm" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/feat-cideclarednocirearm)"
+  FM_FAKE_CI_LOGS=$(cat <<'EOF'
+repository declares no CI (no_ci: true) - treating as all checks passed - still monitoring until merged or closed
+base branch advanced (aaaaaaa..bbbbbbb), re-arming CI monitor timeout
+EOF
+)
+  local out; out=$(run_crew_state "$d" feat-cideclarednocirearm)
+  assert_contains "$out" "state: done" "declared no-CI marker remains done after base-advance rearm"
+  assert_contains "$out" "checks green" "declared no-CI detail mentions checks green"
+  assert_not_contains "$out" "state: working" "declared no-CI monitor must not read as working"
+  pass "declared no-CI monitor remains done after base-advance rearm"
+}
+
+test_ci_monitoring_declared_no_ci_then_issue_stays_working() {
+  reset_fakes
+  local d; d=$(new_case ci-declared-no-ci-issue)
+  make_repo_on_branch "$d/wt" fm/feat-cideclarednoissue
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-cideclarednoissue.meta" "window=fm:fm-feat-cideclarednoissue" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/feat-cideclarednoissue)"
+  FM_FAKE_CI_LOGS=$(cat <<'EOF'
+repository declares no CI (no_ci: true) - treating as all checks passed - still monitoring until merged or closed
+base branch advanced (aaaaaaa..bbbbbbb), re-arming CI monitor timeout
+issues detected: merge conflict - auto-fixing (attempt 2/10)...
+EOF
+)
+  local out; out=$(run_crew_state "$d" feat-cideclarednoissue)
+  assert_contains "$out" "state: working" "a later issue overrides the declared no-CI marker"
+  assert_not_contains "$out" "state: done" "declared no-CI must not mask a later issue"
+  pass "a fresh issue after a declared no-CI marker is not masked"
+}
+
 test_ci_monitoring_green_then_rearm_stays_working() {
   reset_fakes
   local d; d=$(new_case ci-green-then-rearm)
@@ -2835,6 +2873,8 @@ test_ci_ready_done_log_beats_monitoring_run
 test_ci_monitoring_checks_green_surfaces_done
 test_top_level_ci_checks_green_surfaces_done
 test_ci_monitoring_no_checks_terminal_surfaces_done
+test_ci_monitoring_declared_no_ci_then_rearm_surfaces_done
+test_ci_monitoring_declared_no_ci_then_issue_stays_working
 test_ci_monitoring_green_then_rearm_stays_working
 test_ci_monitoring_no_checks_yet_stays_working
 test_ci_monitoring_still_waiting_stays_working
