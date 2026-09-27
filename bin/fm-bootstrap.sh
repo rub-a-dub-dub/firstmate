@@ -92,12 +92,16 @@
 #          (bin/fm-backlog-transition-lib.sh), so this sweep exists for the
 #          crash window inside those scripts and for drift a home was already
 #          carrying: it finishes the authoritative close or captain-call
-#          retention an interrupted cleanup recorded, and marks In flight any
-#          item this home already owns a worker for. The worker-record sweep
+#          retention an interrupted cleanup recorded, retires a close without
+#          landing anything when its backlog row has left the backlog entirely,
+#          and marks In flight any item this home already owns a worker for.
+#          bin/fm-backlog-transition-lib.sh owns those outcomes. The worker-record sweep
 #          never starts a captain-held or closed item, and reconciliation never
 #          reads or writes another home; the fleet snapshot's classifier and
 #          bin/fm-secondmate-reconcile.sh's nudge stay as backstops. Replayed
-#          transitions and restored In-flight rows print BOOTSTRAP_INFO facts.
+#          transitions and restored In-flight rows print BOOTSTRAP_INFO facts;
+#          a record retired without landing its close leaves an unapplied
+#          completion link, so it reports through BACKLOG_RECONCILE instead.
 #          The `code-root <file>` variant is a detect-only local check that runs
 #          even in a read-only session; detect_code_root_backlog_fork owns what
 #          it reports.
@@ -1261,7 +1265,7 @@ backlog_reconcile_record_report() {
 # snapshot's classifier and bin/fm-secondmate-reconcile.sh's nudge stay as
 # backstops for what this cannot see. Never reads or writes another home.
 backlog_record_reconcile() {
-  local marker meta control_lock meta_lock id row label has_record=0 gate_status
+  local marker meta control_lock meta_lock id row label has_record=0 gate_status disposition
   # A fresh home with no state directory has no physical task records to pair.
   # Keep bootstrap diagnostics working without creating state just for a no-op.
   [ -e "$STATE" ] || [ -L "$STATE" ] || return 0
@@ -1324,6 +1328,20 @@ backlog_record_reconcile() {
           # start still reaches after this sweep returns (the rename already
           # landed) and every session start after it reaches too, not just this
           # one.
+          ;;
+        absent|absent_incomplete)
+          if [ -n "$FM_BACKLOG_CLOSE_REPLAY_DELIVERABLE" ]; then
+            disposition="its recorded completion link ($FM_BACKLOG_CLOSE_REPLAY_DELIVERABLE) could not be confirmed as applied and should be checked"
+          else
+            disposition="it recorded no completion link to reconcile"
+          fi
+          if [ "$FM_BACKLOG_CLOSE_REPLAY_RESULT" = absent_incomplete ]; then
+            disposition="$disposition, and its endpoint or local copy may remain and should be reconciled"
+          fi
+          echo "BACKLOG_RECONCILE: $label: the recorded backlog close was retired because its backlog row had already left this backlog, so no close was left to land; $disposition"
+          ;;
+        stale)
+          echo "BOOTSTRAP_INFO: discarded a pending close for $label recorded by a superseded incarnation; the incarnation now on record still owes its own close"
           ;;
       esac
     else

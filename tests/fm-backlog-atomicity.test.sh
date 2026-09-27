@@ -221,6 +221,81 @@ SH
   chmod +x "$case_dir/fakebin/tasks-axi"
 }
 
+# Shadow tasks-axi with a wrapper whose `done` first archives the row out of the
+# backlog and then reports the NOT_FOUND a vanished row reads as, which is what a
+# retention prune landing inside a replay's own close window looks like from the
+# transition: the probe that chose the close saw a row, the close itself did not.
+archive_row_during_close() {  # <case-dir>
+  local case_dir=$1 real backlog
+  real=$(command -v tasks-axi)
+  backlog=$(backlog_of "$case_dir")
+  cat > "$case_dir/fakebin/tasks-axi" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = done ]; then
+  "$real" prune --keep 0 --state done --file "$backlog" >/dev/null 2>&1
+  printf 'error: Task "%s" not found in this backlog\n' "\${2:-}" >&2
+  printf 'code: NOT_FOUND\n' >&2
+  exit 1
+fi
+exec "$real" "\$@"
+SH
+  chmod +x "$case_dir/fakebin/tasks-axi"
+}
+
+# Shadow tasks-axi so a close reports the NOT_FOUND a vanished row reads as
+# while the row lookup that would confirm that absence fails outright. The
+# absence is then unconfirmed, which is exactly the case a recorded close must
+# survive rather than be retired on.
+# Shadow tasks-axi so the close fails for a reason that is not an absence and
+# the row lookup that follows it also fails. Nothing in that pair says whether
+# the item still exists, so the refusal must not claim it had left the backlog.
+break_close_and_row_probe() {  # <case-dir>
+  local case_dir=$1 real
+  real=$(command -v tasks-axi)
+  cat > "$case_dir/fakebin/tasks-axi" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  done)
+    : > "$case_dir/close-attempted"
+    echo 'error: "backlog is unwritable"' >&2
+    exit 1
+    ;;
+  show)
+    if [ -f "$case_dir/close-attempted" ]; then
+      echo 'error: "backlog is unreadable"' >&2
+      exit 1
+    fi
+    ;;
+esac
+exec "$real" "\$@"
+SH
+  chmod +x "$case_dir/fakebin/tasks-axi"
+}
+
+break_row_probe_after_absent_close() {  # <case-dir>
+  local case_dir=$1 real
+  real=$(command -v tasks-axi)
+  cat > "$case_dir/fakebin/tasks-axi" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  done)
+    : > "$case_dir/close-attempted"
+    printf 'error: Task "%s" not found in this backlog\n' "\${2:-}" >&2
+    printf 'code: NOT_FOUND\n' >&2
+    exit 1
+    ;;
+  show)
+    if [ -f "$case_dir/close-attempted" ]; then
+      echo 'error: "backlog is unreadable"' >&2
+      exit 1
+    fi
+    ;;
+esac
+exec "$real" "\$@"
+SH
+  chmod +x "$case_dir/fakebin/tasks-axi"
+}
+
 break_verb() {  # <case-dir> <verb>
   local case_dir=$1 verb=$2 real
   real=$(command -v tasks-axi)
@@ -1829,6 +1904,106 @@ test_completion_preserves_records_when_meta_removal_fails() {
   pass "completion preserves recovery state when task-record removal fails"
 }
 
+# The incident this pairing was filed for: teardown's own close runs against a
+# row that closed and then aged out of done_keep retention. tasks-axi reports
+# the same NOT_FOUND replay treats as the close already reached, so cleanup must
+# report success instead of promising a retry that can never land.
+test_completion_accepts_a_row_already_archived_by_retention() {
+  local case_dir home id out
+  id=atomic-close-archived-b13
+  case_dir=$(make_home close-archived)
+  home=$(home_of "$case_dir")
+  add_item "$case_dir" "$id"
+  start_item "$case_dir" "$id"
+  tasks-axi "done" "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  (cd "$home" \
+    && tasks-axi prune --keep 0 --state "done" --file "$(backlog_of "$case_dir")" >/dev/null)
+  [ -z "$(row_state "$case_dir" "$id")" ] \
+    || fail "the fixture's pruned row is still visible to tasks-axi show"
+  write_task_meta "$case_dir" "$id" ship local-only "spawn_gen=spawn-close-archived"
+
+  out=$(run_teardown "$case_dir" "$id") \
+    || fail "teardown failed against a row already archived by retention: $out"
+  assert_absent "$home/state/$id.backlog-close" \
+    "teardown recorded a close that can never land against an archived row"
+  assert_absent "$home/state/$id.meta" \
+    "teardown kept the task record for a row already gone from the backlog"
+  assert_contains "$out" "had already left" \
+    "teardown accepted the absence without telling the operator the row was gone"
+  assert_contains "$out" "completion link (local main) could not be confirmed as applied" \
+    "teardown asserted the recorded link was never applied, which a close killed after its write had landed disproves"
+  assert_not_contains "$out" "was never applied" \
+    "teardown claimed the link was never applied without proving no write landed"
+  assert_not_contains "$out" "is closed in" \
+    "teardown reported a close it never ran as landed in a backlog holding no row"
+  pass "completion accepts a row retention already archived as the close it was reaching for"
+}
+
+# The absence that retires a record must be positively confirmed. A close that
+# reports NOT_FOUND while the row lookup itself fails proves nothing about the
+# row, so cleanup stays loud and the pending close survives for a later retry.
+test_completion_keeps_a_close_whose_row_lookup_fails() {
+  local case_dir home id out rc=0
+  id=atomic-close-probe-error-b13
+  case_dir=$(make_home close-probe-error)
+  home=$(home_of "$case_dir")
+  add_item "$case_dir" "$id"
+  start_item "$case_dir" "$id"
+  write_task_meta "$case_dir" "$id" ship local-only "spawn_gen=spawn-close-probe-error"
+  break_row_probe_after_absent_close "$case_dir"
+
+  out=$(run_teardown "$case_dir" "$id") || rc=$?
+  rm -f "$case_dir/fakebin/tasks-axi"
+  [ "$rc" -ne 0 ] || fail "teardown accepted an unconfirmed absence as a close it could retire"
+  assert_present "$home/state/$id.backlog-close" \
+    "teardown discarded the close it still owes after an unconfirmed absence"
+  assert_contains "$out" "could not be closed" \
+    "teardown hid that the close never landed"
+  assert_contains "$out" "could not be read to confirm whether the item still exists" \
+    "teardown reported the close's not-found error as the cause while acting on a failed backlog read"
+  assert_contains "$out" "backlog is unreadable" \
+    "teardown discarded the backlog read failure that is the only thing left to fix"
+  assert_contains "$out" "retries this close" \
+    "teardown did not say what the surviving record's retry will settle"
+  assert_contains "$out" "the next session start retries it" \
+    "teardown dropped the retry the surviving record exists for"
+  assert_not_contains "$out" "had already left" \
+    "teardown claimed a row had left the backlog without confirming it"
+  pass "completion keeps a recorded close when the row lookup cannot confirm the absence, naming the read failure"
+}
+
+# The same refusal reached from a close that never reported an absence. Both the
+# close and the row lookup fail for unrelated reasons, so nothing establishes
+# whether the row is still there; the message must name both failures and claim
+# no absence, because the record it keeps exists to retry the close itself.
+test_completion_refusal_claims_no_absence_when_the_close_never_reported_one() {
+  local case_dir home id out rc=0
+  id=atomic-close-unreadable-b13
+  case_dir=$(make_home close-unreadable)
+  home=$(home_of "$case_dir")
+  add_item "$case_dir" "$id"
+  start_item "$case_dir" "$id"
+  write_task_meta "$case_dir" "$id" ship local-only "spawn_gen=spawn-close-unreadable"
+  break_close_and_row_probe "$case_dir"
+
+  out=$(run_teardown "$case_dir" "$id") || rc=$?
+  rm -f "$case_dir/fakebin/tasks-axi"
+  [ "$rc" -ne 0 ] || fail "teardown reported success after a close that never landed"
+  assert_present "$home/state/$id.backlog-close" \
+    "teardown discarded the close it still owes"
+  assert_contains "$out" "backlog is unwritable" \
+    "teardown dropped the close failure that is the reason it refused"
+  assert_contains "$out" "backlog is unreadable" \
+    "teardown dropped the row-read failure that left the item's existence unsettled"
+  assert_not_contains "$out" "absence" \
+    "teardown asserted an absence for a close that never reported one"
+  assert_not_contains "$out" "had already left" \
+    "teardown claimed the row had left the backlog with no absence ever reported"
+  assert_contains "$out" "retries this close" \
+    "teardown did not say the surviving record exists to retry the close"
+  pass "completion refuses without claiming an absence when the close never reported one"
+}
+
 test_completion_fails_loudly_and_records_the_close_it_still_owes() {
   local case_dir id out rc=0
   id=atomic-close-b7
@@ -1874,6 +2049,44 @@ test_interrupted_destructive_cleanup_leaves_a_recoverable_close() {
   assert_contains "$out" "endpoint or local copy may remain" \
     "restart silently hid potentially incomplete physical cleanup"
   pass "restart recovers closes recorded before destructive cleanup"
+}
+
+# The retention incident's crash window: the row had already aged out of the
+# backlog before teardown ran, so its recorded close can never land - but the
+# destructive cleanup that was interrupted may still have left the endpoint and
+# worktree behind. Retiring the record must not downgrade that warning, which is
+# the line AGENTS.md ties the bootstrap-diagnostics load to.
+test_interrupted_cleanup_of_an_archived_row_still_warns_about_its_endpoint() {
+  local case_dir home id marker out rc=0
+  id=atomic-close-archived-interrupt-b13
+  case_dir=$(make_home close-archived-interrupt "$id")
+  home=$(home_of "$case_dir")
+  add_item "$case_dir" "$id"
+  out=$(run_ship_spawn "$case_dir" "$id") || fail "spawn failed: $out"
+  tasks-axi "done" "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  (cd "$home" \
+    && tasks-axi prune --keep 0 --state "done" --file "$(backlog_of "$case_dir")" >/dev/null)
+  [ -z "$(row_state "$case_dir" "$id")" ] \
+    || fail "the fixture's pruned row is still visible to tasks-axi show"
+  marker="$home/state/$id.backlog-close"
+  interrupt_teardown_during_treehouse_return "$case_dir"
+
+  out=$(run_teardown "$case_dir" "$id") || rc=$?
+  [ "$rc" -ne 0 ] || fail "interrupted destructive cleanup reported success"
+  assert_present "$marker" \
+    "destructive cleanup began before recording its authoritative close"
+  assert_present "$home/state/$id.meta" \
+    "interrupted destructive cleanup lost the task incarnation"
+
+  out=$(run_bootstrap "$case_dir")
+  assert_absent "$marker" \
+    "a close for a row already gone from the backlog was left to retry forever"
+  assert_absent "$home/state/$id.meta" "restart retained the interrupted task record"
+  assert_contains "$out" "had already left this backlog" \
+    "replay reported a landed close for a row that had left the backlog"
+  assert_contains "$out" "endpoint or local copy may remain" \
+    "retiring an unlandable close silently dropped the orphaned-cleanup warning"
+  pass "restart retiring an archived row's close still warns that cleanup never finished"
 }
 
 test_completion_refuses_a_close_target_symlinked_to_a_directory() {
@@ -2612,6 +2825,106 @@ test_recovery_reconcile_record_preserves_incomplete_cleanup_warning() {
   assert_contains "$out2" "endpoint or local copy may also remain" \
     "the repeated report dropped the durable incomplete-cleanup warning"
   pass "durable reconcile records preserve incomplete-cleanup warnings across reports"
+}
+
+# A row that closed and then aged out of done_keep retention before its own
+# teardown's close attempt ran is indistinguishable, from tasks-axi show, from a
+# row that never existed: both return code: NOT_FOUND. That absence is the
+# outcome the close was trying to reach, so replay must retire the marker
+# instead of leaving a close that can never land against a row gone from the
+# backlog.
+test_recovery_retires_a_close_for_a_row_archived_by_retention() {
+  local case_dir id marker out
+  id=atomic-heal-archived-b13
+  case_dir=$(make_home heal-archived)
+  add_item "$case_dir" "$id"
+  start_item "$case_dir" "$id"
+  tasks-axi "done" "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  (cd "$(home_of "$case_dir")" \
+    && tasks-axi prune --keep 0 --state "done" --file "$(backlog_of "$case_dir")" >/dev/null)
+  [ -z "$(row_state "$case_dir" "$id")" ] \
+    || fail "the fixture's pruned row is still visible to tasks-axi show"
+  marker="$(home_of "$case_dir")/state/$id.backlog-close"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-archived\narg=--note\narg=local%%20main\n' \
+    "$id" "$(home_of "$case_dir")/data" > "$marker"
+
+  out=$(run_bootstrap "$case_dir")
+  assert_absent "$marker" \
+    "a close for a row retention already archived was left to retry forever"
+  assert_not_contains "$out" "could not be replayed" \
+    "an archived row's absence was reported as a lookup failure instead of a completed close"
+  assert_contains "$out" "had already left this backlog" \
+    "a retired pending close was resolved silently, leaving the operator to infer it"
+  assert_contains "$out" "BACKLOG_RECONCILE: $id: the recorded backlog close was retired" \
+    "the retirement was reported under a prefix the agent contract treats as no-action, so its unapplied completion link is never acted on"
+  assert_contains "$out" "completion link (local main)" \
+    "retiring the record discarded the completion link it carried without naming it"
+  pass "recovery retires a pending close whose row already left the backlog through retention"
+}
+
+# A row removed outright rather than pruned reads to tasks-axi exactly the same
+# way, and no later close can land against it either, so replay must retire that
+# record too instead of re-printing an unlandable retry at every session start.
+test_recovery_retires_a_close_for_a_row_removed_without_closing() {
+  local case_dir home id marker out
+  id=atomic-heal-removed-b13
+  case_dir=$(make_home heal-removed)
+  home=$(home_of "$case_dir")
+  add_item "$case_dir" "$id"
+  tasks-axi rm "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  marker="$home/state/$id.backlog-close"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-removed\narg=--pr\narg=https://example.test/pr/7\n' \
+    "$id" "$home/data" > "$marker"
+
+  out=$(run_bootstrap "$case_dir")
+  assert_absent "$marker" \
+    "a close for a row removed from the backlog was left to retry forever"
+  assert_not_contains "$out" "could not be replayed" \
+    "a removed row's confirmed absence was reported as a lookup failure"
+  assert_contains "$out" "had already left this backlog" \
+    "a retired pending close was resolved silently, leaving the operator to infer it"
+  assert_contains "$out" "BACKLOG_RECONCILE: $id: the recorded backlog close was retired" \
+    "the retirement was reported under a prefix the agent contract treats as no-action, so its unapplied completion link is never acted on"
+  assert_contains "$out" "completion link (PR https://example.test/pr/7)" \
+    "retiring the record discarded the merged PR it carried without naming it"
+  pass "recovery retires a pending close whose row was removed without closing, naming its link"
+}
+
+# The same absence reached from the other side: the row is still there when
+# replay probes it, and leaves the backlog before the close replay then runs.
+# The record is still correctly retired, but nothing closed, so a replay that
+# reported this as a landed close would tell the operator the opposite of what
+# its own transition found.
+test_recovery_reports_a_row_that_left_the_backlog_mid_close() {
+  local case_dir home id marker out
+  id=atomic-heal-vanished-b13
+  case_dir=$(make_home heal-vanished)
+  home=$(home_of "$case_dir")
+  add_item "$case_dir" "$id"
+  start_item "$case_dir" "$id"
+  tasks-axi "done" "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  [ "$(row_state "$case_dir" "$id")" = "done" ] \
+    || fail "the fixture's row is not the done row replay must probe before its close"
+  marker="$home/state/$id.backlog-close"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-vanished\narg=--note\narg=local%%20main\n' \
+    "$id" "$home/data" > "$marker"
+  archive_row_during_close "$case_dir"
+
+  out=$(run_bootstrap "$case_dir")
+  rm -f "$case_dir/fakebin/tasks-axi"
+  assert_absent "$marker" \
+    "a close whose row left the backlog mid-replay was left to retry forever"
+  assert_contains "$out" "had already left this backlog" \
+    "replay hid that its close found no row to land against"
+  assert_contains "$out" "BACKLOG_RECONCILE: $id: the recorded backlog close was retired" \
+    "the retirement was reported under a prefix the agent contract treats as no-action, so its unapplied completion link is never acted on"
+  assert_contains "$out" "completion link (local main) could not be confirmed as applied" \
+    "replay claimed the recorded link was never applied against a row that was already done before it probed"
+  assert_not_contains "$out" "was never applied" \
+    "replay asserted a link was never applied when its own probe had seen the row done"
+  assert_not_contains "$out" "that an interrupted cleanup left open" \
+    "replay reported a close as landed against a row that had left the backlog"
+  pass "recovery reports a close whose row left the backlog inside its own replay window"
 }
 
 test_recovery_preserves_a_close_when_the_backlog_cannot_be_read() {
@@ -3607,8 +3920,12 @@ test_space_containing_scout_report_marker_replays
 test_trailing_newline_data_path_fails_closed
 test_control_character_data_path_is_refused_before_cleanup
 test_completion_preserves_records_when_meta_removal_fails
+test_completion_accepts_a_row_already_archived_by_retention
+test_completion_keeps_a_close_whose_row_lookup_fails
+test_completion_refusal_claims_no_absence_when_the_close_never_reported_one
 test_completion_fails_loudly_and_records_the_close_it_still_owes
 test_interrupted_destructive_cleanup_leaves_a_recoverable_close
+test_interrupted_cleanup_of_an_archived_row_still_warns_about_its_endpoint
 test_completion_refuses_a_close_target_symlinked_to_a_directory
 test_completion_fails_when_its_close_marker_cannot_be_removed
 test_recovery_retries_when_a_close_marker_cannot_be_removed
@@ -3633,6 +3950,9 @@ test_recovery_reconcile_record_reports_when_the_backend_cannot_be_resolved
 test_recovery_reconcile_record_reports_when_a_promoted_gate_kind_cannot_resolve
 test_recovery_reconcile_record_reports_when_no_deliverable_was_recorded
 test_recovery_reconcile_record_preserves_incomplete_cleanup_warning
+test_recovery_retires_a_close_for_a_row_archived_by_retention
+test_recovery_retires_a_close_for_a_row_removed_without_closing
+test_recovery_reports_a_row_that_left_the_backlog_mid_close
 test_recovery_preserves_a_close_when_the_backlog_cannot_be_read
 test_recovery_retry_preserves_incomplete_cleanup_warning
 test_recovery_finishes_a_close_for_the_same_meta_incarnation
