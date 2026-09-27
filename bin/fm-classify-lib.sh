@@ -1028,9 +1028,12 @@ EOF
 # (needs-decision or blocked) while the key is still open, the closing verb
 # (resolved, or the captain-held durable-transfer verb) once it is closed, and
 # nothing at all when no line in the stream ever stated a transition for it.
-# For the shared "default" key alone the closing verb may also be a plain
-# `done`, because a plain unkeyed line of that verb retires that bucket - see
-# the unkeyed-bucket exception in the key-grammar block above.
+# A ship's or scout's terminal `done`/`failed` line is also reported as a
+# closing verb, because that declaration closes EVERY key. This reader
+# deliberately does NOT reflect the fold's plain-`done` retirement of the shared
+# "default" bucket: its per-line filter below admits a bare `done`/`failed` only
+# under that ship/scout terminal rule, so on any other kind a plain `done` never
+# reaches the fold here and "default" still reports its opening verb.
 #
 # The distinction between the two explicit closing verbs is the whole point: a
 # `captain-held` close is the VERIFIED handoff to a durable captain-held task
@@ -1201,10 +1204,13 @@ _fm_open_decisions_cursor_path() {  # <status-file>
 # Version 4 was already spent on the bracketed-tag parser change above, and a
 # cursor persisted under that reading predates this one, so it must still be
 # discarded and rebuilt from byte 0 under the new reading.
-# 10: a plain (no correlation token) done line now also retires the shared
-# "default" bucket, so a cursor persisted under version 9 must be discarded
-# and rebuilt under that added retirement rule.
-FM_OPEN_DECISIONS_FOLD_VERSION=10
+# 10: a plain (no correlation token) done/paused line now also retires the
+# shared "default" bucket, so a cursor persisted under version 9 must be
+# discarded and rebuilt under that added retirement rule.
+# 11: a paused line no longer retires that bucket - only a plain done one does,
+# matching upstream - so a cursor folded under version 10's paused-retiring
+# reading holds a bucket this reading keeps open and must be discarded.
+FM_OPEN_DECISIONS_FOLD_VERSION=11
 
 # Portable device:inode identity for the rotation/recreation check below.
 _fm_open_decisions_file_ident() {  # <file> -> strongest available identity
