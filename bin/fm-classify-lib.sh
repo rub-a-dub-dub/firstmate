@@ -432,12 +432,12 @@ status_event_recorded() {  # <status-file> <new-status-line>
 # that shared bucket itself (`--resolve-key default`, which the drain now
 # prints on the row) rather than one naming the decision - it used to fold as
 # open forever with no other route out, even long after the crew moved past it
-# (a `done:` or `paused:` line is exactly that crew moving on). A STATED key
+# (a `done:` line is exactly that crew moving on). A STATED key
 # stays governed by the rule above unconditionally: it names a real captain
 # decision, and only its own resolved/captain-held line ever closes it. Only
-# the unkeyed "default" bucket is retired by a later plain done/paused line on
+# the unkeyed "default" bucket is retired by a later plain done line on
 # the same task, and "plain" is read off that retiring line too: it must itself
-# be unkeyed, because a keyed done/paused line is a report about the decision
+# be unkeyed, because a keyed done line is a report about the decision
 # its OWN key names (the scripted `done [key=child-outcome-...]`,
 # `done [key=child-pr-<id>]` and `done [key=merged-<id>]` lines the
 # child-outcome, PR-readiness and merge publishers append straight into a
@@ -465,7 +465,7 @@ status_event_recorded() {  # <status-file> <new-status-line>
 # so a summary merely MENTIONING "[key=x]" cannot open or close that decision.
 # A line with no token in either position uses the key "default", preserving
 # the historical one-open-decision-per-task behavior (a bare "resolved:" closes
-# "default", and so now does a later plain done/paused line - see above).
+# "default", and so now does a later plain done line - see above).
 # A stated key whose slug fails the charset below is rejected (the folds skip
 # the line), never rewritten to "default".
 # The parsers are pure reads of a single line. Status metadata may contain any
@@ -1029,9 +1029,8 @@ EOF
 # (resolved, or the captain-held durable-transfer verb) once it is closed, and
 # nothing at all when no line in the stream ever stated a transition for it.
 # For the shared "default" key alone the closing verb may also be a plain
-# `done` or the configured paused verb, because a plain unkeyed line of either
-# retires that bucket - see the unkeyed-bucket exception in the key-grammar
-# block above.
+# `done`, because a plain unkeyed line of that verb retires that bucket - see
+# the unkeyed-bucket exception in the key-grammar block above.
 #
 # The distinction between the two explicit closing verbs is the whole point: a
 # `captain-held` close is the VERIFIED handoff to a durable captain-held task
@@ -1202,9 +1201,9 @@ _fm_open_decisions_cursor_path() {  # <status-file>
 # Version 4 was already spent on the bracketed-tag parser change above, and a
 # cursor persisted under that reading predates this one, so it must still be
 # discarded and rebuilt from byte 0 under the new reading.
-# 10: a plain (no correlation token) done/paused line now also retires the
-# shared "default" bucket, so a cursor persisted under version 9 must be
-# discarded and rebuilt under that added retirement rule.
+# 10: a plain (no correlation token) done line now also retires the shared
+# "default" bucket, so a cursor persisted under version 9 must be discarded
+# and rebuilt under that added retirement rule.
 FM_OPEN_DECISIONS_FOLD_VERSION=10
 
 # Portable device:inode identity for the rotation/recreation check below.
