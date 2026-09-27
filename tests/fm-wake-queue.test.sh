@@ -1865,10 +1865,14 @@ test_malformed_presentation_lock_reports_acquire_failure() {
 # but the former used to treat a cursor-read failure as "skip this live row".
 # Fail exactly the annotation's first cursor read, then let every later read
 # recover, proving the row cannot disappear without a stdout notice and that the
-# notice's promised retry is real: a `working:` line has no surface other than
-# this annotation, so the drain that could not print it must not acknowledge it.
+# retry is real: a `working:` line has no surface other than this annotation, so
+# the drain that could not print it must not acknowledge it. The held task's own
+# unread lines also stay out of the one-shot UNREAD STATUS section - its cursor
+# does not move, so that section's "not re-printed" header would be false for
+# them - while an unheld task's unread line still reaches it, proving the
+# annotation failure does not suppress the independent fleet-wide sections.
 test_annotation_cursor_failure_is_reported_on_stdout() {
-  local dir state out err fakebin real_cat manifest status
+  local dir state out err fakebin real_cat manifest status bystander
   dir=$(make_case annotation-cursor-failure)
   state="$dir/state"
   out="$dir/drain.out"
@@ -1876,15 +1880,18 @@ test_annotation_cursor_failure_is_reported_on_stdout() {
   fakebin="$dir/fakebin"
   manifest="$state/.status-presentation-cursor"
   status="$state/task.status"
+  bystander="$state/bystander.status"
   real_cat=$(command -v cat)
 
   printf 'note: prime the presentation cursor\n' > "$status"
+  printf 'note: prime the unheld cursor\n' > "$bystander"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
     || fail "could not prime the annotation cursor fixture"
   [ -s "$manifest" ] || fail "the annotation cursor fixture wrote no presentation manifest"
 
   printf 'working: live row must not disappear silently\n' >> "$status"
   printf 'note: the captain reads this one through the fleet-wide section\n' >> "$status"
+  printf 'note: an unheld task still reaches the fleet-wide section\n' >> "$bystander"
   append_wake "$state" signal task.status "signal: $status" \
     || fail "could not seed the annotation cursor wake"
   cat > "$fakebin/cat" <<'SH'
@@ -1909,16 +1916,24 @@ SH
   if grep -F 'wake annotation:' "$out" >/dev/null; then
     fail "the failed annotation cursor read still printed an authoritative annotation"
   fi
-  grep -F 'STATUS ANNOTATION INCOMPLETE:' "$out" >/dev/null \
-    || fail "the annotation cursor failure remained silent on stdout: $(command cat "$out")"
+  grep -F 'STATUS ANNOTATION INCOMPLETE:' "$out" | grep -F "$status" >/dev/null \
+    || fail "the annotation cursor failure did not name the held status log on stdout: $(command cat "$out")"
 
-  grep -F 'note: the captain reads this one through the fleet-wide section' "$out" >/dev/null \
+  grep -F 'note: an unheld task still reaches the fleet-wide section' "$out" >/dev/null \
     || fail "the annotation failure suppressed the independent fleet-wide sections: $(command cat "$out")"
+  if grep -F 'note: the captain reads this one through the fleet-wide section' "$out" >/dev/null; then
+    fail "a held task's unread line printed under the one-shot unread header: $(command cat "$out")"
+  fi
 
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" \
     || fail "the drain after the injected annotation cursor failure cleared failed"
   grep -F 'wake annotation:' "$out" | grep -F 'working: live row must not disappear silently' >/dev/null \
     || fail "the unannotated line was acknowledged instead of retried: $(command cat "$out")"
+  grep -F 'note: the captain reads this one through the fleet-wide section' "$out" >/dev/null \
+    || fail "the held task's withheld unread line never came back: $(command cat "$out")"
+  if grep -F 'note: an unheld task still reaches the fleet-wide section' "$out" >/dev/null; then
+    fail "the unheld task's already-presented unread line was re-printed: $(command cat "$out")"
+  fi
 
   pass "a live row's annotation cursor failure is explicit on stdout and retried"
 }
@@ -2040,6 +2055,77 @@ SH
   pass "an annotation failure that names no task holds every presentation cursor"
 }
 
+# A named hold used to still let the drain claim every direct row was fully
+# presented, so a sibling task's cursor advanced on the strength of a pass that
+# had already failed. Fail one task's annotation cursor read with two direct rows
+# queued and prove BOTH `working:` spans - the held one and its sibling's, whose
+# only surface is that annotation - survive to the next drain.
+test_annotation_failure_holds_sibling_cursors_too() {
+  local dir state out err fakebin real_cat manifest first second held
+  dir=$(make_case annotation-sibling-hold)
+  state="$dir/state"
+  out="$dir/drain.out"
+  err="$dir/drain.err"
+  fakebin="$dir/fakebin"
+  manifest="$state/.status-presentation-cursor"
+  first="$state/alpha.status"
+  second="$state/bravo.status"
+  real_cat=$(command -v cat)
+
+  printf 'note: prime alpha\n' > "$first"
+  printf 'note: prime bravo\n' > "$second"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "could not prime the sibling annotation fixture"
+  [ -s "$manifest" ] || fail "the sibling annotation fixture wrote no presentation manifest"
+
+  # Neither `working:` line has a fleet-wide surface: the annotation is the only
+  # presentation either one gets.
+  printf 'working: alpha needs its annotation\n' >> "$first"
+  printf 'working: bravo needs its annotation\n' >> "$second"
+  append_wake "$state" signal alpha.status "signal: $first" \
+    || fail "could not seed the alpha wake"
+  append_wake "$state" signal bravo.status "signal: $second" \
+    || fail "could not seed the bravo wake"
+  cat > "$fakebin/cat" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ "$#" -eq 1 ] && [ "$1" = "$FM_TEST_CURSOR_MANIFEST" ] \
+  && [ ! -e "$FM_TEST_CURSOR_FAILURE_USED" ]; then
+  : > "$FM_TEST_CURSOR_FAILURE_USED"
+  exit 1
+fi
+exec "$FM_TEST_REAL_CAT" "$@"
+SH
+  chmod +x "$fakebin/cat"
+
+  PATH="$fakebin:$PATH" FM_TEST_REAL_CAT="$real_cat" \
+    FM_TEST_CURSOR_MANIFEST="$manifest" \
+    FM_TEST_CURSOR_FAILURE_USED="$dir/cursor-failure-used" \
+    FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" \
+    || fail "drain failed after the injected sibling cursor failure"
+  [ -e "$dir/cursor-failure-used" ] \
+    || fail "the injected sibling cursor failure never fired"
+  held=$(grep -F 'STATUS ANNOTATION INCOMPLETE:' "$out") \
+    || fail "the sibling cursor failure remained silent on stdout: $(command cat "$out")"
+  # Exactly one task is held; the other's annotation printed in full, and that is
+  # precisely the one whose cursor must not be advanced on a failed pass.
+  case "$held" in
+    *"$first"*"$second"*|*"$second"*"$first"*)
+      fail "the injected failure held both tasks instead of one: $held" ;;
+    *"$first"*|*"$second"*) ;;
+    *) fail "the annotation notice named no held status log: $held" ;;
+  esac
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" \
+    || fail "the drain after the injected sibling cursor failure cleared failed"
+  grep -F 'wake annotation:' "$out" | grep -F 'working: alpha needs its annotation' >/dev/null \
+    || fail "alpha's unannotated span was acknowledged instead of retried: $(command cat "$out")"
+  grep -F 'wake annotation:' "$out" | grep -F 'working: bravo needs its annotation' >/dev/null \
+    || fail "bravo's unannotated span was acknowledged instead of retried: $(command cat "$out")"
+
+  pass "an annotation failure holds the sibling cursors it never proved it presented"
+}
+
 # Drain-time historical annotation staleness: a turn-ended-only wake row must
 # not present an already-announced status line as a new update, while a status
 # file with unannounced bytes keeps its annotation and a direct status row is
@@ -2097,6 +2183,7 @@ test_malformed_presentation_lock_reports_acquire_failure
 test_annotation_cursor_failure_is_reported_on_stdout
 test_annotation_span_read_failure_is_reported_and_retried
 test_unattributed_annotation_failure_holds_every_cursor
+test_annotation_failure_holds_sibling_cursors_too
 test_secondmate_foreign_queue_stall_tracks_progress_and_alerts_once
 test_secondmate_declared_pause_rows_do_not_feed_stall_escalation
 test_secondmate_reprovisioned_queue_starts_a_fresh_interval
