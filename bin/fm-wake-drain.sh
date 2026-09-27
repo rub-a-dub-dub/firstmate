@@ -595,7 +595,7 @@ print_status_sections() {  # <task-and-endpoint-snapshot> [<fully-presented-task
 
 print_status_presentation() {  # [<deduped-raw-rows>]
   local rows=${1:-} lock="$STATE/.status-presentation-lock" snapshot annotation_manifest fully_presented='' rc=0
-  local lock_rc holder_pid annotation_held=''
+  local lock_rc holder_pid annotation_held='' annotation_rc=0
   if fm_lock_acquire_wait_bounded "$lock" "$PRESENTATION_LOCK_TIMEOUT"; then
     :
   else
@@ -622,13 +622,20 @@ print_status_presentation() {  # [<deduped-raw-rows>]
     rc=1
   }
   if [ "$rc" -eq 0 ] && [ -n "$rows" ]; then
-    if ! fm_wake_print_annotations "$rows" "$snapshot"; then
+    fm_wake_print_annotations "$rows" "$snapshot" || annotation_rc=$?
+    if [ "$annotation_rc" -ne 0 ]; then
       printf 'STATUS ANNOTATION INCOMPLETE: one or more supplemental status annotations were not computed; the durable wake rows above remain authoritative and every status line those annotations would have carried stays unread - retry on the next drain.\n'
       annotation_held=$FM_WAKE_ANNOTATION_HELD
       rc=1
     fi
-    annotation_manifest=$(fm_wake_annotation_manifest "$rows")
-    fully_presented=$(printf '%s\n' "$annotation_manifest" | awk -F '\t' '$2 == "direct" { sub(/\.status$/, "", $1); print $1 }')
+    # Only a pass that named every task it could not compute can also say which
+    # spans it did present in full. A failure that names none leaves that claim
+    # unprovable, so no task is reported fully presented and every cursor falls
+    # back to the fleet-wide unread-surface rule.
+    if [ "$annotation_rc" -eq 0 ] || [ -n "$annotation_held" ]; then
+      annotation_manifest=$(fm_wake_annotation_manifest "$rows")
+      fully_presented=$(printf '%s\n' "$annotation_manifest" | awk -F '\t' '$2 == "direct" { sub(/\.status$/, "", $1); print $1 }')
+    fi
   fi
   # Annotation failure does not make the independent fleet-wide sections unsafe,
   # so they still run and either present completely or print their own precise

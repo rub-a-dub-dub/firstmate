@@ -1980,6 +1980,66 @@ SH
   pass "a failed annotation span read is reported and its unread bytes stay unread"
 }
 
+# An annotation failure that names no held task still reported every direct row
+# as fully presented, so the acknowledge pass advanced those cursors past bytes
+# the annotation never printed. Fail the annotation pass's own manifest build -
+# the one failure path that can name nothing - and prove the span survives.
+test_unattributed_annotation_failure_holds_every_cursor() {
+  local dir state out err fakebin real_awk status
+  dir=$(make_case unattributed-annotation-failure)
+  state="$dir/state"
+  out="$dir/drain.out"
+  err="$dir/drain.err"
+  fakebin="$dir/fakebin"
+  status="$state/task.status"
+  real_awk=$(command -v awk)
+
+  printf 'note: prime the presentation cursor\n' > "$status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "could not prime the unattributed annotation fixture"
+
+  # A `working:` line has no fleet-wide surface: the annotation is its only
+  # presentation, so acknowledging it after an uncomputed annotation loses it.
+  printf 'working: only the annotation can carry this one\n' >> "$status"
+  append_wake "$state" signal task.status "signal: $status" \
+    || fail "could not seed the unattributed annotation wake"
+  cat > "$fakebin/awk" <<'SH'
+#!/usr/bin/env bash
+set -u
+for arg in "$@"; do
+  case "$arg" in
+    *"if (!(key in seen))"*)
+      if [ ! -e "$FM_TEST_AWK_FAILURE_USED" ]; then
+        : > "$FM_TEST_AWK_FAILURE_USED"
+        exit 1
+      fi
+      ;;
+  esac
+done
+exec "$FM_TEST_REAL_AWK" "$@"
+SH
+  chmod +x "$fakebin/awk"
+
+  PATH="$fakebin:$PATH" FM_TEST_REAL_AWK="$real_awk" \
+    FM_TEST_AWK_FAILURE_USED="$dir/awk-failure-used" \
+    FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" \
+    || fail "drain failed after the injected annotation manifest failure"
+  [ -e "$dir/awk-failure-used" ] \
+    || fail "the injected annotation manifest failure never fired"
+  grep -F 'STATUS ANNOTATION INCOMPLETE:' "$out" >/dev/null \
+    || fail "the unattributed annotation failure remained silent on stdout: $(command cat "$out")"
+  if grep -F 'wake annotation:' "$out" >/dev/null; then
+    fail "the uncomputed annotation manifest still printed an annotation"
+  fi
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" \
+    || fail "the drain after the injected annotation manifest failure cleared failed"
+  grep -F 'wake annotation:' "$out" | grep -F 'working: only the annotation can carry this one' >/dev/null \
+    || fail "an annotation failure that named no task acknowledged the span anyway: $(command cat "$out")"
+
+  pass "an annotation failure that names no task holds every presentation cursor"
+}
+
 # Drain-time historical annotation staleness: a turn-ended-only wake row must
 # not present an already-announced status line as a new update, while a status
 # file with unannounced bytes keeps its annotation and a direct status row is
@@ -2036,6 +2096,7 @@ test_live_presentation_holder_is_deadlined_without_weakening_ack
 test_malformed_presentation_lock_reports_acquire_failure
 test_annotation_cursor_failure_is_reported_on_stdout
 test_annotation_span_read_failure_is_reported_and_retried
+test_unattributed_annotation_failure_holds_every_cursor
 test_secondmate_foreign_queue_stall_tracks_progress_and_alerts_once
 test_secondmate_declared_pause_rows_do_not_feed_stall_escalation
 test_secondmate_reprovisioned_queue_starts_a_fresh_interval
