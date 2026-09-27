@@ -1,0 +1,70 @@
+Targeted test results - fm/firstmate-drain-false-incomplete-label-recovery
+base d32fe93 -> target 8618dcd
+
+Each test was driven through the real bin/fm-wake-drain.sh over crafted state fixtures.
+This host intermittently SIGSEGVs 'LC_ALL=C /usr/bin/stat' (see host-flake-stat-sigsegv.txt),
+which makes any single drain fail spuriously; attempt counts below are that host flake,
+not the change. The same flake fails the same suites at the base commit.
+
+== tests/fm-wake-drain-open-decisions.test.sh (all 16 tests, run per test) ==
+PASS  test_no_open_decisions_prints_nothing                          (attempts: 1)
+PASS  test_unrelated_task_read_failure_reports_incomplete_not_silent_empty (attempts: 1)
+PASS  test_torn_down_task_wake_row_does_not_blank_the_sections       (attempts: 2)
+PASS  test_partial_snapshot_does_not_truncate_the_cursor_manifest    (attempts: 1)
+PASS  test_untrusted_fold_cursor_read_failure_is_not_a_silent_empty  (attempts: 1)
+PASS  test_trusted_empty_fold_cursor_read_failure_is_not_a_silent_empty (attempts: 1)
+PASS  test_trusted_nonempty_fold_cursor_read_failure_is_not_authoritative (attempts: 2)
+PASS  test_receipt_failure_does_not_relabel_printed_sections_incomplete (attempts: 1)
+PASS  test_status_symlink_is_not_followed                            (attempts: 1)
+PASS  test_buried_decision_still_surfaces                            (attempts: 1)
+PASS  test_over_long_decision_note_is_capped_with_a_marker           (attempts: 1)
+PASS  test_explicit_resolution_closes_it                             (attempts: 1)
+PASS  test_later_unrelated_terminal_line_does_not_close_it           (attempts: 1)
+PASS  test_reserved_key_namespace_is_owned_by_its_library            (attempts: 1)
+PASS  test_open_decision_surfaces_even_with_an_unrelated_queued_wake (attempts: 2)
+PASS  test_buried_decision_surfaces_on_the_empty_queue_fast_path     (attempts: 1)
+
+== tests/fm-wake-queue.test.sh (new + adjacent annotation/lock tests) ==
+PASS  test_malformed_presentation_lock_reports_acquire_failure       (attempts: 1)
+PASS  test_annotation_cursor_failure_is_reported_on_stdout           (attempts: 1)
+PASS  test_annotation_span_read_failure_is_reported_and_retried      (attempts: 1)
+PASS  test_unattributed_annotation_failure_holds_every_cursor        (attempts: 1)
+PASS  test_annotation_failure_holds_sibling_cursors_too              (attempts: 1)
+PASS  test_snapshot_failure_reports_the_uncomputed_annotations       (attempts: 1)
+PASS  test_historical_annotation_skips_announced_status              (attempts: 1)
+PASS  test_structural_signal_enrichment_preserves_raw_rows           (attempts: 1)
+PASS  test_enrichment_preserves_all_unread_lines_and_status_file_failures (attempts: 1)
+PASS  test_slow_annotation_does_not_block_append_and_deleted_file_fails_open (attempts: 1)
+PASS  test_self_held_lock_reclaims_instead_of_deadlocking            (attempts: 1)
+PASS  test_subshell_lock_ownership_without_bashpid                   (attempts: 1)
+PASS  test_bounded_lock_handoff_after_contention                     (attempts: 1)
+PASS  test_live_presentation_holder_is_deadlined_without_weakening_ack (attempts: 1)
+
+== neighbouring suites over the same presentation machinery (whole file) ==
+PASS tests/fm-wake-drain-unread-status.test.sh        (13 tests)
+PASS tests/fm-wake-drain-outcome-backstop.test.sh     (18 tests)
+PASS tests/fm-wake-drain-open-decisions-cursor.test.sh (7 tests)
+PASS tests/fm-classify-decision-key.test.sh           (25 tests)
+PASS tests/fm-classify-corr-token.test.sh             (12 tests)
+
+== the same new tests run against the BASE commit (regression proof) ==
+Each fails at d32fe93 with its own intended assertion, and passes at 8618dcd:
+
+test_trusted_nonempty_fold_cursor_read_failure_is_not_authoritative
+  -> OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+test_receipt_failure_does_not_relabel_printed_sections_incomplete
+  -> STATUS PRESENTATION INCOMPLETE: unread status, outcome backstop, OPEN DECISIONS, and record divergence could not be fully computed this drain (a status log or cursor read/write failed); do not read this drain's silence as nothing open or unread - retry on the next drain.
+test_malformed_presentation_lock_reports_acquire_failure
+  -> not ok - malformed presentation lock did not report its acquire failure on stdout
+test_annotation_cursor_failure_is_reported_on_stdout
+  -> not ok - the annotation cursor failure owed exactly one notice, got 0: 1790538074	1	signal	task.status	signal: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-wake-tests.1RnSpE/annotation-cursor-failure/state/task.status
+test_annotation_span_read_failure_is_reported_and_retried
+  -> not ok - the failed annotation span read remained silent on stdout: 1790538081	1	signal	task.status	signal: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-wake-tests.0BLoru/annotation-span-read-failure/state/task.status
+test_unattributed_annotation_failure_holds_every_cursor
+  -> not ok - the unattributed annotation failure remained silent on stdout: 1790538085	1	signal	task.status	signal: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-wake-tests.jEzOuL/unattributed-annotation-failure/state/task.status
+test_annotation_failure_holds_sibling_cursors_too
+  -> not ok - the sibling cursor failure owed exactly one notice, got 0: 1790538126	1	signal	alpha.status	signal: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-wake-tests.eyx6I4/annotation-sibling-hold/state/alpha.status
+test_snapshot_failure_reports_the_uncomputed_annotations
+  -> (no stable result in 4 attempts)
+test_snapshot_failure_reports_the_uncomputed_annotations
+  -> not ok - the snapshot failure said nothing about the annotations it skipped

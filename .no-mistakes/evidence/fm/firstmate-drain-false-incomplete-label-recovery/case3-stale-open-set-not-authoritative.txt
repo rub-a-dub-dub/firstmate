@@ -1,0 +1,18 @@
+Intent case 3: a stale non-empty open-decision set must not print as authoritative
+----------------------------------------------------------------------------------
+
+The fold cursor is parked before a span that resolves [key=old-choice] and opens [key=new-choice], and that span read fails. Before: the stale set prints as OPEN DECISIONS - the resolved decision shows as open and the new one stays hidden. After: no decision is claimed and the drain says what it could not compute.
+
+Same fixture, same injected failure, two builds of bin/fm-wake-drain.sh.
+
+========== BEFORE  (base d32fe93) ==========
+$ bin/fm-wake-drain.sh   # fold span read fails while the persisted open set is NON-empty and stale
+#   (log now says: resolved [key=old-choice] + needs-decision [key=new-choice])
+OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+firstmate-reconcile-fork-with-upstream [key=old-choice] needs-decision: choose the old route
+OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+
+========== AFTER   (HEAD 8618dcd) ==========
+$ bin/fm-wake-drain.sh   # fold span read fails while the persisted open set is NON-empty and stale
+#   (log now says: resolved [key=old-choice] + needs-decision [key=new-choice])
+STATUS PRESENTATION INCOMPLETE: unread status, outcome backstop, OPEN DECISIONS, and record divergence could not be fully computed this drain (a status log, cursor, or prepared-output write could not be completed); do not read this drain's silence as nothing open or unread - retry on the next drain.

@@ -1,0 +1,20 @@
+Intent case 1: a receipt-only failure must not mislabel a complete presentation as incomplete
+---------------------------------------------------------------------------------------------
+
+print_status_sections printed every computed section; only the trailing status_commit_presentation_snapshot receipt write failed.
+
+Same fixture, same injected failure, two builds of bin/fm-wake-drain.sh.
+
+========== BEFORE  (base d32fe93) ==========
+$ bin/fm-wake-drain.sh   # presentation receipt write fails (mv of .status-presentation-cursor)
+OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+task [key=route] needs-decision: choose the presentation route
+OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+STATUS PRESENTATION INCOMPLETE: unread status, outcome backstop, OPEN DECISIONS, and record divergence could not be fully computed this drain (a status log or cursor read/write failed); do not read this drain's silence as nothing open or unread - retry on the next drain.
+
+========== AFTER   (HEAD 8618dcd) ==========
+$ bin/fm-wake-drain.sh   # presentation receipt write fails (mv of .status-presentation-cursor)
+OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+task [key=route] needs-decision: choose the presentation route
+OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+STATUS PRESENTATION RECEIPT FAILED: the status sections above were fully computed and printed, but their presentation receipt could not be committed; they may repeat on the next drain.

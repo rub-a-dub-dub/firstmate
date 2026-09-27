@@ -1,0 +1,24 @@
+Host flake, NOT a product defect: /usr/bin/stat SIGSEGVs under load on this machine
+=====================================================================================
+
+Darwin 27.0.0, load average ~14-25 (43 concurrent agent processes during this run).
+
+Reproducer (no firstmate code involved) - stat prints the CORRECT value and then
+exits 139 (128+SIGSEGV) in roughly 5-7% of forks:
+
+$ for i in $(seq 1 300); do bash -c 's=$(LC_ALL=C /usr/bin/stat -f "%z" /tmp/probe2.status 2>/dev/null); echo $?'; done | sort | uniq -c
+ 284 0
+  16 139
+
+Every firstmate read that feeds the presentation snapshot goes through that call
+(_fm_status_file_size / _fm_open_decisions_file_ident in bin/fm-classify-lib.sh), so a
+segfaulting stat makes status_presentation_snapshot fail and the drain correctly print
+'STATUS PRESENTATION INCOMPLETE: status snapshot could not be read' - the new contract
+reporting a real (host-induced) read failure. Measured directly:
+
+  status_presentation_snapshot over 4 static status files: 8 failures / 120 calls
+
+The same flake fails the same suites at the BASE commit d32fe93 (4 runs of
+tests/fm-wake-drain-open-decisions.test.sh at base: 3 random failures, 1 clean), so it
+predates this change. It also breaks tests/lib.sh at source time, because
+FM_TEST_OWNER_IDENTITY comes from 'LC_ALL=C ps' in fm_pid_identity and dies the same way.

@@ -1,0 +1,22 @@
+Intent case 2: a non-124 presentation-lock failure must not leave stdout silent
+-------------------------------------------------------------------------------
+
+fm_lock_acquire_wait_bounded fails on a malformed lock. Before: stdout has nothing below the wake rows, only a stderr line. After: the captain reads the failure on stdout.
+
+Same fixture, same injected failure, two builds of bin/fm-wake-drain.sh.
+
+========== BEFORE  (base d32fe93) ==========
+$ bin/fm-wake-drain.sh   # presentation lock is malformed, acquire fails (not 124 timeout)
+--- stdout (what the captain reads) ---
+1790537744	1	signal	task.status	signal: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-evidence.9w5VVJ/c2-base-1/state/task.status
+--- stderr (diagnostics) ---
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 45841.1790537744.raKd1g
+wake drain: status presentation lock could not be acquired safely
+
+========== AFTER   (HEAD 8618dcd) ==========
+$ bin/fm-wake-drain.sh   # presentation lock is malformed, acquire fails (not 124 timeout)
+--- stdout (what the captain reads) ---
+1790537746	1	signal	task.status	signal: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-evidence.9w5VVJ/c2-head-1/state/task.status
+STATUS PRESENTATION INCOMPLETE: status presentation lock could not be acquired safely; no status annotations or fleet-wide status sections were computed this drain, nothing was marked as seen and no presentation cursor advanced, so every unread status line is still unread.
+--- stderr (diagnostics) ---
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 46553.1790537747.GRUKmL

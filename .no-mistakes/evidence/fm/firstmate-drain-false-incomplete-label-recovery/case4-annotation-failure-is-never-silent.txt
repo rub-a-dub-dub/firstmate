@@ -1,0 +1,29 @@
+Intent case 4: an annotation cursor failure must not silently drop a live row
+-----------------------------------------------------------------------------
+
+A live task annotation cursor read fails. Before: the annotation is dropped with no notice and the presentation cursor still advances, so the working: line is lost for good. After: one notice on stdout, no cursor advances, and the next drain replays the annotation.
+
+Same fixture, same injected failure, two builds of bin/fm-wake-drain.sh.
+
+========== BEFORE  (base d32fe93) ==========
+# (host stat SIGSEGV flake: 2 attempt(s) discarded)
+$ bin/fm-wake-drain.sh   # annotation presentation-cursor read fails for a live task
+1790537768	1	signal	task.status	signal: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-evidence.9w5VVJ/c4-base-3/state/task.status
+UNREAD STATUS (new since last drain, not re-printed after this presentation):
+task note: the captain is still owed this one
+
+$ bin/fm-wake-drain.sh   # the very next drain, no injected failure
+1790537768	1	signal	task.status	signal: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-evidence.9w5VVJ/c4-base-3/state/task.status
+
+========== AFTER   (HEAD 8618dcd) ==========
+# (host stat SIGSEGV flake: 1 attempt(s) discarded)
+$ bin/fm-wake-drain.sh   # annotation presentation-cursor read fails for a live task
+1790537775	1	signal	task.status	signal: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-evidence.9w5VVJ/c4-head-2/state/task.status
+STATUS PRESENTATION INCOMPLETE: a supplemental status annotation could not be computed; no status annotations or fleet-wide status sections were computed this drain, nothing was marked as seen and no presentation cursor advanced, so every unread status line is still unread.
+
+$ bin/fm-wake-drain.sh   # the very next drain, no injected failure
+1790537775	1	signal	task.status	signal: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-evidence.9w5VVJ/c4-head-2/state/task.status
+wake annotation: unread wake-EVENT since last drain, not current state: task.status: working: live row must not disappear silently
+wake annotation: latest wake-EVENT observed at drain, not current state: task.status: note: the captain is still owed this one
+UNREAD STATUS (new since last drain, not re-printed after this presentation):
+task note: the captain is still owed this one
