@@ -2244,8 +2244,6 @@ EOF
 
 FM_WAKE_EVENT_LINE=
 FM_WAKE_UNREAD_LINES=
-# shellcheck disable=SC2034 # Output global consumed by sourcing drain scripts.
-FM_WAKE_ANNOTATION_HELD=
 fm_wake_status_cursor_offset() {  # <validated-status-path> -> already-presented byte offset
   local path=$1 offset
   command -v status_presentation_cursor_offset >/dev/null 2>&1 || return 1
@@ -2309,12 +2307,14 @@ fm_wake_latest_event() {  # <validated-status-path> <tail-byte-cap>
 }
 
 # Print supplemental drain-time context only after the caller has committed the
-# raw queue consumption and released the append lock.
+# raw queue consumption and released the append lock. Returns 1 when any part of
+# the pass could not be computed, whatever the cause: the caller's contract is
+# that such a drain presents nothing as seen at all.
 fm_wake_print_annotations() {  # <deduped-raw-rows> [<presentation-snapshot>]
   local rows=$1 snapshot=${2:-} manifest status_key mode path prefix line task endpoint
   local snapshot_task snapshot_endpoint _snapshot_ident offset last_event event_line events_rc
+  local incomplete=0
   local LC_ALL=C
-  FM_WAKE_ANNOTATION_HELD=
 
   manifest=$(fm_wake_annotation_manifest "$rows" | awk -F '\t' '
     {
@@ -2362,12 +2362,12 @@ fm_wake_print_annotations() {  # <deduped-raw-rows> [<presentation-snapshot>]
     # file is different and must be reported below.
     [ -f "$path" ] && [ -r "$path" ] && [ ! -L "$path" ] || continue
     # A live row whose presentation cursor cannot be read has not been
-    # annotated. Hold this task's cursor and report the failure so the drain can
-    # say that plainly on stdout and the next drain still has these bytes to
+    # annotated. Report the failure so the drain can say that plainly on stdout
+    # and mark nothing as seen, leaving these bytes for the next drain to
     # annotate; silently continuing makes the durable row look fully enriched
     # when it is not.
     offset=$(fm_wake_status_cursor_offset "$path") || {
-      FM_WAKE_ANNOTATION_HELD="$FM_WAKE_ANNOTATION_HELD${FM_WAKE_ANNOTATION_HELD:+$'\n'}${status_key%.status}"
+      incomplete=1
       continue
     }
     endpoint=
@@ -2388,8 +2388,9 @@ EOF
       # wake rows, so a file that disappears, rotates, or becomes unreadable
       # after the snapshot must not suppress annotations for other status files.
       # A span that could not be read (rc 2) is not a span with nothing in it:
-      # hold this task's cursor so the unread bytes survive to the next drain.
-      [ "$events_rc" -ne 2 ] || FM_WAKE_ANNOTATION_HELD="$FM_WAKE_ANNOTATION_HELD${FM_WAKE_ANNOTATION_HELD:+$'\n'}${status_key%.status}"
+      # report it so the drain marks nothing as seen and the unread bytes
+      # survive to the next drain.
+      [ "$events_rc" -ne 2 ] || incomplete=1
       continue
     fi
     last_event=$FM_WAKE_EVENT_LINE
@@ -2412,6 +2413,6 @@ EOF
 $manifest
 EOF
 
-  [ -z "$FM_WAKE_ANNOTATION_HELD" ] || return 1
+  [ "$incomplete" -eq 0 ] || return 1
   return 0
 }

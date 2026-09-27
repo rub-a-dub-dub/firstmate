@@ -399,12 +399,11 @@ EOF
 # cursor-backed unread span as the annotation path, and runs on every drain -
 # including the empty-queue fast path - so a buried answer cannot be swallowed
 # when the fold later advances the cursor. Prints nothing when nothing is
-# unread, which is the common case. A held task's presentation cursor does not
-# move this drain, so its unread lines come back on the next one: the header's
-# "not re-printed" promise only holds while held tasks are left out of this
-# section.
-print_unread_status_section() {  # <task-and-endpoint-snapshot> [<held-task-ids>]
-  local snapshot=$1 held=${2:-} unread task line shown=0
+# unread, which is the common case. The header's "not re-printed" promise holds
+# because this section runs only on a drain that goes on to commit its
+# presentation receipt: any earlier failure skips the sections outright.
+print_unread_status_section() {  # <task-and-endpoint-snapshot>
+  local snapshot=$1 unread task line shown=0
 
   unread=$(scan_unread_surface_snapshot "$STATE" "$snapshot") || return 1
   [ -n "$unread" ] || return 0
@@ -412,9 +411,6 @@ print_unread_status_section() {  # <task-and-endpoint-snapshot> [<held-task-ids>
   while IFS=$(printf '\t') read -r task line; do
     [ -n "$task" ] || continue
     [ -n "$line" ] || continue
-    case "
-$held
-" in *$'\n'"$task"$'\n'*) continue ;; esac
     line="$task $line"
     if [ "$shown" -eq 0 ]; then
       printf 'UNREAD STATUS (new since last drain, not re-printed after this presentation):\n' || return 1
@@ -563,30 +559,20 @@ print_status_receipt_failure_notice() {
   printf 'STATUS PRESENTATION RECEIPT FAILED: the status sections above were fully computed and printed, but their presentation receipt could not be committed; they may repeat on the next drain.\n'
 }
 
-# What this drain could not compute, and where the reader can go instead. The
-# held set is this drain's own, so the notice states no promise about later
-# drains: the wake row it belonged to can be acknowledged before any next drain
-# runs, and the durable status log is the one place that outlives both.
-print_annotation_incomplete_notice() {  # [<held-task-ids>]
-  local held=${1:-} task names=''
-  while IFS= read -r task; do
-    [ -n "$task" ] || continue
-    names="$names${names:+ }$STATE/$task.status"
-  done <<EOF
-$held
-EOF
-  if [ -n "$names" ]; then
-    fm_cap_line_var "$names" 400
-    printf 'STATUS ANNOTATION INCOMPLETE: this drain could not compute the supplemental status annotation for these tasks; the durable wake rows above remain authoritative and each status log is readable at its path: %s\n' \
-      "$FM_LINE_CAP_LINE"
-    return
-  fi
-  printf 'STATUS ANNOTATION INCOMPLETE: this drain could not compute one or more supplemental status annotations and could not name which; the durable wake rows above remain authoritative and every task'"'"'s status log is readable at %s/<task>.status.\n' "$STATE"
+# One notice for every failure that leaves this drain with no presentation to
+# make at all - the lock, the fleet snapshot, or the annotation pass, whether or
+# not the failure can name a task. Such a drain acknowledges nothing and commits
+# nothing, so "nothing was marked as seen" needs no per-task bookkeeping to be
+# true: every presentation cursor is still where the previous drain left it.
+print_status_presentation_incomplete_notice() {  # <reason>
+  local reason=$1
+  printf 'STATUS PRESENTATION INCOMPLETE: %s; no status annotations or fleet-wide status sections were computed this drain, nothing was marked as seen and no presentation cursor advanced, so every unread status line is still unread.\n' \
+    "$reason"
 }
 
-print_status_sections() {  # <task-and-endpoint-snapshot> [<fully-presented-task-ids>] [<held-task-ids>]
-  local snapshot=$1 fully_presented=${2:-} held=${3:-} acknowledged prepared
-  acknowledged=$(status_acknowledge_presented_snapshot "$STATE" "$snapshot" "$fully_presented" "$held") || {
+print_status_sections() {  # <task-and-endpoint-snapshot> [<fully-presented-task-ids>]
+  local snapshot=$1 fully_presented=${2:-} acknowledged prepared
+  acknowledged=$(status_acknowledge_presented_snapshot "$STATE" "$snapshot" "$fully_presented") || {
     print_status_sections_incomplete_notice 'a status log or presentation cursor could not be read'
     return 1
   }
@@ -595,7 +581,7 @@ print_status_sections() {  # <task-and-endpoint-snapshot> [<fully-presented-task
     return 1
   }
   if ! {
-    print_unread_status_section "$snapshot" "$held" \
+    print_unread_status_section "$snapshot" \
       && print_status_outcome_backstop_section "$snapshot" \
       && print_open_decisions_section "$snapshot" \
       && print_record_divergence_section
@@ -621,8 +607,8 @@ print_status_sections() {  # <task-and-endpoint-snapshot> [<fully-presented-task
 }
 
 print_status_presentation() {  # [<deduped-raw-rows>]
-  local rows=${1:-} lock="$STATE/.status-presentation-lock" snapshot annotation_manifest fully_presented='' rc=0
-  local lock_rc holder_pid annotation_held='' annotation_rc=0
+  local rows=${1:-} lock="$STATE/.status-presentation-lock" snapshot='' annotation_manifest fully_presented='' rc=0
+  local lock_rc holder_pid incomplete_reason=''
   if fm_lock_acquire_wait_bounded "$lock" "$PRESENTATION_LOCK_TIMEOUT"; then
     :
   else
@@ -632,7 +618,7 @@ print_status_presentation() {  # [<deduped-raw-rows>]
       printf 'STATUS PRESENTATION SKIPPED: lock remains held by live pid %s after %ss; retry on the next drain.\n' \
         "$holder_pid" "$PRESENTATION_LOCK_TIMEOUT"
     else
-      printf 'STATUS PRESENTATION INCOMPLETE: status presentation lock could not be acquired safely; no status annotations or fleet-wide status sections were computed this drain - retry on the next drain.\n'
+      print_status_presentation_incomplete_notice 'status presentation lock could not be acquired safely'
     fi
     return 1
   fi
@@ -640,38 +626,30 @@ print_status_presentation() {  # [<deduped-raw-rows>]
   # in the captured value. Acknowledging and committing that truncated fleet view
   # would rewrite the shared presentation-cursor manifest without the tasks the
   # read never reached, resetting their unread and outcome-backstop cursors for
-  # good, so the partial capture is discarded here: the empty snapshot is what
-  # keeps the acknowledge and commit passes below from running on a partial fleet
-  # view, and rc=1 keeps the annotation pass off the same capture.
+  # good, so the partial capture is discarded here and nothing below runs on it.
   snapshot=$(status_presentation_snapshot "$STATE") || {
-    printf 'STATUS PRESENTATION INCOMPLETE: status snapshot could not be read.\n'
     snapshot=
+    incomplete_reason='status snapshot could not be read'
     rc=1
   }
   if [ "$rc" -eq 0 ] && [ -n "$rows" ]; then
-    fm_wake_print_annotations "$rows" "$snapshot" || annotation_rc=$?
-    if [ "$annotation_rc" -ne 0 ]; then
-      annotation_held=$FM_WAKE_ANNOTATION_HELD
-      print_annotation_incomplete_notice "$annotation_held"
-      rc=1
-    fi
-    # Only a pass that completed can say which spans it presented in full. On
-    # any failure no task is reported fully presented and every cursor falls
-    # back to the fleet-wide unread-surface rule, with the held tasks frozen
-    # outright; the cost is a replayed annotation, never a dropped span.
-    if [ "$annotation_rc" -eq 0 ]; then
+    if fm_wake_print_annotations "$rows" "$snapshot"; then
       annotation_manifest=$(fm_wake_annotation_manifest "$rows")
       fully_presented=$(printf '%s\n' "$annotation_manifest" | awk -F '\t' '$2 == "direct" { sub(/\.status$/, "", $1); print $1 }')
+    else
+      incomplete_reason='a supplemental status annotation could not be computed'
+      rc=1
     fi
   fi
-  # Annotation failure does not make the independent fleet-wide sections unsafe,
-  # so they still run and either present completely or print their own precise
-  # failure notice. Every task the annotation pass could not compute is held, so
-  # its presentation cursor does not advance and its unread lines are left out of
-  # the one-shot unread section rather than printed under a promise this drain
-  # cannot keep.
-  if [ -n "$snapshot" ]; then
-    print_status_sections "$snapshot" "$fully_presented" "$annotation_held" || rc=1
+  # One rule for the snapshot and the annotation pass alike, whether or not the
+  # failure can name a task: a drain that could not compute either presents
+  # nothing as seen. It says so once and skips the acknowledge and commit passes
+  # entirely, so no task's presentation cursor moves and the next drain still
+  # owes every unread line.
+  if [ -n "$incomplete_reason" ]; then
+    print_status_presentation_incomplete_notice "$incomplete_reason"
+  elif [ -n "$snapshot" ]; then
+    print_status_sections "$snapshot" "$fully_presented" || rc=1
   fi
   fm_lock_release "$lock"
   return "$rc"

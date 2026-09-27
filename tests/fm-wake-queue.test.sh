@@ -1864,15 +1864,13 @@ test_malformed_presentation_lock_reports_acquire_failure() {
 # The annotation pass and fleet-wide sections share the presentation cursor,
 # but the former used to treat a cursor-read failure as "skip this live row".
 # Fail exactly the annotation's first cursor read, then let every later read
-# recover, proving the row cannot disappear without a stdout notice and that the
-# retry is real: a `working:` line has no surface other than this annotation, so
-# the drain that could not print it must not acknowledge it. The held task's own
-# unread lines also stay out of the one-shot UNREAD STATUS section - its cursor
-# does not move, so that section's "not re-printed" header would be false for
-# them - while an unheld task's unread line still reaches it, proving the
-# annotation failure does not suppress the independent fleet-wide sections.
+# recover. One rule governs what the drain owes: it says ONCE that it computed
+# nothing and marked nothing as seen, and no presentation cursor moves - not the
+# failing task's, and not an untouched bystander's - so every unread line,
+# including the `working:` line whose only surface is that annotation, is still
+# owed on the next drain.
 test_annotation_cursor_failure_is_reported_on_stdout() {
-  local dir state out err fakebin real_cat manifest status bystander
+  local dir state out err fakebin real_cat manifest status bystander notices
   dir=$(make_case annotation-cursor-failure)
   state="$dir/state"
   out="$dir/drain.out"
@@ -1884,14 +1882,14 @@ test_annotation_cursor_failure_is_reported_on_stdout() {
   real_cat=$(command -v cat)
 
   printf 'note: prime the presentation cursor\n' > "$status"
-  printf 'note: prime the unheld cursor\n' > "$bystander"
+  printf 'note: prime the bystander cursor\n' > "$bystander"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
     || fail "could not prime the annotation cursor fixture"
   [ -s "$manifest" ] || fail "the annotation cursor fixture wrote no presentation manifest"
 
   printf 'working: live row must not disappear silently\n' >> "$status"
-  printf 'note: the captain reads this one through the fleet-wide section\n' >> "$status"
-  printf 'note: an unheld task still reaches the fleet-wide section\n' >> "$bystander"
+  printf 'note: the captain is still owed this one\n' >> "$status"
+  printf 'note: an untouched task keeps its unread line too\n' >> "$bystander"
   append_wake "$state" signal task.status "signal: $status" \
     || fail "could not seed the annotation cursor wake"
   cat > "$fakebin/cat" <<'SH'
@@ -1916,26 +1914,25 @@ SH
   if grep -F 'wake annotation:' "$out" >/dev/null; then
     fail "the failed annotation cursor read still printed an authoritative annotation"
   fi
-  grep -F 'STATUS ANNOTATION INCOMPLETE:' "$out" | grep -F "$status" >/dev/null \
-    || fail "the annotation cursor failure did not name the held status log on stdout: $(command cat "$out")"
-
-  grep -F 'note: an unheld task still reaches the fleet-wide section' "$out" >/dev/null \
-    || fail "the annotation failure suppressed the independent fleet-wide sections: $(command cat "$out")"
-  if grep -F 'note: the captain reads this one through the fleet-wide section' "$out" >/dev/null; then
-    fail "a held task's unread line printed under the one-shot unread header: $(command cat "$out")"
+  notices=$(grep -c 'STATUS PRESENTATION INCOMPLETE' "$out")
+  [ "$notices" -eq 1 ] \
+    || fail "the annotation cursor failure owed exactly one notice, got $notices: $(command cat "$out")"
+  grep -F 'nothing was marked as seen and no presentation cursor advanced' "$out" >/dev/null \
+    || fail "the annotation cursor failure did not state that nothing was marked as seen: $(command cat "$out")"
+  if grep -F 'UNREAD STATUS' "$out" >/dev/null; then
+    fail "a drain that marked nothing as seen still printed the one-shot unread section: $(command cat "$out")"
   fi
 
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" \
     || fail "the drain after the injected annotation cursor failure cleared failed"
   grep -F 'wake annotation:' "$out" | grep -F 'working: live row must not disappear silently' >/dev/null \
     || fail "the unannotated line was acknowledged instead of retried: $(command cat "$out")"
-  grep -F 'note: the captain reads this one through the fleet-wide section' "$out" >/dev/null \
-    || fail "the held task's withheld unread line never came back: $(command cat "$out")"
-  if grep -F 'note: an unheld task still reaches the fleet-wide section' "$out" >/dev/null; then
-    fail "the unheld task's already-presented unread line was re-printed: $(command cat "$out")"
-  fi
+  grep -F 'note: the captain is still owed this one' "$out" >/dev/null \
+    || fail "the failing task's unread line never came back: $(command cat "$out")"
+  grep -F 'note: an untouched task keeps its unread line too' "$out" >/dev/null \
+    || fail "an untouched task's cursor advanced on a drain that computed nothing: $(command cat "$out")"
 
-  pass "a live row's annotation cursor failure is explicit on stdout and retried"
+  pass "a live row's annotation cursor failure is explicit on stdout and moves no cursor"
 }
 
 # A span read that FAILS and a span with nothing unread in it used to be the same
@@ -1981,24 +1978,28 @@ SH
   if grep -F 'wake annotation:' "$out" >/dev/null; then
     fail "the failed span read still printed an authoritative annotation"
   fi
-  if grep -F 'STATUS PRESENTATION INCOMPLETE' "$out" >/dev/null; then
+  if grep -F 'STATUS PRESENTATION INCOMPLETE: unread status, outcome backstop, OPEN DECISIONS' "$out" >/dev/null; then
     fail "the injected read failure reached the fleet-wide sections instead of the annotation span"
   fi
-  grep -F 'STATUS ANNOTATION INCOMPLETE:' "$out" >/dev/null \
+  grep -F 'STATUS PRESENTATION INCOMPLETE: a supplemental status annotation could not be computed' "$out" >/dev/null \
     || fail "the failed annotation span read remained silent on stdout: $(command cat "$out")"
 
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" \
     || fail "the drain after the injected annotation span failure cleared failed"
   grep -F 'wake annotation:' "$out" | grep -F 'working: span read must not vanish silently' >/dev/null \
     || fail "the span nobody read was acknowledged instead of retried: $(command cat "$out")"
+  grep -F 'note: an unread surface the fleet-wide section acknowledges' "$out" >/dev/null \
+    || fail "the unread surface beside the failed span was marked as seen anyway: $(command cat "$out")"
 
   pass "a failed annotation span read is reported and its unread bytes stay unread"
 }
 
-# An annotation failure that names no held task still reported every direct row
-# as fully presented, so the acknowledge pass advanced those cursors past bytes
-# the annotation never printed. Fail the annotation pass's own manifest build -
-# the one failure path that can name nothing - and prove the span survives.
+# An annotation failure that names no task still let the acknowledge pass advance
+# cursors past bytes the annotation never printed. Fail the annotation pass's own
+# manifest build - the one failure path that can name nothing - over a MIXED
+# span: the trailing `note:` is an unread surface, so the fleet rule alone would
+# acknowledge the whole span and drop the `working:` line whose only surface is
+# the annotation that never ran.
 test_unattributed_annotation_failure_holds_every_cursor() {
   local dir state out err fakebin real_awk status
   dir=$(make_case unattributed-annotation-failure)
@@ -2016,6 +2017,7 @@ test_unattributed_annotation_failure_holds_every_cursor() {
   # A `working:` line has no fleet-wide surface: the annotation is its only
   # presentation, so acknowledging it after an uncomputed annotation loses it.
   printf 'working: only the annotation can carry this one\n' >> "$status"
+  printf 'note: an unread surface follows it in the same span\n' >> "$status"
   append_wake "$state" signal task.status "signal: $status" \
     || fail "could not seed the unattributed annotation wake"
   cat > "$fakebin/awk" <<'SH'
@@ -2041,7 +2043,7 @@ SH
     || fail "drain failed after the injected annotation manifest failure"
   [ -e "$dir/awk-failure-used" ] \
     || fail "the injected annotation manifest failure never fired"
-  grep -F 'STATUS ANNOTATION INCOMPLETE:' "$out" >/dev/null \
+  grep -F 'STATUS PRESENTATION INCOMPLETE: a supplemental status annotation could not be computed' "$out" >/dev/null \
     || fail "the unattributed annotation failure remained silent on stdout: $(command cat "$out")"
   if grep -F 'wake annotation:' "$out" >/dev/null; then
     fail "the uncomputed annotation manifest still printed an annotation"
@@ -2051,17 +2053,20 @@ SH
     || fail "the drain after the injected annotation manifest failure cleared failed"
   grep -F 'wake annotation:' "$out" | grep -F 'working: only the annotation can carry this one' >/dev/null \
     || fail "an annotation failure that named no task acknowledged the span anyway: $(command cat "$out")"
+  grep -F 'note: an unread surface follows it in the same span' "$out" >/dev/null \
+    || fail "the unread surface in the same span was marked as seen by a drain that computed nothing: $(command cat "$out")"
 
   pass "an annotation failure that names no task holds every presentation cursor"
 }
 
-# A named hold used to still let the drain claim every direct row was fully
-# presented, so a sibling task's cursor advanced on the strength of a pass that
-# had already failed. Fail one task's annotation cursor read with two direct rows
-# queued and prove BOTH `working:` spans - the held one and its sibling's, whose
-# only surface is that annotation - survive to the next drain.
+# A per-task hold used to still let the drain claim every other direct row was
+# fully presented, so a sibling task's cursor advanced on the strength of a pass
+# that had already failed. Fail one task's annotation cursor read with two direct
+# rows queued and prove the drain names no task at all and BOTH `working:` spans -
+# the failing one and its sibling's, whose only surface is that annotation -
+# survive to the next drain.
 test_annotation_failure_holds_sibling_cursors_too() {
-  local dir state out err fakebin real_cat manifest first second held
+  local dir state out err fakebin real_cat manifest first second notices
   dir=$(make_case annotation-sibling-hold)
   state="$dir/state"
   out="$dir/drain.out"
@@ -2105,16 +2110,12 @@ SH
     || fail "drain failed after the injected sibling cursor failure"
   [ -e "$dir/cursor-failure-used" ] \
     || fail "the injected sibling cursor failure never fired"
-  held=$(grep -F 'STATUS ANNOTATION INCOMPLETE:' "$out") \
-    || fail "the sibling cursor failure remained silent on stdout: $(command cat "$out")"
-  # Exactly one task is held; the other's annotation printed in full, and that is
-  # precisely the one whose cursor must not be advanced on a failed pass.
-  case "$held" in
-    *"$first"*"$second"*|*"$second"*"$first"*)
-      fail "the injected failure held both tasks instead of one: $held" ;;
-    *"$first"*|*"$second"*) ;;
-    *) fail "the annotation notice named no held status log: $held" ;;
-  esac
+  notices=$(grep -c 'STATUS PRESENTATION INCOMPLETE' "$out")
+  [ "$notices" -eq 1 ] \
+    || fail "the sibling cursor failure owed exactly one notice, got $notices: $(command cat "$out")"
+  if grep 'STATUS PRESENTATION INCOMPLETE' "$out" | grep -F "$state/" >/dev/null; then
+    fail "the one notice named a per-task status log instead of staying generic: $(command cat "$out")"
+  fi
 
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" \
     || fail "the drain after the injected sibling cursor failure cleared failed"
@@ -2124,6 +2125,59 @@ SH
     || fail "bravo's unannotated span was acknowledged instead of retried: $(command cat "$out")"
 
   pass "an annotation failure holds the sibling cursors it never proved it presented"
+}
+
+# The fleet snapshot is the first step of the same pass. Its failure used to
+# print a notice about the sections alone and skip the annotation pass in
+# silence, so a live row's unread `working:` line - whose only surface is that
+# annotation - read as nothing unread. Fail the snapshot's identity read with a
+# direct row queued: the same one notice is owed, and nothing may be marked as
+# seen.
+test_snapshot_failure_reports_the_uncomputed_annotations() {
+  local dir state out err ident status notices
+  dir=$(make_case snapshot-failure-annotations)
+  state="$dir/state"
+  out="$dir/drain.out"
+  err="$dir/drain.err"
+  ident="$dir/ident-reader"
+  status="$state/task.status"
+
+  cat > "$ident" <<IDENT
+#!/usr/bin/env bash
+[ ! -f "$dir/fail-ident" ] || exit 1
+printf 'test-ident:%s' "\$(basename "\${1:-}")"
+IDENT
+  chmod +x "$ident"
+
+  printf 'note: prime the presentation cursor\n' > "$status"
+  FM_STATE_OVERRIDE="$state" FM_STATUS_IDENTITY_READER="$ident" "$DRAIN" > "$out" \
+    || fail "could not prime the snapshot-failure fixture"
+
+  printf 'working: only the annotation can carry this one\n' >> "$status"
+  append_wake "$state" signal task.status "signal: $status" \
+    || fail "could not seed the snapshot-failure wake"
+
+  : > "$dir/fail-ident"
+  FM_STATE_OVERRIDE="$state" FM_STATUS_IDENTITY_READER="$ident" "$DRAIN" > "$out" 2> "$err" \
+    || fail "drain failed instead of reporting an unreadable snapshot"
+  grep "$(printf '\tsignal\t')" "$out" >/dev/null \
+    || fail "the snapshot failure dropped the durable wake row"
+  notices=$(grep -c 'STATUS PRESENTATION INCOMPLETE' "$out")
+  [ "$notices" -eq 1 ] \
+    || fail "the snapshot failure owed exactly one notice, got $notices: $(command cat "$out")"
+  if grep -F 'wake annotation:' "$out" >/dev/null; then
+    fail "an unreadable snapshot still printed an authoritative annotation: $(command cat "$out")"
+  fi
+  grep -F 'nothing was marked as seen and no presentation cursor advanced' "$out" >/dev/null \
+    || fail "the snapshot failure said nothing about the annotations it skipped: $(command cat "$out")"
+
+  rm -f "$dir/fail-ident"
+  FM_STATE_OVERRIDE="$state" FM_STATUS_IDENTITY_READER="$ident" "$DRAIN" > "$out" 2> "$err" \
+    || fail "the drain after the snapshot failure cleared failed"
+  grep -F 'wake annotation:' "$out" | grep -F 'working: only the annotation can carry this one' >/dev/null \
+    || fail "the span the snapshot failure never annotated was acknowledged anyway: $(command cat "$out")"
+
+  pass "an unreadable fleet snapshot reports its uncomputed annotations and moves no cursor"
 }
 
 # Drain-time historical annotation staleness: a turn-ended-only wake row must
@@ -2184,6 +2238,7 @@ test_annotation_cursor_failure_is_reported_on_stdout
 test_annotation_span_read_failure_is_reported_and_retried
 test_unattributed_annotation_failure_holds_every_cursor
 test_annotation_failure_holds_sibling_cursors_too
+test_snapshot_failure_reports_the_uncomputed_annotations
 test_secondmate_foreign_queue_stall_tracks_progress_and_alerts_once
 test_secondmate_declared_pause_rows_do_not_feed_stall_escalation
 test_secondmate_reprovisioned_queue_starts_a_fresh_interval

@@ -306,8 +306,10 @@ IDENT
   : > "$dir/fail-ident"
   FM_STATE_OVERRIDE="$state" FM_STATUS_IDENTITY_READER="$ident" "$DRAIN" > "$out" \
     || fail "wake drain failed instead of reporting an unreadable snapshot"
-  grep -F 'STATUS PRESENTATION INCOMPLETE: status snapshot could not be read.' "$out" >/dev/null \
+  grep -F 'STATUS PRESENTATION INCOMPLETE: status snapshot could not be read' "$out" >/dev/null \
     || fail "a failed snapshot read went unreported: $(command cat "$out")"
+  grep -F 'nothing was marked as seen and no presentation cursor advanced' "$out" >/dev/null \
+    || fail "a failed snapshot read did not state that nothing was marked as seen: $(command cat "$out")"
 
   rm -f "$dir/fail-ident"
   FM_STATE_OVERRIDE="$state" FM_STATUS_IDENTITY_READER="$ident" "$DRAIN" > "$out" \
