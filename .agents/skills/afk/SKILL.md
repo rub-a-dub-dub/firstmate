@@ -65,9 +65,10 @@ No `/back` is needed. The first genuine message is the return signal:
 - A message **without** the current operational prefix or a legacy bare marker, and **not** starting with `/afk` -> the captain is back.
   Run `bin/fm-afk-return.sh` before acting on the message that brought the captain back.
   That script owns the correct-ordered daemon shutdown where a daemon ran, the archive of the posture record, durable wake presentation and post-handling acknowledgement, escalation and wedge evidence, the return brief, and the return-catch-up gate.
-  Relay the return brief in section 9 language and in its own order: supervisor health across the away window first (any gap leads), then the captain's instructions verbatim with the away session's account of every action it took under them, then what is waiting on the captain, then what was tried and failed or could not be fixed, then what was handled, then cost.
-  The gate keeps every open `blocked:` event until that blocker's own resolution is proven: remediate each immediately through the normal lifecycle, or explicitly reclassify it with a durable reason and close its decision key with `resolved [key=...]`, then run `bin/fm-afk-return.sh check`.
-  Captain-verdict outcomes are listed under "waiting on you", but do not exempt open blockers: per-blocker provenance is deferred with no owner, and the gate fails safe by keeping every open blocker.
+  Relay the return brief in section 9 language and in its own order: supervisor health across the away window first (any gap leads), then every clause and that it was recorded only, then what is waiting on the captain, then what was tried and failed or could not be fixed, then what was handled, then cost.
+  The gate keeps every `blocked:` event the shared decision fold still reads as open: remediate each immediately through the normal lifecycle, or explicitly reclassify it with a durable reason and close its decision key with `resolved [key=...]`, then run `bin/fm-afk-return.sh check`.
+  An UNKEYED blocker is retired by that fold on the worker's own later plain unkeyed `done:` or paused line rather than by any proof it cleared (`bin/fm-classify-lib.sh` owns the key grammar), so an away-window blocker that must hold the return needs its own `[key=<slug>]`.
+  Captain-verdict outcomes are listed under "waiting on you", but do not exempt open blockers because per-blocker provenance is deferred to phase 4.
   Once the record is archived, resume full per-wake responsiveness through the emitted primary-harness supervision protocol while blocker handling proceeds, so the gate never creates a blind wait.
   A Bearings request may be answered while the gate is open, and the digest surfaces the catch-up state as a Charted Next `(return-catchup)` warning row naming what still holds it.
   Acting on the fleet - dispatching, steering, merging, or any other ordinary captain work - still waits until the check exits successfully.
@@ -85,6 +86,7 @@ A PR ready for merge keeps the merge authority from `AGENTS.md` section 7, and a
 While the away-posture record exists, any pull request green at its live head may merge under away authority; which one the captain's words meant is the away session's reading, and a merge the words do not call for holds for the return.
 Away authority never releases a captain hold, and it expires when the away record is archived.
 `--allow-red` remains attended-only and is refused while the record exists.
+`--waive-no-ci-evidence`, the attended escape for the no-CI-evidence merge refusal, is equally attended-only and is refused while the record exists.
 A merge under away authority must be synchronous; `fm-pr-merge.sh` refuses auto-merge and any GitHub queue state that cannot prove an immediate merge while the record exists.
 The same gates bind whichever actor performs the action: on Pi the parked main's standing authority relocates to the supervision branch, which meets exactly these rules, and the spend cap recorded at entry is enforced by `fm-spawn.sh` for both actors while the record exists.
 The captain's away words are their explicit instruction given before leaving, recorded verbatim and acted on by the away session's judgment at the moment an event makes them relevant; the words cover nothing they do not say, are never applied by analogy, and die at archive.

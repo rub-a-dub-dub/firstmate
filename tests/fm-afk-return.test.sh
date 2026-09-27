@@ -523,7 +523,6 @@ test_missing_epoch_record_stays_required_after_disappearing() {
   contract_in "$dir" propose --words 'captain words survive' >/dev/null || fail "could not propose the posture record"
   contract_in "$dir" confirm >/dev/null || fail "could not confirm the posture record"
   epoch=$(contract_in "$dir" field entered_epoch)
-  entered=$(contract_in "$dir" field entered)
   cp "$record" "$backup"
   grep -v '^entered_epoch: ' "$record" > "$dir/damaged-record"
   mv "$dir/damaged-record" "$record"
@@ -545,6 +544,7 @@ test_missing_epoch_record_stays_required_after_disappearing() {
   assert_contains "$out" "away-posture record missing: $record; catch-up stays gated" "check did not name the missing retained record"
   [ -f "$gate" ] || fail "the missing retained record did not preserve the gate"
   cp "$backup" "$record"
+  entered=$(contract_in "$dir" field entered)
   out=$(run_return "$dir" check) || fail "check did not clear after the retained record was restored valid: $out"
   assert_contains "$out" "=== Return brief (away $entered ->" "the restored record did not recover its away window"
   assert_contains "$out" $'  your words at entry:\n    captain words survive' "the restored words were omitted from the brief"

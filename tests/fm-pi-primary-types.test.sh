@@ -20,6 +20,35 @@ if [ ! -d "$PI_PACKAGE_DIR/node_modules/typebox" ] || \
   exit 1
 fi
 
+# fm-branch-supervision uses the ModelRuntime/provider-registry API added in
+# Pi 0.84.4. An older globally installed Pi cannot typecheck that contract;
+# it is an unavailable prerequisite, not evidence that the tracked extension
+# is ill-typed against the SDK generation it targets.
+pi_version_at_least() {  # <version> <minimum>
+  local version=$1 minimum=$2 parts major minor patch extra
+  local min_major min_minor min_patch min_extra
+  parts=$(printf '%s\n' "$version" | sed -nE 's/^([0-9]+)\.([0-9]+)\.([0-9]+)$/\1 \2 \3/p')
+  IFS=' ' read -r major minor patch extra <<EOF
+$parts
+EOF
+  [ -n "$major" ] && [ -n "$minor" ] && [ -n "$patch" ] && [ -z "$extra" ] || return 1
+  IFS='.' read -r min_major min_minor min_patch min_extra <<EOF
+$minimum
+EOF
+  [ -n "$min_major" ] && [ -n "$min_minor" ] && [ -n "$min_patch" ] && [ -z "$min_extra" ] || return 1
+  [ "$major" -gt "$min_major" ] && return 0
+  [ "$major" -eq "$min_major" ] || return 1
+  [ "$minor" -gt "$min_minor" ] && return 0
+  [ "$minor" -eq "$min_minor" ] || return 1
+  [ "$patch" -ge "$min_patch" ]
+}
+
+PI_VERSION=$(jq -r '.version // empty' "$PI_PACKAGE_DIR/package.json" 2>/dev/null || true)
+if ! pi_version_at_least "$PI_VERSION" 0.84.4; then
+  printf 'skip: installed Pi %s predates the ModelRuntime/provider-registry contract in Pi 0.84.4\n' "${PI_VERSION:-unknown}"
+  exit 0
+fi
+
 TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/fm-pi-primary-types.XXXXXX")
 cleanup() {
   rm -rf "$TMP_ROOT"
@@ -68,5 +97,4 @@ cat > "$TMP_ROOT/tsconfig.json" <<'JSON'
 JSON
 
 tsc -p "$TMP_ROOT/tsconfig.json" || exit 1
-version=$(jq -r '.version' "$PI_PACKAGE_DIR/package.json" 2>/dev/null || printf 'unknown')
-printf 'ok - tracked Pi extensions pass strict no-emit typecheck against Pi %s\n' "$version"
+printf 'ok - tracked Pi extensions pass strict no-emit typecheck against Pi %s\n' "$PI_VERSION"

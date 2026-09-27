@@ -426,6 +426,29 @@ status_event_recorded() {  # <status-file> <new-status-line>
 # worker self-closes only a blocker that cleared without an answer (bin/fm-brief.sh
 # rule 6), so closure never depends on a busy worker's discipline.
 #
+# The one exception is the shared "default" bucket itself (see the key grammar
+# below): an UNKEYED needs-decision/blocked names no specific captain decision to
+# answer, so the only key a captain reading OPEN DECISIONS can close it with is
+# that shared bucket itself (`--resolve-key default`, which the drain now
+# prints on the row) rather than one naming the decision - it used to fold as
+# open forever with no other route out, even long after the crew moved past it
+# (a `done:` or `paused:` line is exactly that crew moving on). A STATED key
+# stays governed by the rule above unconditionally: it names a real captain
+# decision, and only its own resolved/captain-held line ever closes it. Only
+# the unkeyed "default" bucket is retired by a later plain done/paused line on
+# the same task, and "plain" is read off that retiring line too: it must itself
+# be unkeyed, because a keyed done/paused line is a report about the decision
+# its OWN key names (the scripted `done [key=child-outcome-...]`,
+# `done [key=child-pr-<id>]` and `done [key=merged-<id>]` lines the
+# child-outcome, PR-readiness and merge publishers append straight into a
+# secondmate's parent channel are exactly that) and says nothing about the
+# separate unkeyed bucket. "Plain" also
+# excludes any line carrying a correlation token (bracketed "[corr=...]" or the
+# bare `corr=<16 hex>` word bin/fm-pending-reply-lib.sh writes), because that
+# token marks a secondmate's own protocol delivery report, not an ordinary
+# declared state, and that library still owns closing its own escalations
+# explicitly under this same bucket (fm_pending_reply_close_escalation).
+#
 # Decision key grammar (backward-compatible with the existing "<verb>: <note>"
 # format): an OPTIONAL "[key=<slug>]" token names the decision. Its documented
 # position sits between the verb and the colon, and a complete token at the
@@ -442,8 +465,9 @@ status_event_recorded() {  # <status-file> <new-status-line>
 # so a summary merely MENTIONING "[key=x]" cannot open or close that decision.
 # A line with no token in either position uses the key "default", preserving
 # the historical one-open-decision-per-task behavior (a bare "resolved:" closes
-# "default"). A stated key whose slug fails the charset below is rejected (the
-# folds skip the line), never rewritten to "default".
+# "default", and so now does a later plain done/paused line - see above).
+# A stated key whose slug fails the charset below is rejected (the folds skip
+# the line), never rewritten to "default".
 # The parsers are pure reads of a single line. Status metadata may contain any
 # number of "[name=value]" tags before the colon, in any order, so verb parsing
 # ends at the first tag rather than special-casing "[key=...]".
@@ -497,6 +521,34 @@ _fm_classify_is_corr_token() {  # <word>
       ;;
   esac
   return 1
+}
+
+# 0 when a status line carries a "corr=" token - bracketed ("[corr=...]") or
+# the bare word above - anywhere before its first colon. Used only by the
+# default-bucket retirement rule in _fm_decision_fold_line: a correlation
+# token marks a secondmate's own protocol delivery report
+# (bin/fm-pending-reply-lib.sh), never an ordinary crew state declaration, so
+# that line must not retire the shared "default" bucket out from under that
+# library's own explicit close. Deliberately a loose substring check on the
+# same segment status_line_verb already fast-paths on (its "*corr=*" guard
+# above) rather than a full token re-parse: this predicate only needs to know
+# a correlation marker is present, never its exact shape.
+_fm_classify_line_has_corr_token() {  # <status-line>
+  case "${1%%:*}" in
+    *corr=*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Does this line qualify to retire the shared "default" bucket? True only for a
+# PLAIN unkeyed line - one that resolves to the shared bucket and carries no
+# correlation token. The two readers of a status stream both need this verdict:
+# _fm_decision_fold_line (the OPEN DECISIONS display) and
+# _fm_status_open_decision_origins (the watcher's actionable-event map), which
+# must not disagree about which lines close a captain-facing row. Callers own
+# the verb set they apply it to, and their own open-set checks.
+_fm_decision_line_retires_default() {  # <decision-key> <status-line>
+  [ "$1" = default ] && ! _fm_classify_line_has_corr_token "$2"
 }
 
 # Printed, or assigned to <out-var> when one is given, so a per-line caller on a
@@ -711,7 +763,7 @@ _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb
     *:*) case "$verb:$kind" in done:ship|done:scout|failed:ship|failed:scout) return 0 ;; esac ;;
   esac
   case "$verb" in
-    needs-decision|blocked|"$resolve"|"$held") ;;
+    needs-decision|blocked|"$resolve"|"$held"|done|"${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}") ;;
     *) printf '%s' "$open"; return 0 ;;
   esac
   key=$(_fm_decision_key "$line") || { printf '%s' "$open"; return 0; }
@@ -727,6 +779,20 @@ _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb
     "$resolve"|"$held")
       open=$(_fm_decision_drop "$open" "$key")
       [ -n "$open" ] && open="${open}"$'\n'
+      ;;
+    done|"${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}")
+      # Retire only the shared "default" bucket (see the key-grammar comment
+      # above) and only for a PLAIN terminal/paused line - one with no
+      # correlation token - never a stated key, which stays governed by the
+      # resolve/held case above regardless of what else follows it.
+      if _fm_decision_line_retires_default "$key" "$line"; then
+        case "$open" in
+          default$'\t'*|*$'\n'default$'\t'*)
+            open=$(_fm_decision_drop "$open" default)
+            [ -n "$open" ] && open="${open}"$'\n'
+            ;;
+        esac
+      fi
       ;;
   esac
   printf '%s' "$open"
@@ -960,8 +1026,12 @@ EOF
 # (needs-decision or blocked) while the key is still open, the closing verb
 # (resolved, or the captain-held durable-transfer verb) once it is closed, and
 # nothing at all when no line in the stream ever stated a transition for it.
+# For the shared "default" key alone the closing verb may also be a plain
+# `done` or the configured paused verb, because a plain unkeyed line of either
+# retires that bucket - see the unkeyed-bucket exception in the key-grammar
+# block above.
 #
-# The distinction between the two closing verbs is the whole point: a
+# The distinction between the two explicit closing verbs is the whole point: a
 # `captain-held` close is the VERIFIED handoff to a durable captain-held task
 # (fm-captain-hold.sh complete writes it only after verifying that task), so the
 # structured row staying open afterwards is correct. A `resolved` close claims
@@ -1050,7 +1120,7 @@ EOF
 # lifetime on every call, so its cost grows with total log size. A per-drain
 # fleet-wide scan using that whole-file function would pay that cost for every
 # task on every wake, which grows unbounded as tasks run longer and accumulate
-# status history. status_open_decisions_incremental and scan_open_decisions_incremental
+# status history. status_open_decisions_incremental and scan_open_decisions_snapshot
 # below are the bounded-cost siblings used for that per-drain path: each call
 # reads only the bytes appended to a status file since its own last call (a
 # persisted per-file byte cursor) and folds just those new lines into a
@@ -1089,7 +1159,9 @@ EOF
 # error), not a malformed writer: every such read here is checked, and on
 # failure this reports the already-trusted persisted set unchanged rather than
 # risking a silent invalidation that would wipe it - never a bare "empty" as if
-# nothing were open.
+# nothing were open. Such a fallback call succeeds only when the set it reports
+# is non-empty, so a caller can never read one as a computed "nothing open";
+# the fallback block inside status_open_decisions_incremental owns why.
 #
 # Not a pure status-file read: this writes/rewrites the sibling cursor file as a
 # side effect (state/.<task>.open-decisions-cursor), the library's second
@@ -1128,7 +1200,10 @@ _fm_open_decisions_cursor_path() {  # <status-file>
 # Version 4 was already spent on the bracketed-tag parser change above, and a
 # cursor persisted under that reading predates this one, so it must still be
 # discarded and rebuilt from byte 0 under the new reading.
-FM_OPEN_DECISIONS_FOLD_VERSION=9
+# 10: a plain (no correlation token) done/paused line now also retires the
+# shared "default" bucket, so a cursor persisted under version 9 must be
+# discarded and rebuilt under that added retirement rule.
+FM_OPEN_DECISIONS_FOLD_VERSION=10
 
 # Portable device:inode identity for the rotation/recreation check below.
 _fm_open_decisions_file_ident() {  # <file> -> strongest available identity
@@ -1253,18 +1328,24 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset>]
 
   # A stat/size-read failure is a genuine I/O error, not "the file is empty" -
   # report the already-trusted persisted set unchanged rather than risking a
-  # silent invalidation that would wipe it.
-  cur_ident=$(_fm_open_decisions_file_ident "$f") || { printf '%s' "$trusted_open"; return 0; }
-  [ -n "$cur_ident" ] || { printf '%s' "$trusted_open"; return 0; }
+  # silent invalidation that would wipe it. That fallback is only honest while
+  # the set it reports has something IN it: an EMPTY set returned with rc 0
+  # asserts "computed, nothing open" about bytes this call never read - just as
+  # wrong when the cursor was trusted but lagging a log that has since grown as
+  # when it was untrusted outright. So every fallback below reports the set it
+  # has and succeeds only when that set is non-empty; nothing to report means
+  # an incomplete fold, which the drain's existing notice already surfaces.
+  cur_ident=$(_fm_open_decisions_file_ident "$f") || { printf '%s' "$trusted_open"; [ -n "$trusted_open" ]; return; }
+  [ -n "$cur_ident" ] || { printf '%s' "$trusted_open"; [ -n "$trusted_open" ]; return; }
   actual_size=$(_fm_status_file_size "$f") \
-    || { printf '%s' "$trusted_open"; return 0; }
+    || { printf '%s' "$trusted_open"; [ -n "$trusted_open" ]; return; }
   actual_size=${actual_size//[[:space:]]/}
-  case "$actual_size" in ''|*[!0-9]*) printf '%s' "$trusted_open"; return 0 ;; esac
+  case "$actual_size" in ''|*[!0-9]*) printf '%s' "$trusted_open"; [ -n "$trusted_open" ]; return ;; esac
   if [ -n "$captured_end" ]; then
     case "$captured_end" in
-      ''|*[!0-9]*) printf '%s' "$trusted_open"; return 0 ;;
+      ''|*[!0-9]*) printf '%s' "$trusted_open"; [ -n "$trusted_open" ]; return ;;
     esac
-    [ "$captured_end" -le "$actual_size" ] || { printf '%s' "$trusted_open"; return 0; }
+    [ "$captured_end" -le "$actual_size" ] || { printf '%s' "$trusted_open"; [ -n "$trusted_open" ]; return; }
     size=$captured_end
   else
     size=$actual_size
@@ -1280,12 +1361,12 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset>]
   if [ "$offset" -lt "$size" ]; then
     chunk_file="$cf.read.$$"
     _fm_status_read_span "$f" "$offset" "$((size - offset))" > "$chunk_file" 2>/dev/null \
-      || { rm -f "$chunk_file"; printf '%s' "$trusted_open"; return 0; }
+      || { rm -f "$chunk_file"; printf '%s' "$trusted_open"; [ -n "$trusted_open" ]; return; }
     chunk_size=$(LC_ALL=C wc -c < "$chunk_file" 2>/dev/null) \
-      || { rm -f "$chunk_file"; printf '%s' "$trusted_open"; return 0; }
+      || { rm -f "$chunk_file"; printf '%s' "$trusted_open"; [ -n "$trusted_open" ]; return; }
     chunk_size=${chunk_size//[[:space:]]/}
     case "$chunk_size" in
-      ''|*[!0-9]*) rm -f "$chunk_file"; printf '%s' "$trusted_open"; return 0 ;;
+      ''|*[!0-9]*) rm -f "$chunk_file"; printf '%s' "$trusted_open"; [ -n "$trusted_open" ]; return ;;
     esac
     # Test-only observability seam (off by default, no production behavior
     # change): when set, records exactly how many bytes THIS call folded, so a
@@ -1313,28 +1394,6 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset>]
     mv -f "$target_cursor" "$cf" || return 1
   fi
   printf '%s' "$open"
-}
-
-# Incremental sibling of scan_open_decisions: same fleet-wide directory walk and
-# output shape ("<task>\t<key>\t<verb>\t<note>" per open decision), but folds
-# each task's status log through status_open_decisions_incremental instead of
-# the whole-file status_open_decisions, so a fleet-wide per-drain scan stays
-# bounded by new appends rather than total lifetime log size across every task.
-scan_open_decisions_incremental() {  # <state>
-  local state=$1 f task open line
-  for f in "$state"/*.status; do
-    [ -e "$f" ] || continue
-    task=$(basename "$f"); task="${task%.status}"
-    open=$(status_open_decisions_incremental "$f") || continue
-    [ -n "$open" ] || continue
-    while IFS= read -r line; do
-      [ -n "$line" ] || continue
-      printf '%s\t%s\n' "$task" "$line"
-    done <<EOF
-$open
-EOF
-  done
-  return 0
 }
 
 status_presentation_snapshot() {  # <state>
@@ -2083,6 +2142,22 @@ $1
 EOF
 }
 
+# Deliberately narrower than _fm_decision_fold_line's own retirement arm: the
+# fold retires the shared "default" bucket on a plain done OR paused line (the
+# OPEN DECISIONS captain-facing display), but this origins map only drops on
+# resolve/held and on a done line that _fm_decision_line_retires_default
+# accepts - so a correlation-marked done, which the fold refuses to let retire
+# the bucket, never prunes an origin here either.
+# status_span_first_actionable_record (the watcher's
+# separate actionable-event classifier) reads origins, not the fold, to decide
+# whether a blocked:/needs-decision: line is still live; if paused pruned an
+# origin here too, a worker that appended blocked: then paused: (the away-mode
+# shape of being stuck) would vanish from the watcher's view the moment the
+# paused line landed, because paused is not itself captain-relevant
+# (status_is_captain_relevant) and so is never shown as the event that
+# replaced it - see tests/fm-watch-triage.test.sh's "hidden behind a current
+# wait" case. Excluding paused here keeps that worker visible to the watcher
+# while OPEN DECISIONS still retires the row.
 _fm_status_open_decision_origins() {  # <status-file> [<kind>]
   local f=$1 line open='' after key verb note number=0 origins=''
   local resolve held kind
@@ -2111,6 +2186,12 @@ _fm_status_open_decision_origins() {  # <status-file> [<kind>]
         ;;
       "$resolve"|"$held")
         _fm_open_set_has "$after" "$key" || origins=$(_fm_decision_origin_drop "$origins" "$key")
+        ;;
+      done)
+        if _fm_decision_line_retires_default "$key" "$line" \
+          && ! _fm_open_set_has "$after" "$key"; then
+          origins=$(_fm_decision_origin_drop "$origins" "$key")
+        fi
         ;;
     esac
     open=$after
@@ -2333,6 +2414,54 @@ crew_gate_awaits_human_decision() {  # <id> -> <run-id> on stdout
   [ -n "$human" ] && [ -n "$run" ] || return 1
   case "$run" in *[[:space:]]*) return 1 ;; esac
   printf '%s\n' "$run"
+}
+
+# 0 if crew <id> has a LIVE no-mistakes run whose active step is reporting
+# RECENT activity (bin/fm-crew-state.sh's own `activity: recent` verdict on its
+# `state: working` / `source: run-step` line - see that script's header for
+# exactly when it is set). This is narrower than crew_is_provably_working: it
+# never answers yes from pane evidence, only from the run's own authoritative
+# last_activity, so it is the one predicate the wedge timer may trust to keep
+# absorbing a long-quiet pane for as long as a fix round is genuinely still
+# logging (AGENTS.md/2026-09-20: a healthy validating pane is silent by
+# design, and blindly escalating on pane-idle time alone against that silence
+# is a false-positive wedge).
+# 1 (no evidence - the caller must fall back to the ordinary pane-based wedge
+# timer exactly as before) for every other case: no attributable run, a coarse
+# ledger-only read with no steps table, a run whose active step has gone
+# quiet, or a state read that failed, returned nothing, or timed out. Absence
+# of evidence must never be read as recency, because a dead run cannot vouch
+# for a quiet pane - that would turn this exact false positive into a missed
+# real wedge, the worse error.
+crew_run_activity_recent() {  # <id>
+  local id=$1 line
+  [ -n "$id" ] || return 1
+  line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
+  case "$line" in
+    "state: working"*"source: run-step"*"activity: recent"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# 0 if crew <id>'s reconciled current state is exactly `done`: a terminal
+# no-mistakes outcome (passed, passed-with-override, checks-passed/held-for-merge)
+# or a terminal status-log line, with no active run left to outrank pane-idle
+# time. fm-crew-state.sh is the one place that reconciliation happens - it folds
+# a still-monitoring ci step whose checks already read green, and a stale
+# status-log verb a finished run has since moved past, into this same `done`
+# rather than `working` - so this predicate never has to re-derive any of that.
+# NOT the negation of crew_is_provably_working: `parked`/`blocked`/`paused`/
+# `failed`/`unknown` are neither working nor done, and must keep reading false
+# here so a genuinely wedged or stuck task is untouched by this predicate.
+# Same non-pure-read caution as crew_absorb_class above applies; callers bound
+# how often they call this the same way.
+crew_done_no_active_run() {  # <id>
+  local id=$1 line state
+  [ -n "$id" ] || return 1
+  line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
+  case "$line" in state:*) ;; *) return 1 ;; esac
+  state=${line#state: }; state=${state%% *}
+  [ "$state" = "done" ]
 }
 
 # Directories excluded from the worktree write probe below, and the depth it walks.
