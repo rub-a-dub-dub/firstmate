@@ -118,6 +118,53 @@ test_plain_pause_retires_the_default_fold_without_hiding_its_origin() {
 
 test_plain_pause_retires_the_default_fold_without_hiding_its_origin
 
+# The away-mode shape: a worker declares a blocker, declares the wait, then keeps
+# narrating. None of the trailing lines is a transition the fold acts on, so none
+# of them may retire the blocked line the pause deliberately kept actionable.
+test_narration_after_a_pause_keeps_the_blocked_line_actionable() {
+  local dir f record needs trailing
+  dir=$(case_dir pause-then-narration)
+  for trailing in 'note: still waiting' 'Still waiting on the window.' 'working: retrying the registry'; do
+    f="$dir/$(printf '%s' "$trailing" | tr -c 'a-z' -).status"
+    printf 'blocked: cannot reach the registry\npaused: waiting for the window\n' > "$f"
+    printf '%s\n' "$trailing" >> "$f"
+
+    assert_fold "$f" '' "a pause followed by '$trailing' still retires the display row"
+    status_span_first_actionable_record "$f" 0 record needs \
+      || fail "the blocker went unactionable after '$trailing'"
+    case "$record" in
+      *'blocked: cannot reach the registry'*) ;;
+      *) fail "the blocker vanished from the actionable span after '$trailing': $record" ;;
+    esac
+  done
+  pass "narration after a pause does not hide the paused worker's blocker from the watcher"
+}
+
+test_narration_after_a_pause_keeps_the_blocked_line_actionable
+
+# The counterpart: a real terminal or resolution after the pause must still
+# retire the origin the pause preserved.
+test_a_terminal_after_a_pause_still_retires_the_preserved_origin() {
+  local dir f record needs trailing
+  dir=$(case_dir pause-then-terminal)
+  for trailing in 'done: shipped it anyway' 'failed: gave up on the registry' 'resolved: registry is back'; do
+    f="$dir/$(printf '%s' "$trailing" | tr -c 'a-z' -).status"
+    printf 'blocked: cannot reach the registry\npaused: waiting for the window\n' > "$f"
+    printf '%s\n' "$trailing" >> "$f"
+
+    record=''; needs=''
+    status_span_first_actionable_record "$f" 0 record needs || true
+    [ "$needs" = 0 ] \
+      || fail "'$trailing' left the retired blocker marked as a decision: needs=$needs"
+    case "$record" in
+      *'cannot reach the registry'*) fail "'$trailing' failed to retire the blocker: $record" ;;
+    esac
+  done
+  pass "a terminal or resolution after a pause retires the origin the pause preserved"
+}
+
+test_a_terminal_after_a_pause_still_retires_the_preserved_origin
+
 test_unkeyed_needs_decision_retires_via_done_despite_a_mismatched_keyed_resolution() {
   local dir
   dir=$(case_dir unkeyed-needs-decision-retires)

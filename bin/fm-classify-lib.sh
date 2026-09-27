@@ -2156,22 +2156,29 @@ EOF
 # shape of being stuck) would vanish from the watcher's view the moment the
 # paused line landed, because paused is not itself captain-relevant
 # (status_is_captain_relevant) and so is never shown as the event that
-# replaced it - see tests/fm-watch-triage.test.sh's "hidden behind a current
-# wait" case. Excluding paused here keeps that worker visible to the watcher
-# while OPEN DECISIONS still retires the row.
+# replaced it - see tests/fm-classify-decision-key.test.sh's
+# test_plain_pause_retires_the_default_fold_without_hiding_its_origin.
+# Excluding paused here keeps that worker visible to the watcher while OPEN
+# DECISIONS still retires the row.
+# The wholesale reset below asks whether THIS line emptied the fold, not merely
+# whether the fold is empty, so it fires only for the transition vocabulary
+# status_open_decisions itself hands to the fold - minus paused, per the
+# exclusion above. A line the fold ignores outright (continuation prose, note:,
+# working:) retires nothing, so it must not prune an origin the pause preserved.
 _fm_status_open_decision_origins() {  # <status-file> [<kind>]
   local f=$1 line open='' after key verb note number=0 origins=''
-  local resolve held pause kind
+  local resolve held kind
   kind=$(_fm_status_kind "$f" "${2:-}")
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
-  pause=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
   while IFS= read -r line || [ -n "$line" ]; do
     number=$((number + 1))
     after=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held" "$kind")
     verb=$(status_line_verb "$line")
-    if [ -z "$after" ] && [ "$verb" != "$pause" ]; then
-      origins=''
+    if [ -z "$after" ]; then
+      case "$verb" in
+        needs-decision|blocked|done|failed|"$resolve"|"$held") origins='' ;;
+      esac
     fi
     key=$(_fm_decision_key "$line") || { open=$after; continue; }
     note=$(status_line_note "$line")
