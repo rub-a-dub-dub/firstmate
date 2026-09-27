@@ -124,8 +124,6 @@ test_a_plain_pause_retires_nothing_in_either_reader() {
   pass "a plain pause retires neither the OPEN DECISIONS row nor the watcher's origin"
 }
 
-test_a_plain_pause_retires_nothing_in_either_reader
-
 test_unkeyed_needs_decision_retires_via_done_despite_a_mismatched_keyed_resolution() {
   local dir
   dir=$(case_dir unkeyed-needs-decision-retires)
@@ -441,6 +439,7 @@ test_incremental_agrees_with_full_fold_across_appends() {
 test_stated_key_is_honored_in_both_positions
 test_bare_keyless_line_still_folds_to_default
 test_unkeyed_blocked_retires_after_a_later_terminal_line
+test_a_plain_pause_retires_nothing_in_either_reader
 test_unkeyed_needs_decision_retires_via_done_despite_a_mismatched_keyed_resolution
 test_correlated_terminal_line_does_not_retire_the_default_bucket
 test_keyed_terminal_line_does_not_retire_the_default_bucket

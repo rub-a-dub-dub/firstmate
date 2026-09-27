@@ -1207,9 +1207,12 @@ _fm_open_decisions_cursor_path() {  # <status-file>
 # 10: a plain (no correlation token) done/paused line now also retires the
 # shared "default" bucket, so a cursor persisted under version 9 must be
 # discarded and rebuilt under that added retirement rule.
-# 11: a paused line no longer retires that bucket - only a plain done one does,
-# matching upstream - so a cursor folded under version 10's paused-retiring
-# reading holds a bucket this reading keeps open and must be discarded.
+# 11: a paused line no longer retires that bucket, matching upstream, so a
+# cursor folded under version 10's paused-retiring reading holds a bucket this
+# reading keeps open and must be discarded. A plain done line still retires it;
+# that half stays the fork's own divergence, since upstream's fold accepts no
+# done verb at all outside its ship/scout terminal rule, which closes EVERY key
+# rather than this shared bucket.
 FM_OPEN_DECISIONS_FOLD_VERSION=11
 
 # Portable device:inode identity for the rotation/recreation check below.
@@ -2149,12 +2152,12 @@ $1
 EOF
 }
 
-# Deliberately narrower than _fm_decision_fold_line's own retirement arm: the
-# fold retires the shared "default" bucket on a plain done line (the OPEN
-# DECISIONS captain-facing display), but this origins map only drops on
-# resolve/held and on a done line that _fm_decision_line_retires_default
-# accepts - so a correlation-marked done, which the fold refuses to let retire
-# the bucket, never prunes an origin here either.
+# This map and _fm_decision_fold_line retire the shared "default" bucket on
+# exactly the same predicate, _fm_decision_line_retires_default: a plain done
+# line, meaning one carrying neither a stated key nor a correlation token. So a
+# keyed or correlation-marked done prunes an origin here no more than it retires
+# the fold's row, and the captain-facing OPEN DECISIONS display can never
+# disagree with this map about why the bucket closed.
 # status_span_first_actionable_record (the watcher's separate actionable-event
 # classifier) reads origins, not the fold, to decide whether a
 # blocked:/needs-decision: line is still live. Neither reader retires anything
