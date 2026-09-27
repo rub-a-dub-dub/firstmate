@@ -640,6 +640,8 @@ test_harness_switch_moves_the_record_and_clears_prior_wiring() {
   [ ! -e "$dir/wt/.claude/settings.local.json" ] \
     || fail "the previous harness's per-task wiring must be cleared on a switch"
   assert_grep "codex" "$dir/fake/literal" "the replacement launch should be the new harness"
+  assert_grep "-c 'service_tier=\"default\"'" "$dir/fake/literal" \
+    "a relaunch onto codex should carry the standard service-tier override"
   [ "$(journal_field "$dir" rl4 from_harness)" = claude ] || fail "the journal should record the origin harness"
   [ "$(journal_field "$dir" rl4 to_harness)" = codex ] || fail "the journal should record the target harness"
   pass "fm-control relaunch: switching harness is one ordinary relaunch, and the old wiring goes with the old agent"
