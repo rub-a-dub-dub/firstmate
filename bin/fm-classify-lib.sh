@@ -2149,24 +2149,12 @@ EOF
 # resolve/held and on a done line that _fm_decision_line_retires_default
 # accepts - so a correlation-marked done, which the fold refuses to let retire
 # the bucket, never prunes an origin here either.
-# status_span_first_actionable_record (the watcher's
-# separate actionable-event classifier) reads origins, not the fold, to decide
-# whether a blocked:/needs-decision: line is still live; if paused pruned an
-# origin here too, a worker that appended blocked: then paused: (the away-mode
-# shape of being stuck) would vanish from the watcher's view the moment the
-# paused line landed, because paused is not itself captain-relevant
-# (status_is_captain_relevant) and so is never shown as the event that
-# replaced it - see tests/fm-classify-decision-key.test.sh's
-# test_plain_pause_retires_the_default_fold_without_hiding_its_origin.
-# Excluding paused here keeps that worker visible to the watcher while OPEN
-# DECISIONS still retires the row.
-# The reset below exists for the one retirement the per-key arms further down
-# cannot model: _fm_decision_fold_line discards the WHOLE open set on a ship's
-# or scout's done/failed declaration, whatever keys it held, and those arms only
-# ever drop the single key their own line names. Every other verb is already
-# retired per key there - so none of them belongs here, where clearing the whole
-# map would also discard an origin the paused exclusion above deliberately
-# preserved for a still-live blocker under some other key.
+# status_span_first_actionable_record (the watcher's separate actionable-event
+# classifier) reads origins, not the fold, to decide whether a
+# blocked:/needs-decision: line is still live. An emptied fold empties the map
+# with it, whatever emptied it: a worker that appended blocked: then paused: is
+# therefore no longer actionable here, because paused retires the display row.
+# That costs the watcher a paused worker's blocker, and is upstream's behavior.
 _fm_status_open_decision_origins() {  # <status-file> [<kind>]
   local f=$1 line open='' after key verb note number=0 origins=''
   local resolve held kind
@@ -2176,13 +2164,9 @@ _fm_status_open_decision_origins() {  # <status-file> [<kind>]
   while IFS= read -r line || [ -n "$line" ]; do
     number=$((number + 1))
     after=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held" "$kind")
-    verb=$(status_line_verb "$line")
-    if [ -z "$after" ]; then
-      case "$verb" in
-        done|failed) origins='' ;;
-      esac
-    fi
+    [ -n "$after" ] || origins=''
     key=$(_fm_decision_key "$line") || { open=$after; continue; }
+    verb=$(status_line_verb "$line")
     note=$(status_line_note "$line")
     case "$verb" in
       needs-decision|blocked)

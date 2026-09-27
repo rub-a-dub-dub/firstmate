@@ -98,99 +98,22 @@ test_unkeyed_blocked_retires_after_a_later_terminal_or_paused_line() {
   pass "an unkeyed blocked line retires once a later done or paused line follows it"
 }
 
-test_plain_pause_retires_the_default_fold_without_hiding_its_origin() {
-  local dir f record='' needs=''
+# A plain pause retires the shared bucket, and the whole-file fold has to agree
+# with the incremental one on that - the incremental path folds every line
+# through _fm_decision_fold_line, which acts on the pause verb, so a whole-file
+# gate that skipped pause lines would report a row the incremental fold had
+# already retired.
+test_plain_pause_retires_the_default_fold_in_both_folds() {
+  local dir f
   dir=$(case_dir pause-retires-but-surfaces)
   f="$dir/task.status"
   printf 'needs-decision: should I deploy to prod?\npaused: waiting for the window\n' > "$f"
 
   assert_fold "$f" '' "a plain pause retires the unkeyed decision in both folds"
-  status_span_first_actionable_record "$f" 0 record needs \
-    || fail "the decision hidden behind a current pause was not actionable"
-  [ "$needs" = 1 ] \
-    || fail "the decision hidden behind a current pause lost its decision marker: needs=$needs"
-  case "$record" in
-    *'needs-decision: should I deploy to prod?'*) ;;
-    *) fail "the decision hidden behind a current pause disappeared from the actionable span: $record" ;;
-  esac
-  pass "a plain pause retires the display row without hiding the decision event from the watcher"
+  pass "a plain pause retires the display row in the whole-file and incremental folds alike"
 }
 
-test_plain_pause_retires_the_default_fold_without_hiding_its_origin
-
-# The away-mode shape: a worker declares a blocker, declares the wait, then keeps
-# narrating. None of the trailing lines is a transition the fold acts on, so none
-# of them may retire the blocked line the pause deliberately kept actionable.
-test_narration_after_a_pause_keeps_the_blocked_line_actionable() {
-  local dir f record needs trailing
-  dir=$(case_dir pause-then-narration)
-  for trailing in 'note: still waiting' 'Still waiting on the window.' 'working: retrying the registry'; do
-    f="$dir/$(printf '%s' "$trailing" | tr -c 'a-z' -).status"
-    printf 'blocked: cannot reach the registry\npaused: waiting for the window\n' > "$f"
-    printf '%s\n' "$trailing" >> "$f"
-
-    assert_fold "$f" '' "a pause followed by '$trailing' still retires the display row"
-    status_span_first_actionable_record "$f" 0 record needs \
-      || fail "the blocker went unactionable after '$trailing'"
-    case "$record" in
-      *'blocked: cannot reach the registry'*) ;;
-      *) fail "the blocker vanished from the actionable span after '$trailing': $record" ;;
-    esac
-  done
-  pass "narration after a pause does not hide the paused worker's blocker from the watcher"
-}
-
-test_narration_after_a_pause_keeps_the_blocked_line_actionable
-
-# The counterpart: a real terminal or resolution after the pause must still
-# retire the origin the pause preserved.
-test_a_terminal_after_a_pause_still_retires_the_preserved_origin() {
-  local dir f record needs trailing
-  dir=$(case_dir pause-then-terminal)
-  for trailing in 'done: shipped it anyway' 'failed: gave up on the registry' 'resolved: registry is back'; do
-    f="$dir/$(printf '%s' "$trailing" | tr -c 'a-z' -).status"
-    printf 'blocked: cannot reach the registry\npaused: waiting for the window\n' > "$f"
-    printf '%s\n' "$trailing" >> "$f"
-
-    record=''; needs=''
-    status_span_first_actionable_record "$f" 0 record needs || true
-    [ "$needs" = 0 ] \
-      || fail "'$trailing' left the retired blocker marked as a decision: needs=$needs"
-    case "$record" in
-      *'cannot reach the registry'*) fail "'$trailing' failed to retire the blocker: $record" ;;
-    esac
-  done
-  pass "a terminal or resolution after a pause retires the origin the pause preserved"
-}
-
-test_a_terminal_after_a_pause_still_retires_the_preserved_origin
-
-# Answering ONE decision must not silence another. bin/fm-send.sh writes
-# "resolved [key=...]" when the captain answers a keyed question and
-# bin/fm-captain-hold.sh writes "captain-held [key=...]" on a verified transfer;
-# either can empty the fold while an unkeyed blocker the pause preserved is
-# still live, and that blocker has to stay actionable.
-test_answering_one_key_after_a_pause_keeps_another_blocker_actionable() {
-  local dir f record needs answer
-  dir=$(case_dir pause-then-other-key)
-  for answer in 'resolved [key=deploy]: yes, ship' 'captain-held [key=deploy]: handed to the captain'; do
-    f="$dir/$(printf '%s' "$answer" | tr -c 'a-z' -).status"
-    printf 'needs-decision [key=deploy]: ship it?\n' > "$f"
-    printf 'blocked: cannot reach the registry\npaused: waiting for the window\n' >> "$f"
-    printf '%s\n' "$answer" >> "$f"
-
-    record=''; needs=''
-    status_span_first_actionable_record "$f" 0 record needs \
-      || fail "'$answer' left the surviving blocker unactionable"
-    case "$record" in
-      *'blocked: cannot reach the registry'*) ;;
-      *) fail "'$answer' hid a blocker it never named: $record" ;;
-    esac
-  done
-  pass "answering one keyed decision after a pause leaves another key's blocker actionable"
-}
-
-test_answering_one_key_after_a_pause_keeps_another_blocker_actionable
+test_plain_pause_retires_the_default_fold_in_both_folds
 
 test_unkeyed_needs_decision_retires_via_done_despite_a_mismatched_keyed_resolution() {
   local dir
