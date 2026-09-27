@@ -33,6 +33,7 @@ unset TASKS_AXI_BACKEND || :
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
 BOOTSTRAP="$ROOT/bin/fm-bootstrap.sh"
+RECONCILE="$ROOT/bin/fm-backlog-reconcile.sh"
 TMP_ROOT=$(fm_test_tmproot fm-backlog-atomicity)
 
 command -v tasks-axi >/dev/null 2>&1 || {
@@ -626,6 +627,46 @@ run_bootstrap() {  # <case-dir>
     FM_BOOTSTRAP_NETWORK=skip \
     PATH="$case_dir/fakebin:$PATH" \
     "$BOOTSTRAP" 2>&1
+}
+
+# The read-only session start fm-session-start.sh runs when another live session
+# holds the fleet lock, and the one --reemit repeats after a /clear.
+run_bootstrap_detect_only() {  # <case-dir>
+  local case_dir=$1
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$(home_of "$case_dir")" \
+    FM_BOOTSTRAP_NETWORK=skip FM_BOOTSTRAP_DETECT_ONLY=1 \
+    PATH="$case_dir/fakebin:$PATH" \
+    "$BOOTSTRAP" 2>&1
+}
+
+# Every path and content checksum under the two trees a session start
+# reconciles: this home's task records and its backlog. Compared across a run to
+# prove a read-only session start changed neither. cksum rather than shasum
+# because shasum is a Perl script absent from minimal images, where a failed
+# checksum would silently degrade every entry to a bare path and make the
+# comparison pass for any in-place rewrite. Returns non-zero when even cksum is
+# missing so the caller fails loudly instead: `fail` here would only exit the
+# command substitution this runs inside.
+records_and_backlog_digest() {  # <home>
+  local path
+  command -v cksum >/dev/null 2>&1 || return 1
+  find "$1/state" "$1/data" -print 2>/dev/null | LC_ALL=C sort | while IFS= read -r path; do
+    if [ -L "$path" ]; then
+      printf 'link %s -> %s\n' "${path#"$1"/}" "$(readlink "$path")"
+    elif [ -d "$path" ]; then
+      printf 'dir  %s\n' "${path#"$1"/}"
+    else
+      printf 'file %s %s\n' "${path#"$1"/}" "$(cksum < "$path")"
+    fi
+  done
+}
+
+run_reconcile() {  # <case-dir> <args...>
+  local case_dir=$1
+  shift
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$(home_of "$case_dir")" \
+    PATH="$case_dir/fakebin:$PATH" \
+    "$RECONCILE" "$@" 2>&1
 }
 
 # --- dispatch ---------------------------------------------------------------
@@ -2049,100 +2090,493 @@ test_recovery_backfills_a_recorded_link_on_an_already_done_item() {
   pass "recovery backfills recorded links onto already Done items"
 }
 
-# A captain-held row's retention marker exists to return that row to Queued;
-# if the row has already left the backlog entirely by the time recovery
-# replays the marker, the retention's own goal was never reached - unlike the
-# close path's matching row-archived-by-retention case, where absence already
-# is the goal. This must retire the marker under its own honest outcome
-# instead of the close path's `stale`, and the report must never read as a
-# close.
-test_recovery_retires_a_retain_for_a_row_absent_from_the_backlog() {
-  local case_dir id marker pr out
-  id=atomic-heal-retain-absent-b13
-  pr=https://github.com/example/repo/pull/11
-  case_dir=$(make_home heal-retain-absent)
+# Defect: the retain replay path's "answered" arm printed "finished the
+# interrupted cleanup" unconditionally, even when its own surviving
+# state/<id>.meta record proved cleanup never finished. Force that record to
+# survive to replay time (matching the mechanism
+# fm_backlog_close_marker_replay itself uses to set cleanup_incomplete) and
+# assert the report is honest about it instead of claiming completion.
+test_recovery_reports_incomplete_cleanup_for_an_answered_retain() {
+  local case_dir id marker out
+  id=atomic-heal-answered-incomplete-b17
+  case_dir=$(make_home heal-answered-incomplete)
   add_item "$case_dir" "$id"
+  start_item "$case_dir" "$id"
   tasks-axi hold "$id" --reason "captain decision pending" --kind captain \
     --file "$(backlog_of "$case_dir")" >/dev/null
-  tasks-axi rm "$id" --file "$(backlog_of "$case_dir")" >/dev/null
-  [ -z "$(row_state "$case_dir" "$id")" ] \
-    || fail "the fixture's removed row is still visible to tasks-axi show"
+  tasks-axi "done" "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  write_task_meta "$case_dir" "$id" ship no-mistakes "spawn_gen=spawn-answered-incomplete"
   marker="$(home_of "$case_dir")/state/$id.backlog-close"
-  printf 'id=%s\ndata=%s\nspawn_gen=spawn-retain-absent\nmode=retain\narg=--pr\narg=%s\n' \
-    "$id" "$(home_of "$case_dir")/data" "$pr" > "$marker"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-answered-incomplete\nmode=retain\narg=--pr\narg=https://github.com/example/repo/pull/14\n' \
+    "$id" "$(home_of "$case_dir")/data" > "$marker"
 
   out=$(run_bootstrap "$case_dir")
+  assert_absent "$(home_of "$case_dir")/state/$id.meta" \
+    "replay left the interrupted task record behind for an already-answered retain"
   assert_absent "$marker" \
-    "a retain for a row absent from the backlog was left to retry forever"
-  assert_not_contains "$out" "could not be replayed" \
-    "an absent row's retention was reported as a lookup failure instead of a completed retirement"
-  assert_not_contains "$out" "closed the backlog item" \
-    "a retain transition for an absent row was reported using the close path's wording"
-  assert_contains "$out" "BACKLOG_RECONCILE: $id: the captain-held call could not be returned to Queued" \
-    "an absent row's retention retirement gave no actionable retain-flavored report"
-  assert_contains "$out" "its recorded deliverable (PR $pr) should be reconciled with the captain" \
-    "the retirement asked for a reconciliation without naming the deliverable it had just discarded"
-
-  out=$(run_bootstrap "$case_dir")
-  assert_not_contains "$out" "could not be replayed" \
-    "a retired retain marker somehow left work behind for a later restart to retry"
-  assert_not_contains "$out" "could not be returned to Queued" \
-    "a retired retain marker reported its retirement a second time"
-  pass "recovery retires a pending retention whose row already left the backlog, naming its deliverable on an actionable line"
+    "replay left an already-answered retain marker behind"
+  assert_not_contains "$out" "finished the interrupted cleanup for $id; the captain had already answered its call" \
+    "replay claimed cleanup finished even though its own surviving meta record proved cleanup was still interrupted"
+  assert_contains "$out" "the captain had already answered the call for $id before cleanup finished" \
+    "an answered retain with cleanup still interrupted was not reported honestly"
+  assert_contains "$out" "endpoint or local copy may remain" \
+    "an answered retain's incomplete-cleanup warning was dropped"
+  pass "recovery does not claim an interrupted cleanup finished when only the captain's answer closed the row"
 }
 
-# A captain-held task that paused to ask a question before producing any
-# artifact retains with no completion flags at all, so the retirement of its
-# absent row has no deliverable to name. The report must still say something
-# true the operator can act on, never instruct a reconciliation of a
-# deliverable the same sentence denies.
-test_recovery_retires_a_retain_that_recorded_no_deliverable() {
+# Defect: the retain replay path could not tell a row the captain already
+# answered (closed, then aged out of done_keep retention into the archive)
+# from a row that vanished with no answer at all - both read as an empty
+# `tasks-axi show`. An already-answered call must never resurface as an
+# outstanding one asking the captain to re-decide it.
+test_recovery_recognizes_a_retain_row_answered_then_archived() {
   local case_dir id marker out
-  id=atomic-heal-retain-absent-bare-b14
-  case_dir=$(make_home heal-retain-absent-bare)
+  id=atomic-heal-answered-archived-b18
+  case_dir=$(make_home heal-answered-archived)
   add_item "$case_dir" "$id"
+  start_item "$case_dir" "$id"
   tasks-axi hold "$id" --reason "captain decision pending" --kind captain \
     --file "$(backlog_of "$case_dir")" >/dev/null
-  tasks-axi rm "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  tasks-axi "done" "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  (cd "$(home_of "$case_dir")" \
+    && tasks-axi prune --keep 0 --state "done" --file "$(backlog_of "$case_dir")" >/dev/null)
   [ -z "$(row_state "$case_dir" "$id")" ] \
-    || fail "the fixture's removed row is still visible to tasks-axi show"
+    || fail "the fixture's pruned row is still visible to tasks-axi show"
   marker="$(home_of "$case_dir")/state/$id.backlog-close"
-  printf 'id=%s\ndata=%s\nspawn_gen=spawn-retain-absent-bare\nmode=retain\n' \
+  # recorded_utc predates the archival tasks-axi just performed, which is the
+  # real order of events: the teardown recorded this close, was interrupted, and
+  # the captain's answer aged into the archive afterwards.
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-answered-archived\nrecorded_utc=2020-01-01\nmode=retain\narg=--pr\narg=https://github.com/example/repo/pull/15\n' \
     "$id" "$(home_of "$case_dir")/data" > "$marker"
 
   out=$(run_bootstrap "$case_dir")
   assert_absent "$marker" \
-    "a deliverable-free retain for an absent row was left to retry forever"
-  assert_contains "$out" "BACKLOG_RECONCILE: $id: the captain-held call could not be returned to Queued" \
-    "a deliverable-free retention retirement gave no actionable report"
-  assert_contains "$out" "it recorded no deliverable, so the call's disposition must be settled with the captain" \
-    "a deliverable-free retirement did not say what it actually knew"
-  assert_not_contains "$out" "recorded deliverable (" \
-    "a retirement that captured nothing still pointed the operator at a recorded deliverable"
-  pass "recovery reports a retention that recorded no deliverable without asking for one"
+    "an answered-then-archived retain marker was left to retry forever"
+  assert_absent "$(home_of "$case_dir")/state/$id.backlog-reconcile" \
+    "an already-answered captain call resurfaced as an unresolved reconcile record"
+  assert_not_contains "$out" "could not be returned to Queued" \
+    "an already-answered call was reported as though it still needed a captain decision"
+  assert_contains "$out" "the captain had already answered its call" \
+    "an answered-then-archived retain was not recognized as answered"
+  pass "recovery does not ask the captain to re-decide a call already answered before its row aged into the archive"
 }
 
-# Teardown publishes the pending-close record before it removes the task's own
-# record, so a process killed in that window is the ordinary interruption
-# shape rather than an exotic one: replay finds the surviving meta, marks the
-# cleanup incomplete, and the absent row's report then owes the operator both
-# the surviving-resource warning and its disposition. The recorded and
-# unrecorded deliverable dispositions must stay distinguishable, so a change
-# that collapses them into one message fails here.
-test_recovery_warns_about_surviving_resources_when_a_retain_row_is_absent() {
-  local case_dir home id with_pr bare pr with_pr_line bare_line out
-  with_pr=atomic-heal-retain-absent-incomplete-b15
-  bare=atomic-heal-retain-absent-incomplete-bare-b16
-  pr=https://github.com/example/repo/pull/12
-  case_dir=$(make_home heal-retain-absent-incomplete)
+# The archive bound compares the record's stamp against tasks-axi's own
+# `## Archived <date>` heading, so the two must share a clock base. tasks-axi
+# dates in local time on purpose, which is why the stamp is taken with `date`
+# rather than this repo's usual `date -u`. The sibling test above deliberately
+# predates its archival, so it would still pass if the bases diverged; this one
+# makes the same-day comparison production always makes, on a `done_keep = 0`
+# home that archives in the same minute the row closes. A tasks-axi release
+# that switched its headings to UTC, or a regression that reverted the stamp to
+# `date -u`, turns this red west of UTC instead of silently escalating a call
+# the captain already answered.
+test_recovery_recognizes_a_same_day_archived_answer() {
+  local case_dir home id marker out
+  id=atomic-heal-answered-archived-same-day-b31
+  case_dir=$(make_home heal-answered-archived-same-day)
+  home=$(home_of "$case_dir")
+  printf '%s\n' 'backend = "markdown"' '' '[markdown]' \
+    'path = "data/backlog.md"' 'archive = "data/done-archive.md"' \
+    'done_keep = 0' > "$home/.tasks.toml"
+  add_item "$case_dir" "$id"
+  start_item "$case_dir" "$id"
+  tasks-axi hold "$id" --reason "captain decision pending" --kind captain \
+    --file "$(backlog_of "$case_dir")" >/dev/null
+  tasks-axi "done" "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  (cd "$home" \
+    && tasks-axi prune --keep 0 --state "done" --file "$(backlog_of "$case_dir")" >/dev/null)
+  [ -z "$(row_state "$case_dir" "$id")" ] \
+    || fail "the fixture's pruned row is still visible to tasks-axi show"
+  assert_grep "$id" "$home/data/done-archive.md" \
+    "the fixture did not archive the answered row"
+  marker="$home/state/$id.backlog-close"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-answered-same-day\nrecorded_utc=%s\nmode=retain\narg=--pr\narg=https://github.com/example/repo/pull/25\n' \
+    "$id" "$home/data" "$(date +%Y-%m-%d)" > "$marker"
+
+  out=$(run_bootstrap "$case_dir")
+  assert_absent "$home/state/$id.backlog-reconcile" \
+    "a row archived the same day its close was recorded resurfaced as an unresolved reconcile record - the record's stamp and tasks-axi's archive heading no longer share a clock base"
+  assert_contains "$out" "the captain had already answered its call" \
+    "a same-day archived answer was not recognized as answered"
+  assert_absent "$marker" \
+    "a same-day archived answer left its retain marker to retry forever"
+  pass "an answer archived the same day the close was recorded is recognized, so the stamp shares tasks-axi's clock base"
+}
+
+# Defect: fm_backlog_archive_row_probe attributed an archived `- [x] <id> - `
+# line to the calling retention by id alone, against an append-only archive that
+# accumulates forever. A backlog id may be reused once an earlier incarnation
+# has been pruned into the archive, and that old line then made a genuinely
+# unanswered captain call read as `answered`: the marker was deleted and its
+# recorded deliverable dropped instead of being retired into a durable
+# reconcile record. The archive is tasks-axi's own generated rendering, so the
+# fixture writes the heading shape the sibling test above pins against a real
+# `tasks-axi prune`.
+test_recovery_escalates_a_reused_id_whose_archived_answer_predates_the_record() {
+  local case_dir home id pr marker archive out
+  id=atomic-heal-archived-id-reuse-b28
+  pr=https://github.com/example/repo/pull/22
+  case_dir=$(make_home heal-archived-id-reuse)
+  home=$(home_of "$case_dir")
+  add_item "$case_dir" "$id"
+  tasks-axi hold "$id" --reason "captain decision pending" --kind captain \
+    --file "$(backlog_of "$case_dir")" >/dev/null
+  tasks-axi rm "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  [ -z "$(row_state "$case_dir" "$id")" ] \
+    || fail "the fixture's removed row is still visible to tasks-axi show"
+  archive="$home/data/done-archive.md"
+  printf '%s\n' '# Done archive' '' '## Archived 2020-01-01' '' \
+    "- [x] $id - the earlier incarnation of this reused slug" > "$archive"
+  marker="$home/state/$id.backlog-close"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-archived-id-reuse\nrecorded_utc=2026-02-01\nmode=retain\narg=--pr\narg=%s\n' \
+    "$id" "$home/data" "$pr" > "$marker"
+
+  out=$(run_bootstrap "$case_dir")
+  assert_absent "$marker" \
+    "the unanswered retain marker was left on the pending-close glob to retry forever"
+  assert_not_contains "$out" "had already answered" \
+    "an earlier incarnation's archived line made a genuinely unanswered call read as answered"
+  assert_present "$home/state/$id.backlog-reconcile" \
+    "an unanswered call whose reused id was archived earlier lost its deliverable instead of retiring it into a reconcile record"
+  assert_contains "$out" "BACKLOG_RECONCILE: $id:" \
+    "the unanswered call whose reused id appears in the archive went unreported"
+  assert_contains "$out" "PR $pr" \
+    "the reconcile record dropped the deliverable the unanswered call had recorded"
+  pass "recovery escalates an unanswered call whose only archived line belongs to an earlier incarnation of a reused id"
+}
+
+# A pending-close record written before the recorded_utc stamp existed carries
+# nothing that can attribute an archived line to it, so it must escalate rather
+# than take the `answered` shortcut on an unattributable hit. The archive here is
+# dated far later than any plausible record, so only the missing stamp can
+# explain the outcome.
+test_recovery_escalates_an_unstamped_record_over_an_unattributable_archived_answer() {
+  local case_dir home id pr marker archive out
+  id=atomic-heal-archived-unstamped-b29
+  pr=https://github.com/example/repo/pull/23
+  case_dir=$(make_home heal-archived-unstamped)
+  home=$(home_of "$case_dir")
+  add_item "$case_dir" "$id"
+  tasks-axi hold "$id" --reason "captain decision pending" --kind captain \
+    --file "$(backlog_of "$case_dir")" >/dev/null
+  tasks-axi rm "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  archive="$home/data/done-archive.md"
+  printf '%s\n' '# Done archive' '' '## Archived 2099-01-01' '' \
+    "- [x] $id - archived under a heading no record can be dated against" > "$archive"
+  marker="$home/state/$id.backlog-close"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-archived-unstamped\nmode=retain\narg=--pr\narg=%s\n' \
+    "$id" "$home/data" "$pr" > "$marker"
+
+  out=$(run_bootstrap "$case_dir")
+  assert_absent "$marker" \
+    "an unstamped retain marker was left on the pending-close glob to retry forever"
+  assert_not_contains "$out" "had already answered" \
+    "an unstamped record claimed an archived answer it cannot attribute to itself"
+  assert_present "$home/state/$id.backlog-reconcile" \
+    "an unstamped record's deliverable was dropped instead of retired into a reconcile record"
+  assert_contains "$out" "PR $pr" \
+    "the reconcile record dropped the deliverable the unstamped record carried"
+  pass "an unstamped pending-close record escalates rather than claiming an archived answer"
+}
+
+# Defect: the reconcile report for a genuinely unresolved retain (no answer
+# anywhere, row truly gone) was single-shot and self-erasing - printed once,
+# with the marker deleted in the same breath, so an unread digest lost the
+# deliverable forever. The record must survive being unread and only clear on
+# an explicit acknowledgement.
+test_recovery_reconcile_record_survives_being_unread() {
+  local case_dir id marker pr out out2 out3 reconcile_marker ack mistyped
+  id=atomic-heal-retain-unresolved-b19
+  pr=https://github.com/example/repo/pull/16
+  case_dir=$(make_home heal-retain-unresolved)
+  add_item "$case_dir" "$id"
+  tasks-axi hold "$id" --reason "captain decision pending" --kind captain \
+    --file "$(backlog_of "$case_dir")" >/dev/null
+  tasks-axi rm "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  [ -z "$(row_state "$case_dir" "$id")" ] \
+    || fail "the fixture's removed row is still visible to tasks-axi show"
+  marker="$(home_of "$case_dir")/state/$id.backlog-close"
+  reconcile_marker="$(home_of "$case_dir")/state/$id.backlog-reconcile"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-retain-unresolved\nmode=retain\narg=--pr\narg=%s\n' \
+    "$id" "$(home_of "$case_dir")/data" "$pr" > "$marker"
+
+  out=$(run_bootstrap "$case_dir")
+  assert_absent "$marker" \
+    "a genuinely unresolved retain marker was left on the .backlog-close glob to retry forever"
+  assert_present "$reconcile_marker" \
+    "a genuinely unresolved retain's deliverable was destroyed instead of retained for reconciliation"
+  assert_contains "$out" "BACKLOG_RECONCILE: $id:" \
+    "a genuinely unresolved retain went unreported on its first replay"
+  assert_contains "$out" "PR $pr" \
+    "the reconcile report did not name the deliverable it was retiring"
+
+  out2=$(run_bootstrap "$case_dir")
+  assert_present "$reconcile_marker" \
+    "a second session start deleted the reconcile record with nobody having acknowledged it"
+  assert_contains "$out2" "BACKLOG_RECONCILE: $id:" \
+    "a second, unacknowledged session start silently dropped the reconcile report - it is not supposed to be single-shot"
+  assert_contains "$out2" "PR $pr" \
+    "the re-reported reconcile line lost the deliverable it was carrying"
+
+  if mistyped=$(run_reconcile "$case_dir" ack "$id-mistyped"); then
+    fail "acknowledging an id with no reconcile record reported success: $mistyped"
+  fi
+  assert_not_contains "$mistyped" "acked:" \
+    "a mistyped acknowledgement confirmed retiring a reconcile record that does not exist"
+  assert_present "$reconcile_marker" \
+    "a mistyped acknowledgement disturbed the real reconcile record"
+
+  ack=$(run_reconcile "$case_dir" ack "$id") || fail "could not acknowledge the reconcile record for $id: $ack"
+  assert_absent "$reconcile_marker" "acknowledging the reconcile record did not remove it"
+
+  out3=$(run_bootstrap "$case_dir")
+  assert_not_contains "$out3" "BACKLOG_RECONCILE: $id:" \
+    "an acknowledged reconcile record still reported itself on a later session start"
+  pass "a genuinely unresolved retain's reconcile report survives being unread until explicitly acknowledged"
+}
+
+# Defect: the deliverable a reconcile record carries is the whole payload the
+# record exists to preserve, but the two readers of the persisted record passed
+# the validated args straight to fm_backlog_retain_deliverable, so a --note
+# deliverable reached the captain in its on-disk serialization (`local%20main`)
+# rather than the spelling every other surface uses.
+test_recovery_reconcile_report_renders_a_note_deliverable_readably() {
+  local case_dir id marker reconcile_marker out
+  id=atomic-heal-retain-unresolved-note-b20
+  case_dir=$(make_home heal-retain-unresolved-note)
+  add_item "$case_dir" "$id"
+  tasks-axi hold "$id" --reason "captain decision pending" --kind captain \
+    --file "$(backlog_of "$case_dir")" >/dev/null
+  tasks-axi rm "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  [ -z "$(row_state "$case_dir" "$id")" ] \
+    || fail "the fixture's removed row is still visible to tasks-axi show"
+  marker="$(home_of "$case_dir")/state/$id.backlog-close"
+  reconcile_marker="$(home_of "$case_dir")/state/$id.backlog-reconcile"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-retain-unresolved-note\nmode=retain\narg=--note\narg=local%%20main\n' \
+    "$id" "$(home_of "$case_dir")/data" > "$marker"
+
+  out=$(run_bootstrap "$case_dir")
+  assert_present "$reconcile_marker" \
+    "a genuinely unresolved retain carrying a note deliverable was not retired into a reconcile record"
+  assert_contains "$out" "BACKLOG_RECONCILE: $id:" \
+    "a note-carrying reconcile record went unreported"
+  assert_contains "$out" "local main" \
+    "the reconcile report did not name the note deliverable in the spelling every other surface uses"
+  assert_not_contains "$out" "local%20main" \
+    "the reconcile report showed the note deliverable in its on-disk serialization"
+  pass "a reconcile report names a note deliverable in the spelling the captain reads everywhere else"
+}
+
+# Defect: retiring a second unresolved retain for the same id published over
+# the surviving record with `mv -f`, destroying an unacknowledged deliverable -
+# the exact loss the durable record exists to prevent, and a second retirement
+# path beside the ack that is supposed to be the only one.
+test_recovery_refuses_to_overwrite_an_unacknowledged_reconcile_record() {
+  local case_dir id first second marker reconcile_marker out
+  id=atomic-heal-retain-unresolved-twice-b21
+  first=https://github.com/example/repo/pull/16
+  second=https://github.com/example/repo/pull/17
+  case_dir=$(make_home heal-retain-unresolved-twice)
+  add_item "$case_dir" "$id"
+  tasks-axi hold "$id" --reason "captain decision pending" --kind captain \
+    --file "$(backlog_of "$case_dir")" >/dev/null
+  tasks-axi rm "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  marker="$(home_of "$case_dir")/state/$id.backlog-close"
+  reconcile_marker="$(home_of "$case_dir")/state/$id.backlog-reconcile"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-retain-unresolved-first\nmode=retain\narg=--pr\narg=%s\n' \
+    "$id" "$(home_of "$case_dir")/data" "$first" > "$reconcile_marker"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-retain-unresolved-second\nmode=retain\narg=--pr\narg=%s\n' \
+    "$id" "$(home_of "$case_dir")/data" "$second" > "$marker"
+
+  out=$(run_bootstrap "$case_dir")
+  assert_present "$reconcile_marker" \
+    "a second unresolved retain destroyed the unacknowledged reconcile record it landed on"
+  assert_contains "$out" "PR $first" \
+    "the deliverable the surviving reconcile record carried was lost to the second retirement"
+  assert_not_contains "$out" "$second" \
+    "the second retain overwrote the unacknowledged record instead of being refused"
+  assert_present "$marker" \
+    "the refused pending close was dropped instead of left to retry once the record is acked"
+  assert_contains "$out" "could not be replayed" \
+    "the refused retirement was not reported at all"
+  pass "a second unresolved retain never overwrites an unacknowledged reconcile record"
+}
+
+# Defect: the reconcile sweep sat below the backlog-transition gate, so a home
+# that stopped keeping a markdown backlog (or switched to manual editing) went
+# silent about records it still held - the same missed-report harm reached by a
+# different route, since reading a record needs nothing from the backlog.
+test_recovery_reconcile_record_reports_when_backlog_transitions_are_skipped() {
+  local case_dir id pr reconcile_marker out
+  id=atomic-heal-retain-unresolved-gated-b22
+  pr=https://github.com/example/repo/pull/18
+  case_dir=$(make_home heal-retain-unresolved-gated)
+  reconcile_marker="$(home_of "$case_dir")/state/$id.backlog-reconcile"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-retain-unresolved-gated\nmode=retain\narg=--pr\narg=%s\n' \
+    "$id" "$(home_of "$case_dir")/data" "$pr" > "$reconcile_marker"
+  rm -f "$(backlog_of "$case_dir")"
+
+  out=$(run_bootstrap "$case_dir")
+  assert_present "$reconcile_marker" \
+    "a skipped backlog transition retired a reconcile record nobody acknowledged"
+  assert_contains "$out" "BACKLOG_RECONCILE: $id:" \
+    "a home whose backlog transitions are skipped went silent about a reconcile record it still holds"
+  assert_contains "$out" "PR $pr" \
+    "the re-reported reconcile line lost the deliverable it was carrying"
+  pass "a reconcile record is re-reported even when this home's backlog transitions are skipped"
+}
+
+# Defect: reading a reconcile record mutates nothing, but the report was
+# reachable only from inside the mutating sweep FM_BOOTSTRAP_DETECT_ONLY skips.
+# A read-only session start - the one another session's fleet lock forces, and
+# the one --reemit repeats after a /clear or a compaction - therefore handed the
+# captain a digest with the unacknowledged deliverable missing from it, though
+# the record is owed on EVERY session start until it is acked.
+test_recovery_reconcile_record_reports_in_a_read_only_session_start() {
+  local case_dir home id pr reconcile_marker before after out
+  id=atomic-heal-retain-unresolved-detect-only-b27
+  pr=https://github.com/example/repo/pull/21
+  case_dir=$(make_home heal-retain-unresolved-detect-only)
+  home=$(home_of "$case_dir")
+  reconcile_marker="$home/state/$id.backlog-reconcile"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-retain-unresolved-detect-only\nmode=retain\narg=--pr\narg=%s\n' \
+    "$id" "$home/data" "$pr" > "$reconcile_marker"
+
+  before=$(records_and_backlog_digest "$home") \
+    || fail "no checksum tool is available to prove a read-only session start changed nothing"
+  out=$(run_bootstrap_detect_only "$case_dir")
+  after=$(records_and_backlog_digest "$home") \
+    || fail "no checksum tool is available to prove a read-only session start changed nothing"
+
+  assert_contains "$out" "BACKLOG_RECONCILE: $id:" \
+    "a read-only session start went silent about a reconcile record nobody had acknowledged"
+  assert_contains "$out" "PR $pr" \
+    "the read-only session start's reconcile line lost the deliverable it was carrying"
+  assert_equals "$before" "$after" \
+    "a read-only session start changed this home's records or backlog while reporting a reconcile record"
+  pass "a reconcile record is reported in a read-only session start without mutating the home"
+}
+
+# Defect: a home whose only backlog state was a surviving reconcile record had
+# its gate kind promoted to ship, which ran the full backend resolution. When
+# that resolution errored the session start died before reconciliation ran at
+# all, so the unacknowledged deliverable went unreported - the exact silence
+# the durable record exists to prevent.
+test_recovery_reconcile_record_reports_when_the_backend_cannot_be_resolved() {
+  local case_dir id pr reconcile_marker out
+  id=atomic-heal-retain-unresolved-backend-b23
+  pr=https://github.com/example/repo/pull/19
+  case_dir=$(make_home heal-retain-unresolved-backend)
+  reconcile_marker="$(home_of "$case_dir")/state/$id.backlog-reconcile"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-retain-unresolved-backend\nmode=retain\narg=--pr\narg=%s\n' \
+    "$id" "$(home_of "$case_dir")/data" "$pr" > "$reconcile_marker"
+  rm -f "$(home_of "$case_dir")/.tasks.toml"
+  ln -s missing-backend.toml "$(home_of "$case_dir")/.tasks.toml"
+
+  out=$(run_bootstrap "$case_dir") || true
+  assert_not_contains "$out" "bootstrap cannot access configured backlog data directory" \
+    "an unresolvable backend killed session start for a home whose only backlog state is a reconcile record"
+  assert_present "$reconcile_marker" \
+    "an unresolvable backend retired a reconcile record nobody acknowledged"
+  assert_contains "$out" "BACKLOG_RECONCILE: $id:" \
+    "a home with an unresolvable backend went silent about the reconcile record it still holds"
+  assert_contains "$out" "PR $pr" \
+    "the re-reported reconcile line lost the deliverable it was carrying"
+  pass "a reconcile record is re-reported even when this home's backlog backend cannot be resolved"
+}
+
+# Defect: the every-session-start report ran only after the mutating block, so
+# the block's own fatal arm suppressed it. The home above escapes that arm only
+# because a lone reconcile record leaves the gate kind at `secondmate`, which
+# short-circuits to a harmless skip. Any ordinary live ship record - or any
+# coexisting pending close, a state fm_backlog_reconcile_marker_write now leaves
+# in place deliberately until an ack - promotes the gate kind, drives the
+# unresolvable backend to a hard error, and killed session start with the
+# unacknowledged deliverable never printed, on that start and every later one.
+test_recovery_reconcile_record_reports_when_a_promoted_gate_kind_cannot_resolve() {
+  local case_dir home id pr other reconcile_marker out
+  pr=https://github.com/example/repo/pull/24
+  for other in live-ship pending-close; do
+    id="atomic-heal-retain-unresolved-gate-$other-b30"
+    case_dir=$(make_home "heal-retain-unresolved-gate-$other")
+    home=$(home_of "$case_dir")
+    reconcile_marker="$home/state/$id.backlog-reconcile"
+    printf 'id=%s\ndata=%s\nspawn_gen=spawn-%s\nmode=retain\narg=--pr\narg=%s\n' \
+      "$id" "$home/data" "$id" "$pr" > "$reconcile_marker"
+    if [ "$other" = live-ship ]; then
+      write_task_meta "$case_dir" "$id-neighbour" ship no-mistakes \
+        "spawn_gen=spawn-$id-neighbour"
+    else
+      printf 'id=%s\ndata=%s\nspawn_gen=spawn-%s-neighbour\n' \
+        "$id-neighbour" "$home/data" "$id" > "$home/state/$id-neighbour.backlog-close"
+    fi
+    rm -f "$home/.tasks.toml"
+    ln -s missing-backend.toml "$home/.tasks.toml"
+
+    out=$(run_bootstrap "$case_dir") || true
+    assert_present "$reconcile_marker" \
+      "the $other home retired a reconcile record nobody acknowledged"
+    assert_contains "$out" "BACKLOG_RECONCILE: $id:" \
+      "a home holding a $other beside its reconcile record went silent about the record when its backlog gate errored"
+    assert_contains "$out" "PR $pr" \
+      "the $other home's reconcile line lost the deliverable it was carrying"
+    assert_equals 1 "$(printf '%s\n' "$out" | grep -c "BACKLOG_RECONCILE: $id:")" \
+      "the $other home printed the same reconcile record more than once in a single session start"
+  done
+  pass "a reconcile record still reports when a promoted gate kind cannot resolve the backlog backend"
+}
+
+# A captain-held task can pause for a decision before producing any artifact,
+# so its durable reconcile record may legitimately carry no deliverable.
+# The repeated report must distinguish that from a record whose payload was
+# lost, and it must remain present until explicit acknowledgement.
+test_recovery_reconcile_record_reports_when_no_deliverable_was_recorded() {
+  local case_dir id marker reconcile_marker out out2
+  id=atomic-heal-retain-unresolved-bare-b24
+  case_dir=$(make_home heal-retain-unresolved-bare)
+  add_item "$case_dir" "$id"
+  tasks-axi hold "$id" --reason "captain decision pending" --kind captain \
+    --file "$(backlog_of "$case_dir")" >/dev/null
+  tasks-axi rm "$id" --file "$(backlog_of "$case_dir")" >/dev/null
+  marker="$(home_of "$case_dir")/state/$id.backlog-close"
+  reconcile_marker="$(home_of "$case_dir")/state/$id.backlog-reconcile"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-retain-unresolved-bare\nmode=retain\n' \
+    "$id" "$(home_of "$case_dir")/data" > "$marker"
+
+  out=$(run_bootstrap "$case_dir")
+  assert_absent "$marker" \
+    "a deliverable-free unresolved retain stayed on the pending-close glob"
+  assert_present "$reconcile_marker" \
+    "a deliverable-free unresolved retain was erased instead of retained for reconciliation"
+  assert_contains "$out" "it recorded no deliverable, so the call's disposition must be settled with the captain" \
+    "a deliverable-free reconcile record did not say what it actually knew"
+  assert_not_contains "$out" "recorded deliverable (" \
+    "a reconcile record that captured nothing pointed at a recorded deliverable"
+
+  out2=$(run_bootstrap "$case_dir")
+  assert_present "$reconcile_marker" \
+    "a repeated report deleted a deliverable-free reconcile record without acknowledgement"
+  assert_contains "$out2" "it recorded no deliverable, so the call's disposition must be settled with the captain" \
+    "a deliverable-free reconcile record was not reported again"
+  pass "a reconcile record with no deliverable survives and reports its true disposition"
+}
+
+# Teardown records cleanup as incomplete before removing the task metadata.
+# If the retained row is also gone, that warning belongs in the durable record
+# and every repeated report, whether or not the task had produced an artifact.
+test_recovery_reconcile_record_preserves_incomplete_cleanup_warning() {
+  local case_dir home id with_pr bare pr with_pr_line bare_line out out2
+  with_pr=atomic-heal-retain-unresolved-incomplete-b25
+  bare=atomic-heal-retain-unresolved-incomplete-bare-b26
+  pr=https://github.com/example/repo/pull/20
+  case_dir=$(make_home heal-retain-unresolved-incomplete)
   home=$(home_of "$case_dir")
   for id in "$with_pr" "$bare"; do
     add_item "$case_dir" "$id"
     tasks-axi hold "$id" --reason "captain decision pending" --kind captain \
       --file "$(backlog_of "$case_dir")" >/dev/null
     tasks-axi rm "$id" --file "$(backlog_of "$case_dir")" >/dev/null
-    [ -z "$(row_state "$case_dir" "$id")" ] \
-      || fail "the fixture's removed row is still visible to tasks-axi show"
     write_task_meta "$case_dir" "$id" ship no-mistakes "spawn_gen=spawn-$id"
   done
   printf 'id=%s\ndata=%s\nspawn_gen=spawn-%s\nmode=retain\narg=--pr\narg=%s\n' \
@@ -2155,21 +2589,29 @@ test_recovery_warns_about_surviving_resources_when_a_retain_row_is_absent() {
     assert_absent "$home/state/$id.meta" \
       "replay left the interrupted task record for $id behind"
     assert_absent "$home/state/$id.backlog-close" \
-      "an interrupted retain for the absent row $id was left to retry forever"
+      "an interrupted unresolved retain for $id stayed on the pending-close glob"
+    assert_present "$home/state/$id.backlog-reconcile" \
+      "an interrupted unresolved retain for $id was erased instead of retained"
   done
   with_pr_line=$(printf '%s\n' "$out" | grep -F "BACKLOG_RECONCILE: $with_pr:") \
-    || fail "an interrupted retention of an absent row went unreported: $out"
+    || fail "an interrupted unresolved retain with a deliverable went unreported: $out"
   bare_line=$(printf '%s\n' "$out" | grep -F "BACKLOG_RECONCILE: $bare:") \
-    || fail "a deliverable-free interrupted retention of an absent row went unreported: $out"
+    || fail "an interrupted unresolved retain without a deliverable went unreported: $out"
   assert_contains "$with_pr_line" \
     "its endpoint or local copy may also remain, and its recorded deliverable (PR $pr) should be reconciled with the captain" \
-    "an interrupted retirement dropped its surviving-resource warning or the deliverable it discarded"
+    "an interrupted reconcile record dropped its cleanup warning or deliverable"
   assert_contains "$bare_line" \
     "its endpoint or local copy may also remain, and it recorded no deliverable, so the call's disposition must be settled with the captain" \
-    "a deliverable-free interrupted retirement dropped its surviving-resource warning or what it did know"
-  [ "${with_pr_line#*: "$with_pr": }" != "${bare_line#*: "$bare": }" ] \
-    || fail "the recorded and unrecorded deliverable dispositions collapsed into one message"
-  pass "recovery warns about surviving resources when an absent row's retention was interrupted mid-cleanup"
+    "a deliverable-free interrupted reconcile record dropped its cleanup warning"
+
+  out2=$(run_bootstrap "$case_dir")
+  assert_contains "$out2" "BACKLOG_RECONCILE: $with_pr:" \
+    "the repeated report dropped an interrupted reconcile record with a deliverable"
+  assert_contains "$out2" "BACKLOG_RECONCILE: $bare:" \
+    "the repeated report dropped an interrupted reconcile record without a deliverable"
+  assert_contains "$out2" "endpoint or local copy may also remain" \
+    "the repeated report dropped the durable incomplete-cleanup warning"
+  pass "durable reconcile records preserve incomplete-cleanup warnings across reports"
 }
 
 test_recovery_preserves_a_close_when_the_backlog_cannot_be_read() {
@@ -3177,9 +3619,20 @@ test_recovery_rejects_an_internal_worker_record_symlink
 test_recovery_ignores_a_symlinked_worker_record
 test_recovery_replays_a_close_an_interrupted_cleanup_left_open
 test_recovery_backfills_a_recorded_link_on_an_already_done_item
-test_recovery_retires_a_retain_for_a_row_absent_from_the_backlog
-test_recovery_retires_a_retain_that_recorded_no_deliverable
-test_recovery_warns_about_surviving_resources_when_a_retain_row_is_absent
+test_recovery_reports_incomplete_cleanup_for_an_answered_retain
+test_recovery_recognizes_a_retain_row_answered_then_archived
+test_recovery_recognizes_a_same_day_archived_answer
+test_recovery_escalates_a_reused_id_whose_archived_answer_predates_the_record
+test_recovery_escalates_an_unstamped_record_over_an_unattributable_archived_answer
+test_recovery_reconcile_record_survives_being_unread
+test_recovery_reconcile_report_renders_a_note_deliverable_readably
+test_recovery_refuses_to_overwrite_an_unacknowledged_reconcile_record
+test_recovery_reconcile_record_reports_when_backlog_transitions_are_skipped
+test_recovery_reconcile_record_reports_in_a_read_only_session_start
+test_recovery_reconcile_record_reports_when_the_backend_cannot_be_resolved
+test_recovery_reconcile_record_reports_when_a_promoted_gate_kind_cannot_resolve
+test_recovery_reconcile_record_reports_when_no_deliverable_was_recorded
+test_recovery_reconcile_record_preserves_incomplete_cleanup_warning
 test_recovery_preserves_a_close_when_the_backlog_cannot_be_read
 test_recovery_retry_preserves_incomplete_cleanup_warning
 test_recovery_finishes_a_close_for_the_same_meta_incarnation

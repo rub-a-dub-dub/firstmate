@@ -106,8 +106,9 @@
 #          secondmate_liveness_sweep, secondmate_handoff_resume, x_mode_setup,
 #          fleet_sync) while still
 #          printing every read-only detect line
-#          above; the TANGLE line switches to advisory-only wording with no
-#          checkout command. Used by
+#          above and every unacknowledged BACKLOG_RECONCILE record, which is
+#          read-only and owed to the captain on every session start; the TANGLE
+#          line switches to advisory-only wording with no checkout command. Used by
 #          fm-session-start.sh's read-only path when another live session holds
 #          the fleet lock, so a second concurrent session never race-mutates
 #          secondmate homes, pending handoff outboxes and receiver wakes,
@@ -1220,6 +1221,37 @@ crew_dispatch_validate() {
   fi
 }
 
+# Re-report every retain-unresolved reconcile record on EVERY session start,
+# not once: fm_backlog_reconcile_marker_write retires these off the
+# .backlog-close glob without deleting them precisely so a missed digest costs
+# nothing but a repeat of the next one. Only an explicit
+# `bin/fm-backlog-reconcile.sh ack <id>` ever clears one. Reading a record needs
+# nothing from the backlog and mutates nothing, so this reports for as long as
+# the record exists, including on a home whose backlog transitions the gate
+# below skips and in a read-only FM_BOOTSTRAP_DETECT_ONLY session start.
+backlog_reconcile_record_report() {
+  local marker label deliverable disposition
+  for marker in "$STATE"/*.backlog-reconcile; do
+    [ -e "$marker" ] || [ -L "$marker" ] || continue
+    label=$(basename "$marker" .backlog-reconcile)
+    if ! fm_backlog_close_marker_validate "$marker" "$DATA" "$label" "$STATE"; then
+      echo "BACKLOG_RECONCILE: $label: recorded reconcile record could not be read: $FM_BACKLOG_TRANSITION_ERROR"
+      continue
+    fi
+    deliverable=$(fm_backlog_retain_deliverable \
+      "${FM_BACKLOG_CLOSE_VALIDATED_ARGS[@]+"${FM_BACKLOG_CLOSE_VALIDATED_ARGS[@]}"}")
+    if [ -n "$deliverable" ]; then
+      disposition="its recorded deliverable ($deliverable) should be reconciled with the captain"
+    else
+      disposition="it recorded no deliverable, so the call's disposition must be settled with the captain"
+    fi
+    if [ "$FM_BACKLOG_CLOSE_VALIDATED_CLEANUP_INCOMPLETE" = 1 ]; then
+      disposition="its endpoint or local copy may also remain, and $disposition"
+    fi
+    echo "BACKLOG_RECONCILE: $label: the captain-held call could not be returned to Queued because its backlog row is on record nowhere, live or archived; $disposition. Run bin/fm-backlog-reconcile.sh ack $label once reconciled."
+  done
+}
+
 # Same-home record reconciliation. Every ordinary dispatch and completion now
 # moves the backlog row inside the script that moves the task's record
 # (bin/fm-backlog-transition-lib.sh), so remaining recovery cases include a
@@ -1229,7 +1261,7 @@ crew_dispatch_validate() {
 # snapshot's classifier and bin/fm-secondmate-reconcile.sh's nudge stay as
 # backstops for what this cannot see. Never reads or writes another home.
 backlog_record_reconcile() {
-  local marker meta control_lock meta_lock id row label has_record=0 gate_status disposition
+  local marker meta control_lock meta_lock id row label has_record=0 gate_status
   # A fresh home with no state directory has no physical task records to pair.
   # Keep bootstrap diagnostics working without creating state just for a no-op.
   [ -e "$STATE" ] || [ -L "$STATE" ] || return 0
@@ -1284,16 +1316,14 @@ backlog_record_reconcile() {
         answered)
           echo "BOOTSTRAP_INFO: finished the interrupted cleanup for $label; the captain had already answered its call"
           ;;
-        retain_absent|retain_absent_incomplete)
-          if [ -n "$FM_BACKLOG_CLOSE_REPLAY_DELIVERABLE" ]; then
-            disposition="its recorded deliverable ($FM_BACKLOG_CLOSE_REPLAY_DELIVERABLE) should be reconciled with the captain"
-          else
-            disposition="it recorded no deliverable, so the call's disposition must be settled with the captain"
-          fi
-          if [ "$FM_BACKLOG_CLOSE_REPLAY_RESULT" = retain_absent_incomplete ]; then
-            disposition="its endpoint or local copy may also remain, and $disposition"
-          fi
-          echo "BACKLOG_RECONCILE: $label: the captain-held call could not be returned to Queued after an interrupted cleanup because its backlog row no longer exists; $disposition"
+        answered_incomplete)
+          echo "BOOTSTRAP_INFO: the captain had already answered the call for $label before cleanup finished; its endpoint or local copy may remain and should be reconciled"
+          ;;
+        retain_unresolved)
+          # Reported by backlog_reconcile_record_report, which this session
+          # start still reaches after this sweep returns (the rename already
+          # landed) and every session start after it reaches too, not just this
+          # one.
           ;;
       esac
     else
@@ -1429,6 +1459,7 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ] && local_phase; then
   else
     BOOTSTRAP_BACKLOG_GATE_STATUS=$?
     if [ "$BOOTSTRAP_BACKLOG_GATE_STATUS" -eq 2 ]; then
+      backlog_reconcile_record_report
       echo "error: bootstrap cannot access configured backlog data directory $DATA ($FM_BACKLOG_TRANSITION_ERROR)" >&2
       exit 1
     fi
@@ -1439,10 +1470,20 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ] && local_phase; then
   else
     BOOTSTRAP_BACKLOG_RECONCILE_STATUS=$?
     if [ "$BOOTSTRAP_BACKLOG_RECONCILE_STATUS" -eq 2 ]; then
+      backlog_reconcile_record_report
       exit 1
     fi
   fi
 fi
+
+# Read-only, and owed to the captain on EVERY session start - so it sits outside
+# the mutating gate above, which a detect-only read-only session skips, and
+# after it, so a record the replay just retired reports on that same start. The
+# two fatal arms inside that gate emit it themselves before they exit, since
+# they never reach here; each of those arms exits, so no session start can print
+# a record twice. The deferred network pass never repeats it either: the local
+# pass already printed it.
+local_phase && backlog_reconcile_record_report
 
 # Local detection: presence, version floors, and configuration. Nothing here
 # leaves this machine, so it stays on the session-start critical path.
