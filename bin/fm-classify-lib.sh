@@ -763,7 +763,7 @@ _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb
     *:*) case "$verb:$kind" in done:ship|done:scout|failed:ship|failed:scout) return 0 ;; esac ;;
   esac
   case "$verb" in
-    needs-decision|blocked|"$resolve"|"$held"|done|"${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}") ;;
+    needs-decision|blocked|"$resolve"|"$held"|done) ;;
     *) printf '%s' "$open"; return 0 ;;
   esac
   key=$(_fm_decision_key "$line") || { printf '%s' "$open"; return 0; }
@@ -780,11 +780,13 @@ _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb
       open=$(_fm_decision_drop "$open" "$key")
       [ -n "$open" ] && open="${open}"$'\n'
       ;;
-    done|"${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}")
+    done)
       # Retire only the shared "default" bucket (see the key-grammar comment
-      # above) and only for a PLAIN terminal/paused line - one with no
-      # correlation token - never a stated key, which stays governed by the
-      # resolve/held case above regardless of what else follows it.
+      # above) and only for a PLAIN terminal line - one with no correlation
+      # token - never a stated key, which stays governed by the resolve/held
+      # case above regardless of what else follows it. A paused line retires
+      # nothing: the wait is not an outcome, and upstream keeps the blocker
+      # open across it in both readers.
       if _fm_decision_line_retires_default "$key" "$line"; then
         case "$open" in
           default$'\t'*|*$'\n'default$'\t'*)
@@ -813,16 +815,15 @@ _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb
 # subprocess read, which exists for that function's much narrower payload-driven
 # path resolution rather than this directory-local glob.
 status_open_decisions() {  # <status-file> [<kind>]
-  local f=$1 kind=${2:-} line resolve held pause open='' verb
+  local f=$1 kind=${2:-} line resolve held open='' verb
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 0
   kind=$(_fm_status_kind "$f" "$kind")
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
-  pause=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
   while IFS= read -r line || [ -n "$line" ]; do
     status_line_verb "$line" verb
     case "$verb" in
-      needs-decision|blocked|done|failed|"$resolve"|"$held"|"$pause")
+      needs-decision|blocked|done|failed|"$resolve"|"$held")
         open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held" "$kind")
         ;;
     esac
@@ -2144,17 +2145,16 @@ EOF
 }
 
 # Deliberately narrower than _fm_decision_fold_line's own retirement arm: the
-# fold retires the shared "default" bucket on a plain done OR paused line (the
-# OPEN DECISIONS captain-facing display), but this origins map only drops on
+# fold retires the shared "default" bucket on a plain done line (the OPEN
+# DECISIONS captain-facing display), but this origins map only drops on
 # resolve/held and on a done line that _fm_decision_line_retires_default
 # accepts - so a correlation-marked done, which the fold refuses to let retire
 # the bucket, never prunes an origin here either.
 # status_span_first_actionable_record (the watcher's separate actionable-event
 # classifier) reads origins, not the fold, to decide whether a
-# blocked:/needs-decision: line is still live. An emptied fold empties the map
-# with it, whatever emptied it: a worker that appended blocked: then paused: is
-# therefore no longer actionable here, because paused retires the display row.
-# That costs the watcher a paused worker's blocker, and is upstream's behavior.
+# blocked:/needs-decision: line is still live. Neither reader retires anything
+# on a paused line, so a worker that appended blocked: then paused: keeps its
+# OPEN DECISIONS row and stays actionable to the watcher.
 _fm_status_open_decision_origins() {  # <status-file> [<kind>]
   local f=$1 line open='' after key verb note number=0 origins=''
   local resolve held kind

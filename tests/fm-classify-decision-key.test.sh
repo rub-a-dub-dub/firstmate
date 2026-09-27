@@ -81,7 +81,7 @@ test_bare_keyless_line_still_folds_to_default() {
   pass "a keyless needs-decision still opens and closes the default key"
 }
 
-test_unkeyed_blocked_retires_after_a_later_terminal_or_paused_line() {
+test_unkeyed_blocked_retires_after_a_later_terminal_line() {
   local dir
   dir=$(case_dir unkeyed-blocked-retires)
   printf 'blocked: no-mistakes axi run refuses to push the rebased branch\n' > "$dir/t.status"
@@ -94,26 +94,37 @@ test_unkeyed_blocked_retires_after_a_later_terminal_or_paused_line() {
   printf 'working: moved the work to a fresh branch\ndone: PR checks green at 14/14\npaused: captain-held\n' \
     >> "$dir/t.status"
   assert_fold "$dir/t.status" "" \
-    "a later working/done/paused sequence retires the unkeyed blocked line"
-  pass "an unkeyed blocked line retires once a later done or paused line follows it"
+    "a later done line retires the unkeyed blocked line"
+  pass "an unkeyed blocked line retires once a later done line follows it"
 }
 
-# A plain pause retires the shared bucket, and the whole-file fold has to agree
-# with the incremental one on that - the incremental path folds every line
-# through _fm_decision_fold_line, which acts on the pause verb, so a whole-file
-# gate that skipped pause lines would report a row the incremental fold had
-# already retired.
-test_plain_pause_retires_the_default_fold_in_both_folds() {
-  local dir f
-  dir=$(case_dir pause-retires-but-surfaces)
+# A wait is not an outcome. bin/fm-brief.sh and bin/fm-dod-lib.sh both instruct
+# a worker going away to append exactly this plain unkeyed "paused [at=...]:
+# {why}" line, so a pause that retired the bucket would drop the away-mode
+# worker from the captain's display and from the watcher at the same moment -
+# and nothing captain-relevant replaces it, because paused is not itself
+# captain-relevant.
+test_a_plain_pause_retires_nothing_in_either_reader() {
+  local dir f record='' needs=''
+  dir=$(case_dir pause-retires-nothing)
   f="$dir/task.status"
   printf 'needs-decision: should I deploy to prod?\npaused: waiting for the window\n' > "$f"
 
-  assert_fold "$f" '' "a plain pause retires the unkeyed decision in both folds"
-  pass "a plain pause retires the display row in the whole-file and incremental folds alike"
+  assert_fold "$f" \
+    "$(printf 'default\tneeds-decision\tshould I deploy to prod?\n')" \
+    "a plain pause leaves the unkeyed decision open in both folds"
+  status_span_first_actionable_record "$f" 0 record needs \
+    || fail "the decision behind a current wait was classified routine"
+  [ "$needs" = 1 ] \
+    || fail "the decision behind a current wait lost its decision marker: needs=$needs"
+  case "$record" in
+    *'needs-decision: should I deploy to prod?'*) ;;
+    *) fail "the decision behind a current wait left the actionable span: $record" ;;
+  esac
+  pass "a plain pause retires neither the OPEN DECISIONS row nor the watcher's origin"
 }
 
-test_plain_pause_retires_the_default_fold_in_both_folds
+test_a_plain_pause_retires_nothing_in_either_reader
 
 test_unkeyed_needs_decision_retires_via_done_despite_a_mismatched_keyed_resolution() {
   local dir
@@ -429,7 +440,7 @@ test_incremental_agrees_with_full_fold_across_appends() {
 
 test_stated_key_is_honored_in_both_positions
 test_bare_keyless_line_still_folds_to_default
-test_unkeyed_blocked_retires_after_a_later_terminal_or_paused_line
+test_unkeyed_blocked_retires_after_a_later_terminal_line
 test_unkeyed_needs_decision_retires_via_done_despite_a_mismatched_keyed_resolution
 test_correlated_terminal_line_does_not_retire_the_default_bucket
 test_keyed_terminal_line_does_not_retire_the_default_bucket

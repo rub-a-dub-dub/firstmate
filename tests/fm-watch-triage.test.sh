@@ -230,12 +230,11 @@ test_status_span_survives_a_later_routine_append() {
   event=$(status_span_first_actionable "$state/release.status" 0)
   [ "$event" = "done: release 1.4.0 published and installed" ] \
     || fail "the span reported '$event' instead of the completion it found"
-  # A blocker is the away-mode shape of the same masking. Use a working line:
-  # a plain paused declaration intentionally retires the shared default bucket.
-  printf 'blocked: cannot reach the release host\nworking: waiting for release access\n' \
+  # A blocker is the away-mode shape of the same masking.
+  printf 'blocked: cannot reach the release host\npaused: waiting for release access\n' \
     > "$state/blocked.status"
   status_span_has_actionable "$state/blocked.status" 0 \
-    || fail "a blocked: event hidden behind routine work was classified routine"
+    || fail "a blocked: event hidden behind a current wait was classified routine"
   # A secondmate's correlation-marked delivery report is not this worker's own
   # terminal state, and OPEN DECISIONS refuses to let it retire the shared
   # unkeyed bucket. The watcher must refuse it too, or the blocker vanishes
