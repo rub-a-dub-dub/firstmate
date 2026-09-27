@@ -98,6 +98,26 @@ test_unkeyed_blocked_retires_after_a_later_terminal_or_paused_line() {
   pass "an unkeyed blocked line retires once a later done or paused line follows it"
 }
 
+test_plain_pause_retires_the_default_fold_without_hiding_its_origin() {
+  local dir f record='' needs=''
+  dir=$(case_dir pause-retires-but-surfaces)
+  f="$dir/task.status"
+  printf 'needs-decision: should I deploy to prod?\npaused: waiting for the window\n' > "$f"
+
+  assert_fold "$f" '' "a plain pause retires the unkeyed decision in both folds"
+  status_span_first_actionable_record "$f" 0 record needs \
+    || fail "the decision hidden behind a current pause was not actionable"
+  [ "$needs" = 1 ] \
+    || fail "the decision hidden behind a current pause lost its decision marker: needs=$needs"
+  case "$record" in
+    *'needs-decision: should I deploy to prod?'*) ;;
+    *) fail "the decision hidden behind a current pause disappeared from the actionable span: $record" ;;
+  esac
+  pass "a plain pause retires the display row without hiding the decision event from the watcher"
+}
+
+test_plain_pause_retires_the_default_fold_without_hiding_its_origin
+
 test_unkeyed_needs_decision_retires_via_done_despite_a_mismatched_keyed_resolution() {
   local dir
   dir=$(case_dir unkeyed-needs-decision-retires)
