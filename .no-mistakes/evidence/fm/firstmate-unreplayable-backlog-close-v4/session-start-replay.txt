@@ -1,0 +1,12 @@
+$ cat home/state/fm-incident-replay.backlog-close
+  id=fm-incident-replay
+  data=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-backlog-atomicity.LOgvWs/evidence-replay/home/data
+  spawn_gen=spawn-evidence
+  arg=--pr
+  arg=https://example.test/pr/7
+
+$ bin/fm-bootstrap.sh    # next session start
+BACKLOG_RECONCILE: fm-incident-replay: the recorded backlog close was retired because its backlog row had already left this backlog, so no close was left to land; its recorded completion link (PR https://example.test/pr/7) could not be confirmed as applied and should be checked
+
+$ test -e home/state/fm-incident-replay.backlog-close && echo PRESENT || echo RETIRED
+RETIRED

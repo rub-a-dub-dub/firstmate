@@ -1,0 +1,68 @@
+Incident (user intent): a teardown ran for a task whose backlog row had already
+closed and aged out of done_keep retention. Endpoint and worktree cleaned up,
+but the close could not be recorded, and the recorded retry can never land.
+
+Fixture (both runs identical): a real backlog home, a real `tasks-axi` 0.2.5
+markdown backlog. The row is added, started, closed, then pruned with
+`--keep 0`, so `tasks-axi show <id>` answers NOT_FOUND. Then bin/fm-teardown.sh
+is run for that id.
+
+================================================================================
+BEFORE  (base 5719dac)
+================================================================================
+$ bin/fm-teardown.sh fm-incident-aged-out
+error: fm-incident-aged-out's endpoint and local copy are cleaned up, but its
+backlog item could not be closed atomically (error: "Task
+\"fm-incident-aged-out\" not found in this backlog"); the pending close is
+recorded and the next session start retries it
+$ echo $?
+1
+$ ls home/state/ | grep -c backlog-close     # unlandable record left behind
+1
+
+  ^ this is the incident text verbatim, and the recorded retry can never land.
+
+================================================================================
+AFTER  (1889a5f)
+================================================================================
+$ bin/fm-teardown.sh fm-incident-aged-out
+teardown fm-incident-aged-out complete (window firstmate:fm-fm-incident-aged-out,
+worktree .../evidence-completion/absent-worktree)
+Backlog: fm-incident-aged-out had already left .../home/data/backlog.md, so
+cleanup recorded no close there and its completion link (local main) could not
+be confirmed as applied and should be checked. Run bin/fm-tasks-axi.sh ready for
+dependency-cleared candidates, check date gates, and dispatch only work whose
+blockers are gone and date is due.
+$ echo $?
+0
+$ ls home/state/ | grep -c backlog-close     # nothing left to retry forever
+0
+
+  ^ completion accepts the confirmed absence, retires the record, and never
+    claims a close it did not make; it names the completion link as unconfirmed
+    rather than asserting it was never applied.
+
+--------------------------------------------------------------------------------
+Session start, same absence reached through a recorded close (row removed
+outright, record carries a merged PR):
+
+BEFORE (base 5719dac): bin/fm-bootstrap.sh printed NOTHING and retired the
+record silently - the PR link the record carried was dropped unreported.
+
+AFTER (1889a5f):
+$ bin/fm-bootstrap.sh
+BACKLOG_RECONCILE: fm-incident-replay: the recorded backlog close was retired
+because its backlog row had already left this backlog, so no close was left to
+land; its recorded completion link (PR https://example.test/pr/7) could not be
+confirmed as applied and should be checked
+$ test -e home/state/fm-incident-replay.backlog-close && echo PRESENT || echo RETIRED
+RETIRED
+
+--------------------------------------------------------------------------------
+Unconfirmed absence still refuses (close reports NOT_FOUND, the confirming row
+read fails) - AFTER, exit 1, record preserved:
+error: ...'s endpoint and local copy are cleaned up, but its backlog item could
+not be closed atomically (error: Task "..." not found in this backlog; this
+home's backlog row could not be read to confirm whether the item still exists
+(error: "backlog is unreadable"), so the next session start retries this close);
+the pending close is recorded and the next session start retries it
