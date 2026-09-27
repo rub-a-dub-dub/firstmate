@@ -1,0 +1,48 @@
+
+========== SETUP: the filed incident - the row closes, then ages out of done_keep retention ==========
+backlog row state for fm-retention-incident-demo after retention prune: 
+tasks-axi show fm-retention-incident-demo ->
+  error: "Task \"fm-retention-incident-demo\" not found in this backlog"
+  code: NOT_FOUND
+  help[1]: Run `tasks-axi list --file=<TMPROOT>/evidence-incident/home/data/backlog.md` to see existing tasks
+
+========== WHAT THE OPERATOR SEES: bin/fm-teardown.sh completion output ==========
+error: fm-retention-incident-demo's endpoint and local copy are cleaned up, but its backlog item could not be closed atomically (error: "Task \"fm-retention-incident-demo\" not found in this backlog"); the pending close is recorded and the next session start retries it
+
+[teardown exit status: 1]
+[state/fm-retention-incident-demo.backlog-close after completion: still recorded - retry owed]
+
+========== SETUP: a pending-close record left by an earlier interrupted teardown, for a row now gone ==========
+state/fm-retention-incident-replay.backlog-close:
+  id=fm-retention-incident-replay
+  data=<TMPROOT>/evidence-replay/home/data
+  spawn_gen=spawn-evidence
+  arg=--pr
+  arg=https://github.com/example/repo/pull/42
+
+========== WHAT THE OPERATOR SEES: bin/fm-bootstrap.sh session-start reconciliation ==========
+MISSING: chrome-devtools-axi (install: npm install -g chrome-devtools-axi && chrome-devtools-axi setup hooks)
+MISSING: quota-axi (install: npm install -g quota-axi)
+MISSING: treehouse (install: curl -fsSL https://kunchenguid.github.io/treehouse/install.sh | sh)
+MISSING: no-mistakes (install: curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh)
+MISSING: gh-axi (install: npm install -g gh-axi && gh-axi setup hooks)
+PRESENTATION_UNAVAILABLE: lavish-axi (requires >=0.1.46; install: npm install -g lavish-axi && lavish-axi setup hooks) - nonvisual work may proceed with plain-text decisions and reports; install or upgrade before using Lavish
+
+[state/fm-retention-incident-replay.backlog-close after session start: retired]
+
+========== SETUP: the close reports NOT_FOUND but the confirming row read fails - absence unconfirmed ==========
+
+========== WHAT THE OPERATOR SEES: completion still refuses and keeps the record ==========
+error: fm-unreadable-backlog-demo's endpoint and local copy are cleaned up, but its backlog item could not be closed atomically (error: Task "fm-unreadable-backlog-demo" not found in this backlog); the pending close is recorded and the next session start retries it
+
+[teardown exit status: 1]
+[state/fm-unreadable-backlog-demo.backlog-close: preserved for retry]
+
+========== CONTROL: an ordinary present row still closes and reports the landed close ==========
+teardown fm-ordinary-close-demo complete (window firstmate:fm-fm-ordinary-close-demo, worktree <TMPROOT>/evidence-ordinary/absent-worktree)
+Backlog: fm-ordinary-close-demo is closed in <TMPROOT>/evidence-ordinary/home/data/backlog.md. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+
+[teardown exit status: 0]
+[backlog row state after completion: done]
+
+ok - evidence captured
