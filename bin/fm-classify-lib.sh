@@ -1394,32 +1394,43 @@ EOF
   return "$rc"
 }
 
-status_acknowledge_presented_snapshot() {  # <state> <snapshot> [<fully-presented-task-ids>]
-  local state=$1 snapshot=$2 fully_presented=${3:-} task endpoint ident f offset lines line safe
+# held-task-ids are the tasks whose supplemental annotation this drain could not
+# compute. Their spans were never presented, so their cursors stay where they
+# are no matter what the span itself contains: an unread-surface line in a span
+# nobody printed must not acknowledge the routine lines around it, whose only
+# surface is that annotation.
+status_acknowledge_presented_snapshot() {  # <state> <snapshot> [<fully-presented-task-ids>] [<held-task-ids>]
+  local state=$1 snapshot=$2 fully_presented=${3:-} held=${4:-} task endpoint ident f offset lines line safe hold
   while IFS=$(printf '\t') read -r task endpoint ident; do
     [ -n "$task" ] || continue
     safe=false
+    hold=false
+    case "
+$held
+" in *$'\n'"$task"$'\n'*) hold=true ;; esac
     case "
 $fully_presented
-" in *$'\n'"$task"$'\n'*) safe=true ;; esac
+" in *$'\n'"$task"$'\n'*) [ "$hold" = true ] || safe=true ;; esac
     if [ "$safe" = false ]; then
       f="$state/$task.status"
       offset=$(status_presentation_cursor_offset "$f") || return 1
-      lines=$(status_new_lines_since_cursor "$f" "$endpoint") || return 1
-      # Once any informational line in this span is presented fleet-wide, the
-      # contiguous cursor may advance through the captured endpoint. Routine
-      # lines remain unacknowledged only while they are the sole unread content,
-      # preserving delayed signal annotations without replaying a handled note
-      # that happened to follow a routine line.
-      while IFS= read -r line || [ -n "$line" ]; do
-        case "$line" in
-          *[![:space:]]*)
-            if status_line_is_unread_surface "$line"; then safe=true; break; fi
-            ;;
-        esac
-      done <<EOF
+      if [ "$hold" = false ]; then
+        lines=$(status_new_lines_since_cursor "$f" "$endpoint") || return 1
+        # Once any informational line in this span is presented fleet-wide, the
+        # contiguous cursor may advance through the captured endpoint. Routine
+        # lines remain unacknowledged only while they are the sole unread content,
+        # preserving delayed signal annotations without replaying a handled note
+        # that happened to follow a routine line.
+        while IFS= read -r line || [ -n "$line" ]; do
+          case "$line" in
+            *[![:space:]]*)
+              if status_line_is_unread_surface "$line"; then safe=true; break; fi
+              ;;
+          esac
+        done <<EOF
 $lines
 EOF
+      fi
       if [ "$safe" = false ]; then endpoint=$offset; fi
     fi
     printf '%s\t%s\t%s\n' "$task" "$endpoint" "$ident" || return 1

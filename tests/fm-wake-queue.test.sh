@@ -1864,7 +1864,9 @@ test_malformed_presentation_lock_reports_acquire_failure() {
 # The annotation pass and fleet-wide sections share the presentation cursor,
 # but the former used to treat a cursor-read failure as "skip this live row".
 # Fail exactly the annotation's first cursor read, then let every later read
-# recover, proving the row cannot disappear without a stdout notice.
+# recover, proving the row cannot disappear without a stdout notice and that the
+# notice's promised retry is real: a `working:` line has no surface other than
+# this annotation, so the drain that could not print it must not acknowledge it.
 test_annotation_cursor_failure_is_reported_on_stdout() {
   local dir state out err fakebin real_cat manifest status
   dir=$(make_case annotation-cursor-failure)
@@ -1882,6 +1884,7 @@ test_annotation_cursor_failure_is_reported_on_stdout() {
   [ -s "$manifest" ] || fail "the annotation cursor fixture wrote no presentation manifest"
 
   printf 'working: live row must not disappear silently\n' >> "$status"
+  printf 'note: the captain reads this one through the fleet-wide section\n' >> "$status"
   append_wake "$state" signal task.status "signal: $status" \
     || fail "could not seed the annotation cursor wake"
   cat > "$fakebin/cat" <<'SH'
@@ -1906,10 +1909,75 @@ SH
   if grep -F 'wake annotation:' "$out" >/dev/null; then
     fail "the failed annotation cursor read still printed an authoritative annotation"
   fi
-  grep -F 'STATUS ANNOTATION INCOMPLETE: a presentation cursor could not be read' "$out" >/dev/null \
+  grep -F 'STATUS ANNOTATION INCOMPLETE:' "$out" >/dev/null \
     || fail "the annotation cursor failure remained silent on stdout: $(command cat "$out")"
 
-  pass "a live row's annotation cursor failure is explicit on stdout"
+  grep -F 'note: the captain reads this one through the fleet-wide section' "$out" >/dev/null \
+    || fail "the annotation failure suppressed the independent fleet-wide sections: $(command cat "$out")"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" \
+    || fail "the drain after the injected annotation cursor failure cleared failed"
+  grep -F 'wake annotation:' "$out" | grep -F 'working: live row must not disappear silently' >/dev/null \
+    || fail "the unannotated line was acknowledged instead of retried: $(command cat "$out")"
+
+  pass "a live row's annotation cursor failure is explicit on stdout and retried"
+}
+
+# A span read that FAILS and a span with nothing unread in it used to be the same
+# return, so a transient read failure dropped a live task's annotation with no
+# notice at all and the presentation cursor still advanced past the bytes the
+# drain never printed. Fail exactly the annotation's first span read.
+test_annotation_span_read_failure_is_reported_and_retried() {
+  local dir state out err fakebin real_perl status
+  dir=$(make_case annotation-span-read-failure)
+  state="$dir/state"
+  out="$dir/drain.out"
+  err="$dir/drain.err"
+  fakebin="$dir/fakebin"
+  status="$state/task.status"
+  real_perl=$(command -v perl)
+
+  printf 'note: prime the presentation cursor\n' > "$status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "could not prime the annotation span fixture"
+
+  printf 'working: span read must not vanish silently\n' >> "$status"
+  printf 'note: an unread surface the fleet-wide section acknowledges\n' >> "$status"
+  append_wake "$state" signal task.status "signal: $status" \
+    || fail "could not seed the annotation span wake"
+  cat > "$fakebin/perl" <<'SH'
+#!/usr/bin/env bash
+set -u
+for arg in "$@"; do
+  if [ "$arg" = "$FM_TEST_SPAN_PATH" ] && [ ! -e "$FM_TEST_SPAN_FAILURE_USED" ]; then
+    : > "$FM_TEST_SPAN_FAILURE_USED"
+    exit 1
+  fi
+done
+exec "$FM_TEST_REAL_PERL" "$@"
+SH
+  chmod +x "$fakebin/perl"
+
+  PATH="$fakebin:$PATH" FM_TEST_REAL_PERL="$real_perl" \
+    FM_TEST_SPAN_PATH="$status" \
+    FM_TEST_SPAN_FAILURE_USED="$dir/span-failure-used" \
+    FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" \
+    || fail "drain failed after the injected annotation span read failure"
+  if grep -F 'wake annotation:' "$out" >/dev/null; then
+    fail "the failed span read still printed an authoritative annotation"
+  fi
+  if grep -F 'STATUS PRESENTATION INCOMPLETE' "$out" >/dev/null; then
+    fail "the injected read failure reached the fleet-wide sections instead of the annotation span"
+  fi
+  grep -F 'STATUS ANNOTATION INCOMPLETE:' "$out" >/dev/null \
+    || fail "the failed annotation span read remained silent on stdout: $(command cat "$out")"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" \
+    || fail "the drain after the injected annotation span failure cleared failed"
+  grep -F 'wake annotation:' "$out" | grep -F 'working: span read must not vanish silently' >/dev/null \
+    || fail "the span nobody read was acknowledged instead of retried: $(command cat "$out")"
+
+  pass "a failed annotation span read is reported and its unread bytes stay unread"
 }
 
 # Drain-time historical annotation staleness: a turn-ended-only wake row must
@@ -1967,6 +2035,7 @@ test_bounded_lock_handoff_after_contention
 test_live_presentation_holder_is_deadlined_without_weakening_ack
 test_malformed_presentation_lock_reports_acquire_failure
 test_annotation_cursor_failure_is_reported_on_stdout
+test_annotation_span_read_failure_is_reported_and_retried
 test_secondmate_foreign_queue_stall_tracks_progress_and_alerts_once
 test_secondmate_declared_pause_rows_do_not_feed_stall_escalation
 test_secondmate_reprovisioned_queue_starts_a_fresh_interval

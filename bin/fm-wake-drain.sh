@@ -557,9 +557,9 @@ print_status_receipt_failure_notice() {
   printf 'STATUS PRESENTATION RECEIPT FAILED: the status sections above were fully computed and printed, but their presentation receipt could not be committed; they may repeat on the next drain.\n'
 }
 
-print_status_sections() {  # <task-and-endpoint-snapshot> [<fully-presented-task-ids>]
-  local snapshot=$1 fully_presented=${2:-} acknowledged prepared
-  acknowledged=$(status_acknowledge_presented_snapshot "$STATE" "$snapshot" "$fully_presented") || {
+print_status_sections() {  # <task-and-endpoint-snapshot> [<fully-presented-task-ids>] [<held-task-ids>]
+  local snapshot=$1 fully_presented=${2:-} held=${3:-} acknowledged prepared
+  acknowledged=$(status_acknowledge_presented_snapshot "$STATE" "$snapshot" "$fully_presented" "$held") || {
     print_status_sections_incomplete_notice 'a status log or presentation cursor could not be read'
     return 1
   }
@@ -595,7 +595,7 @@ print_status_sections() {  # <task-and-endpoint-snapshot> [<fully-presented-task
 
 print_status_presentation() {  # [<deduped-raw-rows>]
   local rows=${1:-} lock="$STATE/.status-presentation-lock" snapshot annotation_manifest fully_presented='' rc=0
-  local lock_rc holder_pid
+  local lock_rc holder_pid annotation_held=''
   if fm_lock_acquire_wait_bounded "$lock" "$PRESENTATION_LOCK_TIMEOUT"; then
     :
   else
@@ -623,22 +623,20 @@ print_status_presentation() {  # [<deduped-raw-rows>]
   }
   if [ "$rc" -eq 0 ] && [ -n "$rows" ]; then
     if ! fm_wake_print_annotations "$rows" "$snapshot"; then
-      printf 'STATUS ANNOTATION INCOMPLETE: a presentation cursor could not be read; the durable wake rows above remain authoritative, but one or more supplemental status annotations were not computed - retry on the next drain.\n'
-      rc=1
-    elif ! annotation_manifest=$(fm_wake_annotation_manifest "$rows"); then
-      printf 'STATUS ANNOTATION INCOMPLETE: the annotation manifest could not be computed; the durable wake rows above remain authoritative - retry on the next drain.\n'
-      rc=1
-    elif ! fully_presented=$(printf '%s\n' "$annotation_manifest" | awk -F '\t' '$2 == "direct" { sub(/\.status$/, "", $1); print $1 }'); then
-      printf 'STATUS ANNOTATION INCOMPLETE: the set of fully presented annotations could not be computed; the durable wake rows above remain authoritative - retry on the next drain.\n'
-      fully_presented=
+      printf 'STATUS ANNOTATION INCOMPLETE: one or more supplemental status annotations were not computed; the durable wake rows above remain authoritative and every status line those annotations would have carried stays unread - retry on the next drain.\n'
+      annotation_held=$FM_WAKE_ANNOTATION_HELD
       rc=1
     fi
+    annotation_manifest=$(fm_wake_annotation_manifest "$rows")
+    fully_presented=$(printf '%s\n' "$annotation_manifest" | awk -F '\t' '$2 == "direct" { sub(/\.status$/, "", $1); print $1 }')
   fi
-  # Annotation failure does not make the independent fleet-wide sections
-  # unsafe. With fully_presented left empty they perform their own cursor reads
-  # and either present completely or print their own precise failure notice.
+  # Annotation failure does not make the independent fleet-wide sections unsafe,
+  # so they still run and either present completely or print their own precise
+  # failure notice. Every task the annotation pass could not compute is held, so
+  # its presentation cursor does not advance and the retry the notice above
+  # promises is the one the next drain makes.
   if [ -n "$snapshot" ]; then
-    print_status_sections "$snapshot" "$fully_presented" || rc=1
+    print_status_sections "$snapshot" "$fully_presented" "$annotation_held" || rc=1
   fi
   fm_lock_release "$lock"
   return "$rc"
