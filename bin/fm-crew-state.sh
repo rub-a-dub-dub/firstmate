@@ -826,22 +826,40 @@ nm_effective_ci_step_status() {
 # never distinguishes "still waiting on checks" from "checks green, waiting on
 # merge": both read as plain `ci,running,...`. The only place that transition is
 # recorded is the ci step's own log text, e.g. "all CI checks passed - still
-# monitoring until merged or closed" or "no CI checks reported - still
-# monitoring until merged or closed" (verified against 360+ real run logs under
-# ~/.no-mistakes/logs/*/ci.log on the installed v1.32.2 binary, including the
-# actual PR #252 run). Reads the ci step's log tail via `axi logs` and scans it
-# for the MOST RECENT recognized marker (the log is append-only/chronological,
-# so the last match is current): green with nothing red after it means CI is
-# green right now, still only waiting on merge/close.
+# monitoring until merged or closed", "no CI checks reported - still monitoring
+# until merged or closed", or the explicit no_ci:true declaration (verified
+# against 360+ real run logs under ~/.no-mistakes/logs/*/ci.log on the installed
+# v1.32.2 binary, including the actual PR #252 run). Reads the ci step's log tail
+# via `axi logs` and scans it for the MOST RECENT recognized readiness marker
+# (the log is append-only/chronological, so the last match is current): green
+# with nothing red after it means CI is green right now, still only waiting on
+# merge/close. A no_ci:true declaration remains green across a base-advance
+# rearm because that repository has no checks to re-run; a later real pending,
+# failure, or issue marker still wins.
 nm_ci_checks_state() {
-  local run_id log_tail marker
+  local run_id log_tail marker line declared_no_ci
   run_id=$(strip_quotes "$(nm_field id)")
   [ -n "$run_id" ] || { printf 'unknown'; return; }
   log_tail=$(nm_run axi logs --step ci --run "$run_id") || true
   [ -n "$log_tail" ] || { printf 'unknown'; return; }
-  marker=$(printf '%s\n' "$log_tail" \
-    | grep -E 'CI checks passed|no CI checks reported - still monitoring|no CI checks reported yet|checks failed|issues detected|CI checks running|base branch advanced.*re-arming CI monitor timeout' \
-    | tail -1)
+  marker=''
+  declared_no_ci=0
+  while IFS= read -r line; do
+    case "$line" in
+      *"repository declares no CI (no_ci: true) - treating as all checks passed - still monitoring until merged or closed"*)
+        marker=$line
+        declared_no_ci=1
+        ;;
+      *"base branch advanced"*"re-arming CI monitor timeout"*)
+        [ "$declared_no_ci" = 1 ] || marker=$line
+        ;;
+      *"CI checks passed"*|*"no CI checks reported - still monitoring"*|*"no CI checks reported yet"*|*"checks failed"*|*"issues detected"*|*"CI checks running"*)
+        marker=$line
+        ;;
+    esac
+  done <<EOF
+$log_tail
+EOF
   case "$marker" in
     *"checks passed"*|*"no CI checks reported - still monitoring"*) printf 'green' ;;
     *"no CI checks reported yet"*|*"checks failed"*|*"issues detected"*|*"CI checks running"*|*"base branch advanced"*"re-arming CI monitor timeout"*) printf 'not-ready' ;;
