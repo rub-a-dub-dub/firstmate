@@ -150,6 +150,14 @@ case "${1:-} ${2:-}" in
         printf '%s\n' "{\"state\":\"OPEN\",\"isDraft\":false,\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"headRefOid\":\"${FM_TEST_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}\",\"baseRefName\":\"main\",\"statusCheckRollup\":[{\"__typename\":\"CheckRun\",\"name\":\"ci\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"}]}"
         exit 0
         ;;
+      *" --json isDraft "*)
+        printf '%s\n' "{\"isDraft\":${FM_TEST_GH_DRAFT:-false}}"
+        exit 0
+        ;;
+      *headRefOid,reviewDecision*)
+        printf '%s\n' "{\"headRefOid\":\"${FM_TEST_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}\",\"reviewDecision\":\"APPROVED\"}"
+        exit 0
+        ;;
     esac
     ;;
   "pr merge")
@@ -158,6 +166,21 @@ case "${1:-} ${2:-}" in
     ;;
 esac
 case " $* " in
+  *" api repos/"*"/issues/"*"/comments?per_page=100 "*|*" api repos/"*"/pulls/"*"/reviews?per_page=100 "*|*" api repos/"*"/pulls/"*"/comments?per_page=100 "*)
+    printf '%s\n' '[[]]'
+    ;;
+  *" api repos/"*"/commits/"*"/check-runs?filter=all&per_page=100 "*)
+    printf '%s\n' '[{"check_runs":[]}]'
+    ;;
+  *" api repos/"*"/commits/"*"/statuses?per_page=100 "*)
+    printf '%s\n' '[[]]'
+    ;;
+  *" api repos/"*"/pulls/"*)
+    printf '%s\n' "{\"state\":\"open\",\"user\":{\"login\":\"author\"},\"head\":{\"sha\":\"${FM_TEST_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}\"},\"draft\":false,\"mergeable\":true,\"merged_at\":null}"
+    ;;
+  *" api repos/"*)
+    printf '%s\n' '{"permissions":{"push":false}}'
+    ;;
   *" headRefOid "*) printf '%s\n' "${FM_TEST_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}" ;;
   *" state "*)
     [ "${FM_TEST_GH_FAIL:-0}" = 0 ] || exit 1
@@ -363,6 +386,202 @@ UNSAFE_LIFECYCLE_IDS=(
   'task$a'
 )
 
+rewrite_registration_identity() {  # <registration> <drifted-data-identity> <drifted-check-identity>
+  local registration=$1 drifted_data_identity=$2 drifted_check_identity=$3
+  fm_pr_poll_registration_parse "$registration" || fail "could not parse the armed registration"
+  printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+    fm-pr-poll-registration-v2 "$FM_PR_REG_ID" "$FM_PR_REG_PROVIDER" "$FM_PR_REG_URL" \
+    "$FM_PR_REG_HOST" "$FM_PR_REG_PATH" "$FM_PR_REG_NUMBER" \
+    "$FM_PR_REG_DATA_HASH" "$FM_PR_REG_TEMPLATE_HASH" \
+    "$drifted_data_identity" "$drifted_check_identity" > "$registration"
+}
+
+test_registration_identity_refuses_inode_swap_with_identical_content() {
+  local dir state tmp rc
+  dir=$(make_case inode-swap-sidecar)
+  state="$dir/home/state"
+  write_task_meta "$dir"
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/1 \
+    > "$dir/stdout" 2> "$dir/stderr" || fail "could not arm the poll before the inode swap"
+  fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
+    || fail "the armed poll was not authorized before the inode swap"
+  tmp="$state/.inode-swap-copy"
+  # A fresh copy carries byte-identical content on a new inode, the same
+  # shape a symlink-swap or hard-link-replace attack would leave behind.
+  cp "$state/task-a.pr-poll" "$tmp" || fail "could not copy the sidecar for the inode swap"
+  rm -f "$state/task-a.pr-poll"
+  mv "$tmp" "$state/task-a.pr-poll"
+  chmod 0600 "$state/task-a.pr-poll"
+  ! fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
+    || fail "an inode-swapped sidecar with identical bytes was silently authorized"
+  [ "$FM_PR_POLL_REJECT_REASON" = "data file inode" ] \
+    || fail "an inode swap was not reported as an inode mismatch: $FM_PR_POLL_REJECT_REASON"
+
+  rm -f "$state/.last-check"
+  set +e
+  FM_TEST_GH_STATE=MERGED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch.out" 2> "$dir/watch.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "watcher did not complete after the inode swap: $(cat "$dir/watch.err")"
+  assert_grep 'rejected unauthenticated state checks' "$dir/watch.out" \
+    "an inode-swapped sidecar was not reported as an unauthenticated state check"
+  assert_grep 'data file inode' "$dir/watch.out" \
+    "the unauthenticated state check did not name the inode mismatch it found"
+
+  dir=$(make_case inode-swap-check)
+  state="$dir/home/state"
+  write_task_meta "$dir"
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/1 \
+    > "$dir/stdout" 2> "$dir/stderr" || fail "could not arm the poll before the check inode swap"
+  fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
+    || fail "the armed poll was not authorized before the check inode swap"
+  tmp="$state/.inode-swap-copy"
+  cp "$state/task-a.check.sh" "$tmp" || fail "could not copy the check for the inode swap"
+  rm -f "$state/task-a.check.sh"
+  mv "$tmp" "$state/task-a.check.sh"
+  chmod 0600 "$state/task-a.check.sh"
+  ! fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
+    || fail "an inode-swapped check with identical bytes was silently authorized"
+  [ "$FM_PR_POLL_REJECT_REASON" = "check file inode" ] \
+    || fail "a check inode swap was not reported as an inode mismatch: $FM_PR_POLL_REJECT_REASON"
+  pass "an inode swap with identical bytes still refuses the armed poll and names the inode mismatch"
+}
+
+test_armed_poll_refuses_sidecar_content_change_the_parser_admits() {
+  local dir state rc
+  dir=$(make_case sidecar-trailing-bytes)
+  state="$dir/home/state"
+  write_task_meta "$dir"
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/1 \
+    > "$dir/stdout" 2> "$dir/stderr" || fail "could not arm the poll before the sidecar rewrite"
+  fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
+    || fail "the armed poll was not authorized before the sidecar rewrite"
+  # Appended in place, so the inode is unchanged and only the bytes differ.
+  printf 'trailing' >> "$state/task-a.pr-poll"
+  fm_pr_poll_data_parse "$state/task-a.pr-poll" \
+    || fail "the fixture did not reach the identity comparison: the sidecar parser refused it first"
+  ! fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
+    || fail "a sidecar content change was silently authorized"
+  [ "$FM_PR_POLL_REJECT_REASON" = "data file content" ] \
+    || fail "a sidecar content change was not reported as a content mismatch: $FM_PR_POLL_REJECT_REASON"
+
+  rm -f "$state/.last-check"
+  set +e
+  FM_TEST_GH_STATE=MERGED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch.out" 2> "$dir/watch.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "watcher did not complete after the sidecar rewrite: $(cat "$dir/watch.err")"
+  assert_grep 'rejected unauthenticated state checks' "$dir/watch.out" \
+    "a rewritten sidecar was not reported as an unauthenticated state check"
+  assert_grep 'data file content' "$dir/watch.out" \
+    "the unauthenticated state check did not name the content mismatch it found"
+  pass "a sidecar content change the parser admits still refuses the armed poll and names the content mismatch"
+}
+
+test_identity_reports_an_unhashable_file_as_unreadable() {
+  local dir target identity
+  dir=$(make_case unhashable-not-content)
+  # A directory stats cleanly, so the identity read succeeds and only the hash
+  # can fail - the same shape as a file unlinked between the two reads.
+  target="$dir/stats-but-cannot-be-hashed"
+  mkdir -p "$target" || fail "could not create the unhashable fixture"
+  identity=$(fm_pr_file_identity "$target") \
+    || fail "the unhashable fixture did not stat cleanly, so it tests nothing"
+  ! fm_pr_sha256 "$target" \
+    || fail "hashing an unhashable path reported success"
+  ! fm_pr_identity_matches "$target" "$identity" \
+    0000000000000000000000000000000000000000000000000000000000000000 \
+    || fail "an unhashable path was silently authorized"
+  [ "$FM_PR_IDENTITY_MISMATCH" = unreadable ] \
+    || fail "an unhashable path was reported as $FM_PR_IDENTITY_MISMATCH rather than unreadable"
+  pass "a file that stats but cannot be hashed is reported as unreadable, not as tampering"
+}
+
+# fm_pr_poll_artifacts_valid's structural checks (cmp against the check
+# template, and comparing the sidecar's parsed fields against the
+# registration) catch most content forgeries before an identity is ever
+# compared, but they do not catch every one: the sidecar parser stops after
+# five lines and only refuses a sixth that is newline-terminated, so trailing
+# bytes without a final newline survive it and the content hash inside
+# fm_pr_identity_matches is what refuses them. The retirement check file has
+# no earlier content gate at all, so it exercises the same branch directly.
+test_retirement_check_identity_refuses_content_change() {
+  local dir state receipt
+  dir=$(make_case retirement-content-change-check)
+  state="$dir/home/state"
+  write_poll_meta "$state" task-a https://github.com/o/r/pull/9
+  seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/9
+  fm_pr_poll_snapshot_capture "$state" task-a "$POLL" \
+    || fail "could not snapshot the fixture before publishing its receipt"
+  fm_pr_poll_retirement_publish "$state" task-a "$POLL" merged \
+    || fail "could not publish the retirement receipt"
+  receipt="$state/task-a.pr-poll-retirement"
+  fm_pr_poll_retirement_parse "$receipt" || fail "could not parse the published receipt"
+  fm_pr_poll_retirement_check_valid "$state" task-a \
+    || fail "the published check was not authorized before the content change"
+  printf 'tampered check bytes\n' >> "$state/task-a.check.sh"
+  ! fm_pr_poll_retirement_check_valid "$state" task-a \
+    || fail "a content change on the retiring check was silently authorized"
+  [ "$FM_PR_IDENTITY_MISMATCH" = content ] \
+    || fail "a check content change was not reported as a content mismatch: $FM_PR_IDENTITY_MISMATCH"
+  pass "a content change on a retiring poll's check still refuses and names the content mismatch"
+}
+
+test_retirement_recovery_tolerates_device_only_drift() {
+  local dir state registration receipt data check
+  local data_identity check_identity data_inode check_inode
+  local drifted_data_identity drifted_check_identity
+  local rewritten_reg_hash rewritten_reg_identity rewritten_reg_inode drifted_reg_identity
+  dir=$(make_case retirement-device-only-drift)
+  state="$dir/home/state"
+  write_poll_meta "$state" task-a https://github.com/o/r/pull/9
+  seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/9
+  fm_pr_poll_snapshot_capture "$state" task-a "$POLL" \
+    || fail "could not snapshot the fixture before publishing its receipt"
+  fm_pr_poll_retirement_publish "$state" task-a "$POLL" merged \
+    || fail "could not publish the retirement receipt"
+
+  registration="$state/task-a.pr-poll-registration"
+  receipt="$state/task-a.pr-poll-retirement"
+  data="$state/task-a.pr-poll"
+  check="$state/task-a.check.sh"
+
+  data_identity=$(fm_pr_file_identity "$data") || fail "could not read the sidecar identity"
+  check_identity=$(fm_pr_file_identity "$check") || fail "could not read the check identity"
+  data_inode=${data_identity#*:}
+  check_inode=${check_identity#*:}
+  drifted_data_identity="999999:$data_inode"
+  drifted_check_identity="999999:$check_inode"
+
+  # Simulate a reboot between the receipt's publication and the fixed-path
+  # removal that finishes it: every durable record still carries the device
+  # number from before the reboot, while a fresh stat of any live file now
+  # reports the new one. Rewriting the registration changes its own bytes
+  # (it embeds the data and check identities), so its hash and identity are
+  # re-read afterward - a real reboot never touches the registration's bytes
+  # at all, only what a fresh stat of it reports.
+  rewrite_registration_identity "$registration" "$drifted_data_identity" "$drifted_check_identity"
+  rewritten_reg_hash=$(fm_pr_sha256 "$registration") || fail "could not hash the rewritten registration"
+  rewritten_reg_identity=$(fm_pr_file_identity "$registration") || fail "could not read the rewritten registration identity"
+  rewritten_reg_inode=${rewritten_reg_identity#*:}
+  drifted_reg_identity="999999:$rewritten_reg_inode"
+
+  fm_pr_poll_retirement_parse "$receipt" || fail "could not parse the published receipt"
+  printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+    fm-pr-poll-retirement-v1 "$FM_PR_RETIRE_ID" "$FM_PR_RETIRE_PROVIDER" "$FM_PR_RETIRE_URL" \
+    "$FM_PR_RETIRE_HOST" "$FM_PR_RETIRE_PATH" "$FM_PR_RETIRE_NUMBER" \
+    "$FM_PR_RETIRE_DATA_HASH" "$FM_PR_RETIRE_TEMPLATE_HASH" \
+    "$drifted_data_identity" "$drifted_check_identity" \
+    "$rewritten_reg_hash" "$drifted_reg_identity" \
+    merged > "$receipt"
+
+  fm_pr_poll_retirement_recover_one "$state" task-a "$POLL" \
+    || fail "a device-only identity drift left a crash-recovered receipt unauthorized"
+  [ ! -e "$check" ] && [ ! -e "$data" ] && [ ! -e "$registration" ] && [ ! -e "$receipt" ] \
+    || fail "a tolerated device drift did not finish the crash-recovered retirement"
+  pass "a device-only identity drift does not block finishing a crash-interrupted retirement"
+}
+
 test_parser_matrix() {
   local id row url owner repo number
   while IFS='|' read -r url owner repo number; do
@@ -497,6 +716,42 @@ test_invalid_entrypoints_have_zero_side_effects() {
   [ ! -s "$dir/guard.log" ] || fail "invalid direct or merge data called the guard"
   [ ! -e "$TMP_ROOT/escape.check.sh" ] || fail "task traversal wrote outside state"
   pass "PR and teardown entrypoints reject invalid arguments before every side effect"
+}
+
+# A draft cannot be merged, so arming a merge poll on one would wait for an event
+# that cannot occur. Only a positive draft reading refuses, and it refuses before
+# anything is recorded or armed; a ready or unreadable one arms as before.
+test_draft_pull_request_is_not_armed() {
+  local dir rc
+  dir=$(make_case draft-refused)
+  write_task_meta "$dir"
+  cp "$dir/home/state/task-a.meta" "$dir/meta.before"
+  set +e
+  FM_TEST_GH_DRAFT=true run_check_entry "$dir" task-a https://github.com/o/r/pull/9 \
+    > "$dir/stdout" 2> "$dir/stderr"; rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "arming accepted a draft pull request"
+  grep -qi 'draft' "$dir/stderr" || fail "the refusal did not name the draft state"
+  grep -qF 'https://github.com/o/r/pull/9' "$dir/stderr" || fail "the refusal did not name the pull request"
+  cmp -s "$dir/meta.before" "$dir/home/state/task-a.meta" || fail "a refused draft changed the task metadata"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "a refused draft armed a poll"
+  [ ! -e "$dir/home/state/task-a.pr-poll" ] || fail "a refused draft wrote a poll sidecar"
+  [ ! -s "$dir/guard.log" ] || fail "a refused draft reached the guard"
+
+  dir=$(make_case draft-cleared)
+  write_task_meta "$dir"
+  FM_TEST_GH_DRAFT=false run_check_entry "$dir" task-a https://github.com/o/r/pull/9 \
+    > "$dir/stdout" 2> "$dir/stderr" || fail "arming refused a pull request that is not a draft"
+  grep -qxF 'pr=https://github.com/o/r/pull/9' "$dir/home/state/task-a.meta" \
+    || fail "a non-draft pull request was not recorded"
+  [ -f "$dir/home/state/task-a.check.sh" ] || fail "a non-draft pull request was not armed"
+
+  dir=$(make_case draft-unreadable)
+  write_task_meta "$dir"
+  FM_TEST_GH_DRAFT=null run_check_entry "$dir" task-a https://github.com/o/r/pull/9 \
+    > "$dir/stdout" 2> "$dir/stderr" || fail "an unreadable draft state blocked arming"
+  [ -f "$dir/home/state/task-a.check.sh" ] || fail "an unreadable draft state was not armed"
+  pass "arming refuses a draft pull request, naming it, and arms a ready or unreadable one"
 }
 
 test_valid_recording_and_merge_derivation() {
@@ -1682,7 +1937,7 @@ test_merged_poll_retries_a_failed_upward_report() {
     set -e
     [ "$rc" -eq 0 ] || fail "merged-poll-upward-retry: post-recovery retry failed: $(cat "$dir/watch-3.err")"
   fi
-  assert_grep "done [key=merged-task-a]: merged task-a $url" "$replies" \
+  assert_grep "done [key=merged-task-a]: merged task-a $url" <(sed -E 's/ \[at=[0-9]+\]//' "$replies") \
     "merged-poll-upward-retry: repaired binding did not receive the retry"
   assert_poll_absent "$state" task-a
   pass "a failed upward merge report keeps its poll armed for repair and retry"
@@ -1711,7 +1966,7 @@ test_self_merge_and_poll_publish_one_outcome() {
   set -e
   [ "$rc" -eq 0 ] \
     || fail "merge-outcome-committed: watcher failed: $(cat "$dir/watch.err")"
-  [ "$(grep -c -F "done [key=merged-task-a]: merged task-a $url" "$replies")" -eq 1 ] \
+  [ "$(sed -E 's/ \[at=[0-9]+\]//' "$replies" | grep -c -F "done [key=merged-task-a]: merged task-a $url")" -eq 1 ] \
     || fail "merge-outcome-committed: self and poll reports produced duplicate merge outcomes"
   assert_no_grep "check: $state/task-a.check.sh: merged" "$state/.wake-queue" \
     "merge-outcome-committed: absorbed poll published a second outcome"
@@ -1789,7 +2044,7 @@ test_merged_poll_reports_upward_from_a_secondmate_home_once() {
     check:*task-a.check.sh:*merged) ;;
     *) fail "merged-poll-upward: the poll's own row was lost: $(cat "$dir/watch-1.out")" ;;
   esac
-  assert_grep "done [key=merged-task-a]: merged task-a $url" "$replies" \
+  assert_grep "done [key=merged-task-a]: merged task-a $url" <(sed -E 's/ \[at=[0-9]+\]//' "$replies") \
     "merged-poll-upward: a merge this home did not perform was never reported upward"
   [ "$(grep -c -F "$url" "$replies")" -eq 1 ] \
     || fail "merged-poll-upward: one detected merge produced more than one upward line"
@@ -2281,18 +2536,19 @@ test_merged_poll_row_carries_the_merge_authority() {
   local dir state url expected posture
   url=https://github.com/o/r/pull/1
 
-  for posture in yolo grant; do
+  # Both a yolo=on task and an ordinary one merge under the record's away
+  # authority; the words model retired the per-task grant and the yolo tag.
+  for posture in yolo words; do
     dir=$(make_case "queued-merge-authority-$posture")
     state="$dir/home/state"
     write_task_meta "$dir" task-a
     if [ "$posture" = yolo ]; then
       printf 'yolo=on\n' >> "$state/task-a.meta"
       write_away_record "$dir"
-      expected=yolo
     else
-      write_away_record "$dir" --grant task-a
-      expected=away-grant
+      write_away_record "$dir" --words 'merge task-a when green'
     fi
+    expected=away
     run_check_entry "$dir" task-a "$url" >/dev/null 2> "$dir/seed.err" \
       || fail "$posture: could not arm the merge poll"
     queue_merge "$dir" "$url"
@@ -2304,7 +2560,7 @@ test_merged_poll_row_carries_the_merge_authority() {
       || fail "$posture: published merge left its authority record behind"
   done
 
-  pass "queued merges retain yolo and away-grant after captain return"
+  pass "queued merges retain their away authority after captain return"
 }
 
 test_merged_poll_row_names_no_authority_when_no_record_grants_one() {
@@ -2430,7 +2686,7 @@ test_teardown_cannot_race_authority_consumption() {
   rc=0
   wait "$watcher_pid" || rc=$?
   [ "$rc" -eq 0 ] || fail "teardown race: watcher failed with $rc: $(cat "$dir/watch.err")"
-  [ "$(merged_ledger_row "$state" task-a)" = "check: merge landed: task-a $url yolo" ] \
+  [ "$(merged_ledger_row "$state" task-a)" = "check: merge landed: task-a $url away" ] \
     || fail "teardown race: concurrent cleanup downgraded the merge authority"
   pass "teardown cannot race merged-poll authority consumption"
 }
@@ -2499,243 +2755,320 @@ SH
   pass "poll retirement preserves a replacement authority record"
 }
 
-rewrite_registration_identity() {  # <registration> <drifted-data-identity> <drifted-check-identity>
-  local registration=$1 drifted_data_identity=$2 drifted_check_identity=$3
-  fm_pr_poll_registration_parse "$registration" || fail "could not parse the armed registration"
-  printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
-    fm-pr-poll-registration-v2 "$FM_PR_REG_ID" "$FM_PR_REG_PROVIDER" "$FM_PR_REG_URL" \
-    "$FM_PR_REG_HOST" "$FM_PR_REG_PATH" "$FM_PR_REG_NUMBER" \
-    "$FM_PR_REG_DATA_HASH" "$FM_PR_REG_TEMPLATE_HASH" \
-    "$drifted_data_identity" "$drifted_check_identity" > "$registration"
+# A volume remount can renumber the state filesystem's st_dev while every inode
+# and byte stays put, as APFS does across a reboot. This rewrites a published
+# registration's recorded device the way that leaves it, changing no other
+# byte. <which> is both, data, or check.
+shift_registration_device() {  # <state> <id> [both|data|check]
+  local state=$1 id=$2 which=${3:-both} registration device shifted tmp
+  registration="$state/$id.pr-poll-registration"
+  device=$(fm_pr_file_device "$state") || fail "could not read the state device"
+  shifted=$((device + 1))
+  tmp=$(mktemp "$state/.test-shifted-registration.XXXXXX") || fail "could not stage a shifted registration"
+  awk -v live="$device" -v shifted="$shifted" -v which="$which" '
+    (NR == 10 && which != "check") || (NR == 11 && which != "data") { sub("^" live ":", shifted ":") }
+    { print }
+  ' "$registration" > "$tmp" || fail "could not shift the registration device"
+  chmod 0600 "$tmp"
+  mv -f -- "$tmp" "$registration"
+  case "$which" in
+    both|data) [ "$(sed -n 10p "$registration")" = "$shifted:$(fm_pr_file_inode "$state/$id.pr-poll")" ] \
+      || fail "shifted fixture did not move only the recorded sidecar device" ;;
+  esac
+  case "$which" in
+    both|check) [ "$(sed -n 11p "$registration")" = "$shifted:$(fm_pr_file_inode "$state/$id.check.sh")" ] \
+      || fail "shifted fixture did not move only the recorded check device" ;;
+  esac
 }
 
-test_registration_identity_tolerates_device_only_drift() {
-  local dir state registration data check rc
-  local data_identity check_identity data_inode check_inode
-  local drifted_data_identity drifted_check_identity
-  dir=$(make_case device-only-drift)
+test_device_renumbered_poll_stays_armed() {
+  local dir state out rc original
+  dir=$(make_case device-renumber-merged)
   state="$dir/home/state"
-  write_task_meta "$dir"
-  run_check_entry "$dir" task-a https://github.com/o/r/pull/1 \
-    > "$dir/stdout" 2> "$dir/stderr" || fail "could not arm the poll before simulating a reboot"
-  registration="$state/task-a.pr-poll-registration"
-  data="$state/task-a.pr-poll"
-  check="$state/task-a.check.sh"
-  fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
-    || fail "the armed poll was not authorized before the simulated reboot"
-
-  data_identity=$(fm_pr_file_identity "$data") || fail "could not read the sidecar identity"
-  check_identity=$(fm_pr_file_identity "$check") || fail "could not read the check identity"
-  data_inode=${data_identity#*:}
-  check_inode=${check_identity#*:}
-  # A macOS reboot renumbers a volume's device while every inode and byte on
-  # it stays exactly the same, so only the registration's recorded device
-  # component is rewritten here - never a live file - to reproduce that.
-  drifted_data_identity="999999:$data_inode"
-  drifted_check_identity="999999:$check_inode"
-  rewrite_registration_identity "$registration" "$drifted_data_identity" "$drifted_check_identity"
-
-  fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
-    || fail "a device-only identity drift left an armed poll unauthorized"
-  [ -z "$FM_PR_POLL_REJECT_REASON" ] || fail "a tolerated device drift still set a rejection reason"
-
-  rm -f "$state/.last-check"
+  write_poll_meta "$state" task-a https://github.com/o/r/pull/1
+  seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/1
+  shift_registration_device "$state" task-a
+  # Assert the divergence so the case cannot pass vacuously: only the recorded
+  # device differs, and that alone refuses the strict validation.
+  cmp -s "$POLL" "$state/task-a.check.sh" || fail "renumber fixture changed the check bytes"
+  [ "$(sed -n 8p "$state/task-a.pr-poll-registration")" = "$(fm_pr_sha256 "$state/task-a.pr-poll")" ] \
+    || fail "renumber fixture changed the sidecar hash"
+  ! fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
+    || fail "renumber fixture still authenticated before any watcher cycle"
   set +e
   FM_TEST_GH_STATE=MERGED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch.out" 2> "$dir/watch.err"
   rc=$?
   set -e
-  [ "$rc" -eq 0 ] || fail "watcher did not complete after the simulated reboot: $(cat "$dir/watch.err")"
-  assert_no_grep 'rejected unauthenticated state checks' "$dir/watch.out" \
-    "a device-only identity drift still surfaced an unauthenticated state check"
-  grep -qF ': merged' "$dir/watch.out" \
-    || fail "a device-only identity drift stopped the armed poll from detecting its merge"
-  pass "a device-only identity drift after a simulated reboot leaves the armed poll authorized"
-}
+  [ "$rc" -eq 0 ] || fail "renumbered poll watcher failed: $(cat "$dir/watch.err")"
+  out=$(cat "$dir/watch.out")
+  case "$out" in
+    *'rejected unauthenticated state checks'*) fail "watcher refused a poll whose only change was a renumbered volume: $out" ;;
+  esac
+  [ "$(grep -c '^check: .*task-a\.check\.sh: merged$' "$dir/watch.out")" -eq 1 ] \
+    || fail "renumbered poll did not surface its merge exactly once: $out"
 
-test_registration_identity_refuses_inode_swap_with_identical_content() {
-  local dir state tmp rc
-  dir=$(make_case inode-swap-sidecar)
+  dir=$(make_case device-renumber-rerecord)
   state="$dir/home/state"
-  write_task_meta "$dir"
-  run_check_entry "$dir" task-a https://github.com/o/r/pull/1 \
-    > "$dir/stdout" 2> "$dir/stderr" || fail "could not arm the poll before the inode swap"
-  fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
-    || fail "the armed poll was not authorized before the inode swap"
-  tmp="$state/.inode-swap-copy"
-  # A fresh copy carries byte-identical content on a new inode, the same
-  # shape a symlink-swap or hard-link-replace attack would leave behind.
-  cp "$state/task-a.pr-poll" "$tmp" || fail "could not copy the sidecar for the inode swap"
-  rm -f "$state/task-a.pr-poll"
-  mv "$tmp" "$state/task-a.pr-poll"
-  chmod 0600 "$state/task-a.pr-poll"
-  ! fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
-    || fail "an inode-swapped sidecar with identical bytes was silently authorized"
-  [ "$FM_PR_POLL_REJECT_REASON" = "data file inode" ] \
-    || fail "an inode swap was not reported as an inode mismatch: $FM_PR_POLL_REJECT_REASON"
-
-  rm -f "$state/.last-check"
+  write_poll_meta "$state" task-a https://github.com/o/r/pull/1
+  seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/1
+  original="$dir/registration.original"
+  cp "$state/task-a.pr-poll-registration" "$original"
+  shift_registration_device "$state" task-a
+  add_stop_custom_check "$dir"
+  cat > "$dir/fakebin/mv" <<'SH'
+#!/usr/bin/env bash
+case " $* " in
+  *"task-a.pr-poll-registration "*)
+    [ -d "$FM_TEST_CONTROL_LOCK" ] || exit 91
+    [ -d "$FM_TEST_POLL_PUBLISH_LOCK" ] || exit 92
+    : > "$FM_TEST_REGISTRATION_RENAMED"
+    ;;
+esac
+exec "$FM_TEST_REAL_MV" "$@"
+SH
+  chmod +x "$dir/fakebin/mv"
   set +e
-  FM_TEST_GH_STATE=MERGED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch.out" 2> "$dir/watch.err"
+  FM_TEST_CONTROL_LOCK="$state/.control-task-a.lock" \
+    FM_TEST_POLL_PUBLISH_LOCK="$state/.pr-poll-publish-task-a.lock" FM_TEST_REAL_MV="$REAL_MV" \
+    FM_TEST_REGISTRATION_RENAMED="$dir/registration-renamed" \
+    FM_TEST_GH_LOG="$dir/gh.log" FM_TEST_GH_STATE=OPEN \
+    run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch.out" 2> "$dir/watch.err"
   rc=$?
   set -e
-  [ "$rc" -eq 0 ] || fail "watcher did not complete after the inode swap: $(cat "$dir/watch.err")"
-  assert_grep 'rejected unauthenticated state checks' "$dir/watch.out" \
-    "an inode-swapped sidecar was not reported as an unauthenticated state check"
-  assert_grep 'data file inode' "$dir/watch.out" \
-    "the unauthenticated state check did not name the inode mismatch it found"
-
-  dir=$(make_case inode-swap-check)
-  state="$dir/home/state"
-  write_task_meta "$dir"
-  run_check_entry "$dir" task-a https://github.com/o/r/pull/1 \
-    > "$dir/stdout" 2> "$dir/stderr" || fail "could not arm the poll before the check inode swap"
-  fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
-    || fail "the armed poll was not authorized before the check inode swap"
-  tmp="$state/.inode-swap-copy"
-  cp "$state/task-a.check.sh" "$tmp" || fail "could not copy the check for the inode swap"
-  rm -f "$state/task-a.check.sh"
-  mv "$tmp" "$state/task-a.check.sh"
-  chmod 0600 "$state/task-a.check.sh"
-  ! fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
-    || fail "an inode-swapped check with identical bytes was silently authorized"
-  [ "$FM_PR_POLL_REJECT_REASON" = "check file inode" ] \
-    || fail "a check inode swap was not reported as an inode mismatch: $FM_PR_POLL_REJECT_REASON"
-  pass "an inode swap with identical bytes still refuses the armed poll and names the inode mismatch"
+  [ "$rc" -eq 0 ] || fail "re-record watcher failed: $(cat "$dir/watch.err")"
+  [ -e "$dir/registration-renamed" ] || fail "re-record never replaced the registration under its locks"
+  cmp -s "$original" "$state/task-a.pr-poll-registration" \
+    || fail "re-recorded registration differs from the one published on the live device"
+  [ "$(file_mode "$state/task-a.pr-poll-registration")" = 600 ] || fail "re-recorded registration is not private"
+  fm_pr_poll_artifacts_valid "$state" task-a "$POLL" || fail "re-recorded poll is not strictly authenticated"
+  grep -F 'pr view https://github.com/o/r/pull/1 --json state' "$dir/gh.log" >/dev/null \
+    || fail "re-recorded poll did not run its validated check in the same cycle"
+  grep -F 're-recorded PR poll identity for task-a' "$state/.watch-triage.log" >/dev/null \
+    || fail "re-record left no triage evidence"
+  ! ls "$state"/.fm-pr-poll-registration.* >/dev/null 2>&1 || fail "re-record left a staged registration behind"
+  pass "a poll armed before a volume renumber is re-recorded under the control lock and keeps detecting merges"
 }
 
-test_armed_poll_refuses_sidecar_content_change_the_parser_admits() {
-  local dir state rc
-  dir=$(make_case sidecar-trailing-bytes)
-  state="$dir/home/state"
-  write_task_meta "$dir"
-  run_check_entry "$dir" task-a https://github.com/o/r/pull/1 \
-    > "$dir/stdout" 2> "$dir/stderr" || fail "could not arm the poll before the sidecar rewrite"
-  fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
-    || fail "the armed poll was not authorized before the sidecar rewrite"
-  # Appended in place, so the inode is unchanged and only the bytes differ.
-  printf 'trailing' >> "$state/task-a.pr-poll"
-  fm_pr_poll_data_parse "$state/task-a.pr-poll" \
-    || fail "the fixture did not reach the identity comparison: the sidecar parser refused it first"
-  ! fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
-    || fail "a sidecar content change was silently authorized"
-  [ "$FM_PR_POLL_REJECT_REASON" = "data file content" ] \
-    || fail "a sidecar content change was not reported as a content mismatch: $FM_PR_POLL_REJECT_REASON"
+test_device_rerecord_refuses_tampered_artifacts() {
+  local mutation dir state out rc registration_sha shifted_device replacement exercised=
+  for mutation in swapped-check altered-check swapped-sidecar altered-sidecar altered-template-hash \
+    wrong-mode hardlinked-check split-device foreign-device; do
+    # A regular file cannot sit on another device than its own directory without
+    # a file mount, which Darwin does not offer, and Darwin's device helper reads
+    # /usr/bin/stat directly, so no PATH fake can stand in there.
+    if [ "$mutation" = foreign-device ] && [ "$(uname)" = Darwin ]; then
+      exercised="$exercised (foreign-device not exercisable on Darwin)"
+      continue
+    fi
+    exercised="$exercised $mutation"
+    dir=$(make_case "device-rerecord-refuses-$mutation")
+    state="$dir/home/state"
+    write_poll_meta "$state" task-a https://github.com/o/r/pull/1
+    seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/1
+    if [ "$mutation" = split-device ]; then
+      shift_registration_device "$state" task-a data
+    else
+      shift_registration_device "$state" task-a
+    fi
+    shifted_device=$(( $(fm_pr_file_device "$state") + 1 ))
+    case "$mutation" in
+      swapped-check)
+        cp "$POLL" "$state/.swap"
+        chmod 0600 "$state/.swap"
+        mv -f -- "$state/.swap" "$state/task-a.check.sh"
+        ;;
+      altered-check) printf '# tampered\n' >> "$state/task-a.check.sh" ;;
+      swapped-sidecar)
+        cp "$state/task-a.pr-poll" "$state/.swap"
+        chmod 0600 "$state/.swap"
+        mv -f -- "$state/.swap" "$state/task-a.pr-poll"
+        ;;
+      altered-sidecar)
+        printf '%s\n%s\n%s\n%s\n%s\n' github https://github.com/o/r/pull/2 github.com o/r 2 \
+          > "$state/task-a.pr-poll"
+        ;;
+      altered-template-hash)
+        replacement=$(printf 'another template\n' | shasum -a 256 | awk '{print $1}')
+        awk -v hash="$replacement" 'NR == 9 { $0 = hash } { print }' \
+          "$state/task-a.pr-poll-registration" > "$state/.swap"
+        chmod 0600 "$state/.swap"
+        mv -f -- "$state/.swap" "$state/task-a.pr-poll-registration"
+        ;;
+      wrong-mode) chmod 0640 "$state/task-a.check.sh" ;;
+      hardlinked-check) ln "$state/task-a.check.sh" "$dir/check.alias" ;;
+      split-device) ;;
+      foreign-device)
+        cat > "$dir/fakebin/stat" <<'SH'
+#!/usr/bin/env bash
+last=${!#}
+if [ "$last" = "$FM_TEST_FOREIGN_PATH" ]; then
+  case " $* " in
+    *" %d "*) printf '%s\n' "$FM_TEST_FOREIGN_DEVICE"; exit 0 ;;
+  esac
+fi
+exec "$FM_TEST_REAL_STAT" "$@"
+SH
+        chmod +x "$dir/fakebin/stat"
+        ;;
+    esac
+    ! fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
+      || fail "$mutation fixture was authenticated before any watcher cycle"
+    registration_sha=$(fm_pr_sha256 "$state/task-a.pr-poll-registration")
+    set +e
+    FM_TEST_FOREIGN_PATH="$state/task-a.check.sh" FM_TEST_FOREIGN_DEVICE="$shifted_device" \
+      FM_TEST_REAL_STAT="$REAL_STAT" FM_TEST_GH_LOG="$dir/gh.log" FM_TEST_GH_STATE=MERGED \
+      run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch.out" 2> "$dir/watch.err"
+    rc=$?
+    set -e
+    [ "$rc" -eq 0 ] || fail "$mutation watcher failed: $(cat "$dir/watch.err")"
+    out=$(cat "$dir/watch.out")
+    case "$out" in
+      "check: rejected unauthenticated state checks:"*"task-a.check.sh"*) ;;
+      *) fail "$mutation on a renumbered registration was not refused: $out" ;;
+    esac
+    [ "$(fm_pr_sha256 "$state/task-a.pr-poll-registration")" = "$registration_sha" ] \
+      || fail "$mutation let the watcher re-record the registration"
+    ! grep -F -- '--json state' "$dir/gh.log" >/dev/null 2>&1 \
+      || fail "$mutation ran the refused poll"
+    ! ls "$state"/.fm-pr-poll-registration.* >/dev/null 2>&1 \
+      || fail "$mutation left a staged registration behind"
+  done
 
-  rm -f "$state/.last-check"
-  set +e
-  FM_TEST_GH_STATE=MERGED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch.out" 2> "$dir/watch.err"
-  rc=$?
-  set -e
-  [ "$rc" -eq 0 ] || fail "watcher did not complete after the sidecar rewrite: $(cat "$dir/watch.err")"
-  assert_grep 'rejected unauthenticated state checks' "$dir/watch.out" \
-    "a rewritten sidecar was not reported as an unauthenticated state check"
-  assert_grep 'data file content' "$dir/watch.out" \
-    "the unauthenticated state check did not name the content mismatch it found"
-  pass "a sidecar content change the parser admits still refuses the armed poll and names the content mismatch"
+  dir=$(make_case device-rerecord-pending-retirement)
+  state="$dir/home/state"
+  write_poll_meta "$state" task-a https://github.com/o/r/pull/1
+  seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/1
+  shift_registration_device "$state" task-a
+  fm_pr_poll_registration_device_shifted "$state" task-a "$POLL" \
+    || fail "pending-retirement fixture was not a device shift before its receipt"
+  : > "$state/task-a.pr-poll-retirement"
+  chmod 0600 "$state/task-a.pr-poll-retirement"
+  ! fm_pr_poll_registration_device_shifted "$state" task-a "$POLL" \
+    || fail "a pending retirement receipt did not keep its artifacts from being re-recorded"
+  ! fm_pr_poll_registration_rerecord_device "$state" task-a "$POLL" \
+    || fail "a pending retirement receipt was re-recorded around"
+  pass "a renumbered registration is never re-recorded around a tampered artifact:$exercised, or a pending retirement"
 }
 
-test_identity_reports_an_unhashable_file_as_unreadable() {
-  local dir target identity
-  dir=$(make_case unhashable-not-content)
-  # A directory stats cleanly, so the identity read succeeds and only the hash
-  # can fail - the same shape as a file unlinked between the two reads.
-  target="$dir/stats-but-cannot-be-hashed"
-  mkdir -p "$target" || fail "could not create the unhashable fixture"
-  identity=$(fm_pr_file_identity "$target") \
-    || fail "the unhashable fixture did not stat cleanly, so it tests nothing"
-  ! fm_pr_sha256 "$target" \
-    || fail "hashing an unhashable path reported success"
-  ! fm_pr_identity_matches "$target" "$identity" \
-    0000000000000000000000000000000000000000000000000000000000000000 \
-    || fail "an unhashable path was silently authorized"
-  [ "$FM_PR_IDENTITY_MISMATCH" = unreadable ] \
-    || fail "an unhashable path was reported as $FM_PR_IDENTITY_MISMATCH rather than unreadable"
-  pass "a file that stats but cannot be hashed is reported as unreadable, not as tampering"
+start_poll_publish_holder() {  # <dir> <state> <id>
+  local dir=$1 state=$2 id=$3 i
+  PR_POLL_HOLDER_ACQUIRED="$dir/poll-publish-holder-acquired"
+  PR_POLL_HOLDER_RELEASE="$dir/poll-publish-holder-release"
+  PR_POLL_HOLDER_LOCK="$state/.pr-poll-publish-$id.lock"
+  cat > "$dir/poll-publish-holder.sh" <<'SH'
+#!/usr/bin/env bash
+set -eu
+. "$FM_TEST_ROOT/bin/fm-wake-lib.sh"
+trap 'fm_lock_release "$FM_TEST_LOCK" || true' EXIT
+fm_lock_acquire_wait "$FM_TEST_LOCK"
+: > "$FM_TEST_ACQUIRED"
+while [ ! -e "$FM_TEST_RELEASE" ]; do sleep 0.01; done
+SH
+  chmod +x "$dir/poll-publish-holder.sh"
+  FM_TEST_ROOT="$ROOT" FM_TEST_LOCK="$PR_POLL_HOLDER_LOCK" \
+    FM_TEST_ACQUIRED="$PR_POLL_HOLDER_ACQUIRED" FM_TEST_RELEASE="$PR_POLL_HOLDER_RELEASE" \
+    "$dir/poll-publish-holder.sh" &
+  PR_POLL_HOLDER_PID=$!
+  for i in $(seq 1 100); do
+    [ -e "$PR_POLL_HOLDER_ACQUIRED" ] && return 0
+    sleep 0.02
+  done
+  kill "$PR_POLL_HOLDER_PID" 2>/dev/null || true
+  wait "$PR_POLL_HOLDER_PID" 2>/dev/null || true
+  fail "poll publication holder did not acquire its lock"
 }
 
-# fm_pr_poll_artifacts_valid's structural checks (cmp against the check
-# template, and comparing the sidecar's parsed fields against the
-# registration) catch most content forgeries before an identity is ever
-# compared, but they do not catch every one: the sidecar parser stops after
-# five lines and only refuses a sixth that is newline-terminated, so trailing
-# bytes without a final newline survive it and the content hash inside
-# fm_pr_identity_matches is what refuses them. The retirement check file has
-# no earlier content gate at all, so it exercises the same branch directly.
-test_retirement_check_identity_refuses_content_change() {
-  local dir state receipt
-  dir=$(make_case retirement-content-change-check)
-  state="$dir/home/state"
-  write_poll_meta "$state" task-a https://github.com/o/r/pull/9
-  seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/9
-  fm_pr_poll_snapshot_capture "$state" task-a "$POLL" \
-    || fail "could not snapshot the fixture before publishing its receipt"
-  fm_pr_poll_retirement_publish "$state" task-a "$POLL" merged \
-    || fail "could not publish the retirement receipt"
-  receipt="$state/task-a.pr-poll-retirement"
-  fm_pr_poll_retirement_parse "$receipt" || fail "could not parse the published receipt"
-  fm_pr_poll_retirement_check_valid "$state" task-a \
-    || fail "the published check was not authorized before the content change"
-  printf 'tampered check bytes\n' >> "$state/task-a.check.sh"
-  ! fm_pr_poll_retirement_check_valid "$state" task-a \
-    || fail "a content change on the retiring check was silently authorized"
-  [ "$FM_PR_IDENTITY_MISMATCH" = content ] \
-    || fail "a check content change was not reported as a content mismatch: $FM_PR_IDENTITY_MISMATCH"
-  pass "a content change on a retiring poll's check still refuses and names the content mismatch"
+release_poll_publish_holder() {
+  : > "$PR_POLL_HOLDER_RELEASE"
+  wait "$PR_POLL_HOLDER_PID" || fail "poll publication holder did not release its lock"
 }
 
-test_retirement_recovery_tolerates_device_only_drift() {
-  local dir state registration receipt data check
-  local data_identity check_identity data_inode check_inode
-  local drifted_data_identity drifted_check_identity
-  local rewritten_reg_hash rewritten_reg_identity rewritten_reg_inode drifted_reg_identity
-  dir=$(make_case retirement-device-only-drift)
+test_device_rerecord_serializes_direct_rearm() {
+  local dir state url_a url_b i rearm_pid
+  url_a=https://github.com/o/r/pull/1
+  url_b=https://github.com/o/r/pull/2
+  dir=$(make_case device-rerecord-serialized-direct-rearm)
   state="$dir/home/state"
-  write_poll_meta "$state" task-a https://github.com/o/r/pull/9
-  seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/9
-  fm_pr_poll_snapshot_capture "$state" task-a "$POLL" \
-    || fail "could not snapshot the fixture before publishing its receipt"
-  fm_pr_poll_retirement_publish "$state" task-a "$POLL" merged \
-    || fail "could not publish the retirement receipt"
+  write_poll_meta "$state" task-a "$url_a"
+  seed_canonical_poll "$dir" task-a "$url_a"
+  cp "$state/task-a.pr-poll" "$dir/published.pr-poll"
+  cp "$state/task-a.pr-poll-registration" "$dir/published.registration"
+  cp "$state/task-a.check.sh" "$dir/published.check.sh"
+  start_poll_publish_holder "$dir" "$state" task-a
+  FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" FM_TEST_GUARD_LOG="$dir/guard.log" \
+    PATH="$dir/fakebin:$BASE_PATH" "$PR_CHECK" task-a "$url_b" > "$dir/rearm.out" 2> "$dir/rearm.err" &
+  rearm_pid=$!
+  for i in $(seq 1 100); do
+    if fm_pr_metadata_identity_parse "$state/task-a.meta" && [ "$FM_PR_META_URL" = "$url_b" ]; then
+      break
+    fi
+    sleep 0.02
+  done
+  [ "$FM_PR_META_URL" = "$url_b" ] || fail "direct re-arm did not rewrite metadata before publication"
+  sleep 1
+  process_is_live_non_zombie "$rearm_pid" || fail "direct re-arm did not wait for poll publication"
+  cmp -s "$dir/published.pr-poll" "$state/task-a.pr-poll" \
+    || fail "blocked direct re-arm replaced the published sidecar"
+  cmp -s "$dir/published.registration" "$state/task-a.pr-poll-registration" \
+    || fail "blocked direct re-arm replaced the published registration"
+  cmp -s "$dir/published.check.sh" "$state/task-a.check.sh" \
+    || fail "blocked direct re-arm replaced the published check"
+  release_poll_publish_holder
+  wait "$rearm_pid" || fail "direct re-arm failed after poll publication release: $(cat "$dir/rearm.err")"
+  fm_pr_poll_artifacts_valid "$state" task-a "$POLL" || fail "released direct re-arm did not publish a strict poll"
+  [ "$(sed -n 4p "$state/task-a.pr-poll-registration")" = "$url_b" ] \
+    || fail "released direct re-arm registration does not name its PR"
+  pass "direct re-arm publication waits without replacing an armed poll"
+}
 
-  registration="$state/task-a.pr-poll-registration"
-  receipt="$state/task-a.pr-poll-retirement"
-  data="$state/task-a.pr-poll"
-  check="$state/task-a.check.sh"
-
-  data_identity=$(fm_pr_file_identity "$data") || fail "could not read the sidecar identity"
-  check_identity=$(fm_pr_file_identity "$check") || fail "could not read the check identity"
-  data_inode=${data_identity#*:}
-  check_inode=${check_identity#*:}
-  drifted_data_identity="999999:$data_inode"
-  drifted_check_identity="999999:$check_inode"
-
-  # Simulate a reboot between the receipt's publication and the fixed-path
-  # removal that finishes it: every durable record still carries the device
-  # number from before the reboot, while a fresh stat of any live file now
-  # reports the new one. Rewriting the registration changes its own bytes
-  # (it embeds the data and check identities), so its hash and identity are
-  # re-read afterward - a real reboot never touches the registration's bytes
-  # at all, only what a fresh stat of it reports.
-  rewrite_registration_identity "$registration" "$drifted_data_identity" "$drifted_check_identity"
-  rewritten_reg_hash=$(fm_pr_sha256 "$registration") || fail "could not hash the rewritten registration"
-  rewritten_reg_identity=$(fm_pr_file_identity "$registration") || fail "could not read the rewritten registration identity"
-  rewritten_reg_inode=${rewritten_reg_identity#*:}
-  drifted_reg_identity="999999:$rewritten_reg_inode"
-
-  fm_pr_poll_retirement_parse "$receipt" || fail "could not parse the published receipt"
-  printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
-    fm-pr-poll-retirement-v1 "$FM_PR_RETIRE_ID" "$FM_PR_RETIRE_PROVIDER" "$FM_PR_RETIRE_URL" \
-    "$FM_PR_RETIRE_HOST" "$FM_PR_RETIRE_PATH" "$FM_PR_RETIRE_NUMBER" \
-    "$FM_PR_RETIRE_DATA_HASH" "$FM_PR_RETIRE_TEMPLATE_HASH" \
-    "$drifted_data_identity" "$drifted_check_identity" \
-    "$rewritten_reg_hash" "$drifted_reg_identity" \
-    merged > "$receipt"
-
-  fm_pr_poll_retirement_recover_one "$state" task-a "$POLL" \
-    || fail "a device-only identity drift left a crash-recovered receipt unauthorized"
-  [ ! -e "$check" ] && [ ! -e "$data" ] && [ ! -e "$registration" ] && [ ! -e "$receipt" ] \
-    || fail "a tolerated device drift did not finish the crash-recovered retirement"
-  pass "a device-only identity drift does not block finishing a crash-interrupted retirement"
+test_device_rerecord_serializes_rerecord() {
+  local dir state original rc watcher_pid i
+  dir=$(make_case device-rerecord-serialized-rerecord)
+  state="$dir/home/state"
+  write_poll_meta "$state" task-a https://github.com/o/r/pull/1
+  seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/1
+  cp "$state/task-a.pr-poll-registration" "$dir/registration.original"
+  shift_registration_device "$state" task-a
+  original=$(fm_pr_sha256 "$state/task-a.pr-poll-registration")
+  add_stop_custom_check "$dir"
+  cat > "$dir/fakebin/mv" <<'SH'
+#!/usr/bin/env bash
+case " $* " in
+  *"task-a.pr-poll-registration "*)
+    [ -d "$FM_TEST_CONTROL_LOCK" ] || exit 91
+    [ -d "$FM_TEST_POLL_PUBLISH_LOCK" ] || exit 92
+    : > "$FM_TEST_REGISTRATION_RENAMED"
+    ;;
+esac
+exec "$FM_TEST_REAL_MV" "$@"
+SH
+  chmod +x "$dir/fakebin/mv"
+  start_poll_publish_holder "$dir" "$state" task-a
+  FM_TEST_CONTROL_LOCK="$state/.control-task-a.lock" \
+    FM_TEST_POLL_PUBLISH_LOCK="$state/.pr-poll-publish-task-a.lock" \
+    FM_TEST_REGISTRATION_RENAMED="$dir/registration-renamed" FM_TEST_REAL_MV="$REAL_MV" \
+    FM_TEST_GH_LOG="$dir/gh.log" FM_TEST_GH_STATE=OPEN \
+    run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch.out" 2> "$dir/watch.err" &
+  watcher_pid=$!
+  for i in $(seq 1 100); do
+    [ -d "$state/.control-task-a.lock" ] && break
+    sleep 0.02
+  done
+  [ -d "$state/.control-task-a.lock" ] || fail "watcher did not reach its device re-record"
+  sleep 1
+  process_is_live_non_zombie "$watcher_pid" || fail "watcher did not wait for poll publication"
+  [ "$(fm_pr_sha256 "$state/task-a.pr-poll-registration")" = "$original" ] \
+    || fail "blocked watcher rewrote a device-shifted registration"
+  [ ! -e "$dir/registration-renamed" ] || fail "blocked watcher renamed the registration"
+  release_poll_publish_holder
+  rc=0
+  wait "$watcher_pid" || rc=$?
+  [ "$rc" -eq 0 ] || fail "released watcher re-record failed: $(cat "$dir/watch.err")"
+  [ -e "$dir/registration-renamed" ] || fail "released watcher did not replace the registration"
+  cmp -s "$dir/registration.original" "$state/task-a.pr-poll-registration" \
+    || fail "released watcher did not restore the live-device registration"
+  fm_pr_poll_artifacts_valid "$state" task-a "$POLL" || fail "released watcher did not strictly authenticate the poll"
+  pass "device re-record publication waits without rewriting its registration"
 }
 
 test_parser_matrix
@@ -2759,6 +3092,7 @@ test_retirement_refuses_replacement_and_nonterminal_results
 test_retirement_queue_failure_and_receipt_tampering
 test_gitlab_merged_poll_retires
 test_invalid_entrypoints_have_zero_side_effects
+test_draft_pull_request_is_not_armed
 test_valid_recording_and_merge_derivation
 test_rejected_metacharacter_bytes_are_inert
 test_static_poll_contract
@@ -2769,12 +3103,15 @@ test_atomic_interruption_leaves_no_partial_artifact
 test_concurrent_watcher_sees_only_complete_publication
 test_poll_publication_refuses_unsafe_destinations
 test_live_artifact_single_link_and_privacy_validation
+test_device_renumbered_poll_stays_armed
+test_device_rerecord_refuses_tampered_artifacts
+test_device_rerecord_serializes_direct_rearm
+test_device_rerecord_serializes_rerecord
 test_postrename_poll_validation_revokes_and_retries
 test_bootstrap_leaves_unauthenticated_checks
 test_custom_snapshot_cleanup_on_signal
 test_returned_custom_check_descendants_are_drained
 test_teardown_removes_poll_artifacts
-test_registration_identity_tolerates_device_only_drift
 test_registration_identity_refuses_inode_swap_with_identical_content
 test_armed_poll_refuses_sidecar_content_change_the_parser_admits
 test_identity_reports_an_unhashable_file_as_unreadable

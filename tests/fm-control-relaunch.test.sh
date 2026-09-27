@@ -29,6 +29,7 @@ set -u
 CONTROL="$ROOT/bin/fm-control.sh"
 SPAWN="$ROOT/bin/fm-spawn.sh"
 PROMOTE="$ROOT/bin/fm-promote.sh"
+BRIEF="$ROOT/bin/fm-brief.sh"
 X_LINK="$ROOT/bin/fm-x-link.sh"
 # fm_test_tmproot's own cleanup trap fires when its command substitution exits,
 # so recreate the root before resolving it and clean it up from this file's trap.
@@ -56,66 +57,6 @@ make_tmux_stub() {  # <dir>
 #!/usr/bin/env bash
 set -u
 D=$FM_FAKE_DIR
-# The server's shape, so the relaunch guard's backend-wide sweep can be told
-# apart from the recorded address simply going stale:
-#   $D/sessions      - every session on the server, one per line.
-#   $D/win.<session> - that session's window inventory. A session with no such
-#                      file shares the default $D/windows inventory.
-#   $D/no-server     - the whole server is gone (a reboot). Every read fails
-#                      with tmux's own no-server text until new-session starts
-#                      one, which is exactly how recreating one parked task
-#                      brings the server back for the rest.
-#   $D/no-session    - names the one session that is no longer there (e.g.
-#                      renamed), so reads scoped to it fail while the
-#                      server-wide inventory still answers.
-tmux_no_server_error() {
-  printf 'no server running on /tmp/tmux-1000/default\n' >&2
-  exit 1
-}
-tmux_target_session() {  # <target>
-  local t=${1#=}
-  t=${t%%:*}
-  printf '%s' "$t"
-}
-if [ -e "$D/no-server" ]; then
-  case "${1:-}" in
-    new-session)
-      rm -f "$D/no-server"
-      shift
-      while [ $# -gt 0 ]; do
-        case "$1" in
-          -s) printf '%s\n' "$2" >> "$D/sessions"; shift 2 ;;
-          *) shift ;;
-        esac
-      done
-      exit 0 ;;
-    list-sessions|list-windows|has-session|display-message|send-keys|capture-pane|kill-window)
-      tmux_no_server_error ;;
-  esac
-fi
-case "${1:-}" in
-  list-sessions) [ -f "$D/sessions" ] && cat "$D/sessions"; exit 0 ;;
-  has-session)
-    shift
-    target=
-    while [ $# -gt 0 ]; do
-      case "$1" in
-        -t) target=$2; shift 2 ;;
-        *) shift ;;
-      esac
-    done
-    grep -qxF "$(tmux_target_session "$target")" "$D/sessions" 2>/dev/null
-    exit $? ;;
-  new-session)
-    shift
-    while [ $# -gt 0 ]; do
-      case "$1" in
-        -s) grep -qxF "$2" "$D/sessions" 2>/dev/null || printf '%s\n' "$2" >> "$D/sessions"; shift 2 ;;
-        *) shift ;;
-      esac
-    done
-    exit 0 ;;
-esac
 case "${1:-}" in
   send-keys)
     shift
@@ -129,6 +70,9 @@ case "${1:-}" in
     done
     payload=${1:-}
     if [ "$literal" = 1 ]; then
+      case "$payload" in
+        ". '"*"'") staged=${payload#". '"}; staged=${staged%"'"}; [ ! -f "$staged" ] || payload=$(cat "$staged") ;;
+      esac
       printf '%s\n' "$payload" >> "$D/literal"
       case "$payload" in
         /exit|/quit)
@@ -165,78 +109,64 @@ case "${1:-}" in
             : > "$FM_FAKE_CWD_RACE_READY"
             /bin/sleep 1
           fi
-          # $D/cwd-settle counts down the reads that still report $D/cwd-stale
-          # instead of the pane's real path - the tmux/WSL transient where a
-          # brand-new window names an unrelated checkout until its shell
-          # catches up.
-          if [ -s "$D/cwd-settle" ]; then
-            remaining=$(cat "$D/cwd-settle")
-            if [ "$remaining" -gt 0 ]; then
-              printf '%s' "$((remaining - 1))" > "$D/cwd-settle"
-              cat "$D/cwd-stale"; printf '\n'; exit 0
-            fi
-          fi
           cat "$D/cwd"; printf '\n'; exit 0 ;;
       esac
     done
     printf 'fakepane\n'; exit 0 ;;
-  capture-pane) printf '╭────╮\n│    │\n╰────╯\n'; exit 0 ;;
+  capture-pane)
+    [ -z "${FM_FAKE_COMPOSER_READ_FAIL:-}" ] || exit 1
+    if [ -s "$D/composer" ]; then
+      printf '╭────╮\n│ %s  │\n╰────╯\n' "$(cat "$D/composer")"
+    else
+      printf '╭────╮\n│    │\n╰────╯\n'
+    fi
+    exit 0 ;;
   list-windows)
-    shift
-    target=
-    while [ $# -gt 0 ]; do
-      case "$1" in
-        -t) target=$2; shift 2 ;;
-        *) shift ;;
-      esac
-    done
-    session=$(tmux_target_session "$target")
-    if [ -e "$D/no-session" ] && [ "$(cat "$D/no-session")" = "$session" ]; then
-      printf "can't find session: %s\n" "$session" >&2
+    # The three shapes real tmux answers a per-session inventory with. The
+    # first two are DEFINITIVE and classify `missing`; the third is not and
+    # classifies `unreadable`.
+    if [ -f "$D/server-dead" ]; then
+      echo 'no server running on /tmp/tmux-1000/default' >&2
       exit 1
     fi
-    if [ -f "$D/win.$session" ]; then
-      cat "$D/win.$session"
-      exit 0
+    if [ -f "$D/session-missing" ]; then
+      echo "can't find session: $(cat "$D/session-name")" >&2
+      exit 1
+    fi
+    if [ -f "$D/inventory-broken" ]; then
+      echo 'lost server' >&2
+      exit 1
     fi
     [ -f "$D/windows" ] && cat "$D/windows"; exit 0 ;;
-  new-window)
-    # fm_backend_tmux_create_task's -dP -F '#{window_id}' capture, used only
-    # when a missing endpoint's replacement window is created fresh. Record
-    # the created window's name so a later list-windows (the liveness check
-    # on the NEW endpoint) finds it instead of reading missing forever, and
-    # model a real new window's cwd: tmux opens the pane in -c's directory, so
-    # that is what pane_current_path reports from the first read on.
+  new-session)
+    # Nothing in the relaunch path may ever create a session; recording the
+    # call is how a refusal test proves that.
     shift
-    wname=
-    wcwd=
+    ses=
     while [ $# -gt 0 ]; do
       case "$1" in
-        -n) wname=$2; shift 2 ;;
-        -c) wcwd=$2; shift 2 ;;
+        -s) ses=${2:-}; shift 2 ;;
         *) shift ;;
       esac
     done
-    [ -z "$wname" ] || printf '%s\n' "$wname" >> "$D/windows"
-    [ -z "$wcwd" ] || printf '%s' "$wcwd" > "$D/cwd"
-    printf '%s\n' "${FM_FAKE_NEW_WINDOW_ID:-@99}"
+    printf '%s\n' "$ses" >> "$D/created-sessions"
     exit 0 ;;
-  kill-window)
-    # fm_backend_tmux_kill targets "=<session>:=<window>"; drop that window so
-    # a later list-windows reflects its removal.
+  new-window)
+    # Model the one thing an endpoint re-creation depends on: the window now
+    # appears in the session inventory, so the very next agent-state read stops
+    # answering `missing`. Echo a stable window id the way the real -P -F does.
     shift
-    target=
+    name=
     while [ $# -gt 0 ]; do
       case "$1" in
-        -t) target=$2; shift 2 ;;
+        -n) name=${2:-}; shift 2 ;;
+        -c|-t) shift 2 ;;
         *) shift ;;
       esac
     done
-    wname=${target##*:=}
-    if [ -n "$wname" ] && [ -f "$D/windows" ]; then
-      remaining=$(grep -vxF -- "$wname" "$D/windows" || true)
-      if [ -n "$remaining" ]; then printf '%s\n' "$remaining" > "$D/windows"; else : > "$D/windows"; fi
-    fi
+    printf '%s\n' "$name" >> "$D/windows"
+    printf '%s\n' "$name" >> "$D/created-windows"
+    printf '@9\n'
     exit 0 ;;
 esac
 exit 0
@@ -259,22 +189,16 @@ new_case() {
   printf 'claude' > "$dir/fake/command"
   printf 'claude' > "$dir/fake/becomes"
   printf '%s\n' "fm-$id" > "$dir/fake/windows"
-  printf 'fmses\n' > "$dir/fake/sessions"
+  printf '%s' fmses > "$dir/fake/session-name"
   make_tmux_stub "$dir"
   printf '%s\n' "$dir"
 }
 
-# add_ship_task <case-dir> <id> [harness] [worktree]
-# A second and later task in the same case dir shares its project, so only the
-# first initializes the repo; each still gets its own worktree.
+# add_ship_task <case-dir> <id> [harness] [session]
 add_ship_task() {
-  local dir=$1 id=$2 harness=${3:-claude}
-  local home="$dir/home" proj="$dir/proj" wt=${4:-$dir/wt}
-  if [ -d "$proj" ]; then
-    git -C "$proj" worktree add --quiet -b "task-$id" "$wt"
-  else
-    fm_git_worktree "$proj" "$wt" "task-$id"
-  fi
+  local dir=$1 id=$2 harness=${3:-claude} ses=${4:-fmses}
+  local home="$dir/home" proj="$dir/proj" wt="$dir/wt"
+  fm_git_worktree "$proj" "$wt" "task-$id"
   mkdir -p "$home/data/$id"
   cat > "$home/data/$id/brief.md" <<EOF
 # Task
@@ -285,7 +209,7 @@ Exercise relaunch behavior for $id.
 Preserve the task while replacing its agent process.
 EOF
   {
-    echo "window=fmses:fm-$id"
+    echo "window=$ses:fm-$id"
     echo "endpoint_task_id=$id"
     echo "worktree=$wt"
     echo "project=$proj"
@@ -298,6 +222,7 @@ EOF
     echo "effort=default"
   } > "$home/state/$id.meta"
   printf '%s\n' "fm-$id" > "$dir/fake/windows"
+  printf '%s' "$ses" > "$dir/fake/session-name"
   printf '%s' "$wt" > "$dir/fake/cwd"
   TASK_TMPS+=("/tmp/fm-$id")
 }
@@ -308,14 +233,15 @@ run_control() {  # <case-dir> <args...>
   # store (bin/fm-claude-trust.sh), and a relaunch reaches it through fm-control.sh, so this runs against a throwaway HOME;
   # without it this suite would write the developer's real ~/.claude.json.
   mkdir -p "$dir/user-home"
-  env PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_FAKE_DIR="$dir/fake" \
+  env -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_SESSION -u HERDR_SOCKET_PATH \
+    -u HERDR_TAB_ID -u HERDR_WORKSPACE_ID \
+    PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_FAKE_DIR="$dir/fake" \
     HOME="$dir/user-home" CLAUDE_CONFIG_DIR='' \
     FM_SPAWN_NO_GUARD=1 GROK_HOME="$dir/grokhome" \
     FM_CONTROL_POLL=0.01 FM_CONTROL_EXIT_WAIT=0.05 FM_CONTROL_LAUNCH_WAIT=0.05 \
     FM_REAL_GIT="${FM_REAL_GIT:-}" FM_FAKE_GIT_FAILURE="${FM_FAKE_GIT_FAILURE:-}" \
     FM_REAL_MV="${FM_REAL_MV:-}" FM_FAKE_COMPLETE_JOURNAL_MV_FAIL="${FM_FAKE_COMPLETE_JOURNAL_MV_FAIL:-}" \
     FM_FAKE_META_PUBLISH_MV_FAIL="${FM_FAKE_META_PUBLISH_MV_FAIL:-}" \
-    FM_FAKE_META_PUBLISH_MV_LOSE="${FM_FAKE_META_PUBLISH_MV_LOSE:-}" \
     FM_FAKE_TRACE_PREPARE="${FM_FAKE_TRACE_PREPARE:-}" \
     FM_FAKE_TRACE_RELEASE="${FM_FAKE_TRACE_RELEASE:-}" \
     FM_FAKE_META_WRITER_READY="${FM_FAKE_META_WRITER_READY:-}" \
@@ -329,7 +255,9 @@ run_spawn() {  # <case-dir> <args...>
   # store (bin/fm-claude-trust.sh), so it runs against a throwaway HOME;
   # without it this suite would write the developer's real ~/.claude.json.
   mkdir -p "$dir/user-home"
-  env PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_FAKE_DIR="$dir/fake" \
+  env -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_SESSION -u HERDR_SOCKET_PATH \
+    -u HERDR_TAB_ID -u HERDR_WORKSPACE_ID \
+    PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_FAKE_DIR="$dir/fake" \
     HOME="$dir/user-home" CLAUDE_CONFIG_DIR='' \
     FM_SPAWN_NO_GUARD=1 GROK_HOME="$dir/grokhome" \
     "$SPAWN" "$@" 2>&1
@@ -368,16 +296,6 @@ fi
 if [ -n "${FM_FAKE_META_PUBLISH_MV_FAIL:-}" ]; then
   for path in "$@"; do
     [ "$path" != "$FM_FAKE_META_PUBLISH_MV_FAIL" ] || exit 1
-  done
-fi
-# A publication whose move lands but whose success cannot be confirmed, which
-# is what fm_backlog_record_publish's post-move readback failure looks like.
-if [ -n "${FM_FAKE_META_PUBLISH_MV_LOSE:-}" ]; then
-  for path in "$@"; do
-    if [ "$path" = "$FM_FAKE_META_PUBLISH_MV_LOSE" ]; then
-      "$FM_REAL_MV" "$@" || true
-      exit 1
-    fi
   done
 fi
 source_path=
@@ -469,259 +387,42 @@ test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint() {
   pass "fm-control relaunch: a same-harness relaunch replaces the agent in the same endpoint and worktree"
 }
 
-# --- 1a. missing-endpoint relaunch (a reboot-killed terminal backend) -------
-#
-# A `missing` endpoint is authoritatively absent - no server, no pane, no
-# agent - and is strictly safer than `dead`, so a relaunch must recreate it
-# fresh in the recorded worktree instead of refusing (issue: both
-# bin/fm-control.sh's stop step and bin/fm-spawn.sh's own precondition used to
-# refuse on `missing`, and the refusal's own suggested recovery command hit
-# the identical refusal, an unbreakable loop).
-
-test_missing_endpoint_relaunch_recreates_it() {
+test_relaunch_refuses_before_exit_when_the_composer_holds_pending_text() {
   local dir out rc
-  dir=$(new_case gone rlmiss)
-  add_ship_task "$dir" rlmiss claude
-  : > "$dir/fake/windows"
-  : > "$dir/fake/no-server"
-  # Seed the spawning project, not add_ship_task's default fixture cwd (which
-  # already equals the worktree and would pass trivially): only the recreated
-  # window's own -c can move the pane's reported path to the worktree.
-  printf '%s' "$dir/proj" > "$dir/fake/cwd"
-  out=$(TMUX='' run_control "$dir" rlmiss relaunch --note "recover after a reboot killed the terminal backend"); rc=$?
-  expect_code 0 "$rc" "a relaunch onto a positively missing endpoint should succeed"$'\n'"$out"
-  assert_contains "$out" "relaunched rlmiss harness=claude from=claude" "the outcome should name the transition"
-  [ "$(meta_field "$dir" rlmiss window)" != "fmses:fm-rlmiss" ] \
-    || fail "a missing endpoint has no pane left to adopt; it must be recorded as recreated, not reused"
-  [ "$(meta_field "$dir" rlmiss worktree)" = "$dir/wt" ] \
-    || fail "the intact worktree must still be reused, never reallocated"
-  [ "$(journal_field "$dir" rlmiss phase)" = complete ] \
-    || fail "the transaction journal should end complete"
-  assert_no_grep "/exit" "$dir/fake/literal" \
-    "there was no agent left to stop; nothing should have been sent to exit one"
-  [ "$(cat "$dir/fake/cwd")" = "$dir/wt" ] \
-    || fail "the recreated endpoint should have been opened directly in the recorded worktree (got '$(cat "$dir/fake/cwd")')"
-  assert_no_grep "cd -- " "$dir/fake/keys" \
-    "an endpoint born in the recorded worktree needs no keystroke to get there"
-  assert_grep "encode launch-brief" "$dir/fake/literal" "the replacement should have been launched"
-  pass "fm-control relaunch: a positively missing endpoint is recreated fresh, in the recorded worktree, with no agent to stop first"
-}
-
-test_missing_endpoint_relaunch_verifies_the_replacement_on_its_new_endpoint() {
-  local dir out rc
-  dir=$(new_case gone-verify rlmiss2)
-  add_ship_task "$dir" rlmiss2 claude
-  : > "$dir/fake/windows"
-  : > "$dir/fake/no-server"
-  printf '%s' "$dir/proj" > "$dir/fake/cwd"
-  # Unset for a deterministic session name: fm_backend_tmux_container_ensure
-  # reuses the launching shell's own tmux session when TMUX is set, which
-  # would make the recreated endpoint's session name depend on whether this
-  # suite itself happens to run inside a real tmux session.
-  out=$(TMUX='' run_control "$dir" rlmiss2 relaunch --note "recover after a reboot"); rc=$?
-  expect_code 0 "$rc" "relaunch should verify liveness on the recreated endpoint, not the abandoned one"$'\n'"$out"
-  assert_contains "$out" "endpoint=firstmate:fm-rlmiss2" \
-    "the outcome should report the recreated endpoint, not the abandoned one"
-  pass "fm-control relaunch: a recreated endpoint's liveness is proven on its own new endpoint, not the stale recorded one"
-}
-
-# A `missing` read only proves the recorded ADDRESS stopped resolving. While
-# the backend server is still up the agent may be alive at another address -
-# a renamed session, or a window moved out of the recorded one - so recreating
-# there would put a second agent in a worktree that already has one. Both
-# entry points must keep refusing those, and only those, reads.
-
-test_missing_session_over_a_live_server_still_refuses() {
-  local dir out rc
-  dir=$(new_case renamed-session rlrename)
-  add_ship_task "$dir" rlrename claude
-  # `tmux rename-session -t fmses work`: the recorded session name is gone, but
-  # the task's own window - and the agent in it - moved with it, intact.
-  printf 'fmses' > "$dir/fake/no-session"
-  printf 'work\n' > "$dir/fake/sessions"
-  printf 'fm-rlrename\n' > "$dir/fake/win.work"
-  out=$(TMUX='' run_control "$dir" rlrename relaunch --note "should never reach here"); rc=$?
-  expect_code 1 "$rc" "a relaunch onto a renamed session should refuse"$'\n'"$out"
-  assert_contains "$out" "there is no agent to stop" \
-    "the refusal should come from the stop step, before the agent is touched"
-  [ "$(meta_field "$dir" rlrename window)" = "fmses:fm-rlrename" ] \
-    || fail "a refused relaunch must not rewrite the recorded endpoint"
-  [ "$(cat "$dir/fake/command")" = claude ] \
-    || fail "the agent that may still be running elsewhere must not be reported stopped"
-  assert_no_grep "encode launch-brief" "$dir/fake/literal" \
-    "no replacement may be launched while the old agent may still be alive"
-  pass "fm-control relaunch: a recorded session that no longer resolves refuses while the server is still up"
-}
-
-# A recreated pane is brand new, and bin/fm-spawn.sh's own fresh-spawn wait
-# documents that such a pane can name an unrelated checkout for a while before
-# its shell catches up. The proof that the endpoint sits in the recorded
-# worktree must outlast that, or the reboot recovery this change exists for
-# fails on exactly those hosts - after the progress note has already been
-# appended, so each retry appends another.
-test_recreated_endpoint_outwaits_a_slow_settling_pane() {
-  local dir out rc
-  dir=$(new_case slow-settle rlslow)
-  add_ship_task "$dir" rlslow claude
-  : > "$dir/fake/windows"
-  : > "$dir/fake/sessions"
-  : > "$dir/fake/no-server"
-  # Longer than the ~5s an adopted endpoint is given, well inside what a
-  # brand-new pane gets.
-  printf '%s' "$dir/proj" > "$dir/fake/cwd-stale"
-  printf '20' > "$dir/fake/cwd-settle"
-  out=$(TMUX='' run_control "$dir" rlslow relaunch --note "recreate a pane whose path lags"); rc=$?
-  expect_code 0 "$rc" "a recreated pane should be waited out, not refused"$'\n'"$out"
-  [ "$(meta_field "$dir" rlslow window)" = "firstmate:fm-rlslow" ] \
-    || fail "the endpoint should have been recreated (got '$(meta_field "$dir" rlslow window)')"
-  [ "$(meta_field "$dir" rlslow worktree)" = "$dir/wt" ] \
-    || fail "the recorded worktree must be reused, never the stale path the pane reported first"
-  [ "$(journal_field "$dir" rlslow phase)" = complete ] \
-    || fail "the transaction journal should end complete"
-  pass "fm-control relaunch: a recreated pane that reports a stale path at first is waited out, not refused"
-}
-
-test_absent_window_found_in_another_session_still_refuses() {
-  local dir out rc
-  dir=$(new_case moved-window rlmoved)
-  add_ship_task "$dir" rlmoved claude
-  # `tmux move-window` out of the recorded session: the recorded address no
-  # longer resolves, but the window - and its agent - is alive under another.
-  : > "$dir/fake/windows"
-  printf 'fmses\nwork\n' > "$dir/fake/sessions"
-  printf 'fm-rlmoved\n' > "$dir/fake/win.work"
-  out=$(TMUX='' run_control "$dir" rlmoved relaunch --note "should never reach here"); rc=$?
-  expect_code 1 "$rc" "a relaunch onto a moved-away window should refuse"$'\n'"$out"
-  [ "$(meta_field "$dir" rlmoved window)" = "fmses:fm-rlmoved" ] \
-    || fail "a refused relaunch must not rewrite the recorded endpoint"
-  [ "$(cat "$dir/fake/win.work")" = "fm-rlmoved" ] \
-    || fail "the endpoint still holding the agent must be left exactly as it was"
-  [ ! -s "$dir/fake/windows" ] \
-    || fail "a refused relaunch must not create a replacement endpoint (created: $(cat "$dir/fake/windows"))"
-  assert_no_grep "encode launch-brief" "$dir/fake/literal" \
-    "no replacement may be launched while the old agent may still be alive"
-  pass "fm-control relaunch: a recorded window that the backend-wide sweep still finds elsewhere refuses"
-}
-
-test_absent_window_found_nowhere_recreates() {
-  local dir out rc
-  dir=$(new_case swept-clean rlswept)
-  add_ship_task "$dir" rlswept claude
-  # The server answers and the task's window is in no session's inventory at
-  # all, so nothing on this backend can still be running its agent. Absence of
-  # a server is NOT required: recreating the first of several parked tasks
-  # starts one, and a firstmate inside tmux always has one.
-  : > "$dir/fake/windows"
-  out=$(TMUX='' run_control "$dir" rlswept relaunch --note "recover a task whose window is gone server-wide"); rc=$?
-  expect_code 0 "$rc" "a window absent from every session should recreate"$'\n'"$out"
-  [ "$(meta_field "$dir" rlswept window)" = "firstmate:fm-rlswept" ] \
-    || fail "the endpoint should have been recreated (got '$(meta_field "$dir" rlswept window)')"
-  [ "$(meta_field "$dir" rlswept worktree)" = "$dir/wt" ] \
-    || fail "the recorded worktree must be reused, never reallocated"
-  [ "$(journal_field "$dir" rlswept phase)" = complete ] \
-    || fail "the transaction journal should end complete"
-  pass "fm-control relaunch: a window the backend-wide sweep finds nowhere is recreated, with no server absence required"
-}
-
-# The intent's own scenario: several tasks parked across a reboot. Recreating
-# the first one necessarily starts a tmux server, so a gate that asked only
-# "is a server running" would restore exactly one task and refuse the rest.
-test_multiple_parked_tasks_all_relaunch_after_a_reboot() {
-  local dir out rc id
-  dir=$(new_case reboot-fleet rlfleetA)
-  add_ship_task "$dir" rlfleetA claude
-  add_ship_task "$dir" rlfleetB claude "$dir/wt-rlfleetB"
-  add_ship_task "$dir" rlfleetC claude "$dir/wt-rlfleetC"
-  # A reboot: no server, and no task's window survives anywhere.
-  : > "$dir/fake/windows"
-  : > "$dir/fake/sessions"
-  : > "$dir/fake/no-server"
-  for id in rlfleetA rlfleetB rlfleetC; do
-    out=$(TMUX='' run_control "$dir" "$id" relaunch --note "restart $id after the reboot"); rc=$?
-    expect_code 0 "$rc" "parked task $id should relaunch after the reboot"$'\n'"$out"
-    [ "$(meta_field "$dir" "$id" window)" = "firstmate:fm-$id" ] \
-      || fail "$id should have been recreated (got '$(meta_field "$dir" "$id" window)')"
-    [ "$(journal_field "$dir" "$id" phase)" = complete ] \
-      || fail "$id's transaction journal should end complete"
-  done
-  [ -s "$dir/fake/sessions" ] \
-    || fail "recreating the first task should have started the server the rest then share"
-  pass "fm-control relaunch: every task parked across a reboot restarts, not just the one that restarts the server"
-}
-
-test_spawn_relaunch_refuses_a_missing_address_over_a_live_server() {
-  local dir out rc
-  dir=$(new_case live-server rl43)
+  dir=$(new_case pending-exit rl43)
   add_ship_task "$dir" rl43 claude
-  : > "$dir/fake/windows"
-  printf 'fmses\nwork\n' > "$dir/fake/sessions"
-  printf 'fm-rl43\n' > "$dir/fake/win.work"
-  out=$(TMUX='' run_spawn "$dir" rl43 --relaunch --harness claude); rc=$?
-  expect_code 1 "$rc" "recreating an endpoint that still exists elsewhere should refuse"$'\n'"$out"
-  assert_contains "$out" "still exists elsewhere" \
-    "the refusal should name why an unresolvable address is not proof of absence"
-  [ "$(meta_field "$dir" rl43 window)" = "fmses:fm-rl43" ] \
-    || fail "a refused relaunch must not rewrite the recorded endpoint"
-  [ ! -s "$dir/fake/windows" ] \
-    || fail "a refused relaunch must not create a replacement endpoint (created: $(cat "$dir/fake/windows"))"
-  pass "fm-spawn --relaunch: an unresolvable address whose endpoint still exists elsewhere refuses"
+  printf 'i' > "$dir/fake/composer"
+
+  out=$(run_control "$dir" rl43 relaunch --note "preserve the pending draft"); rc=$?
+
+  expect_code 1 "$rc" "a relaunch must refuse before typing an exit command into pending composer text"
+  assert_contains "$out" "composer visibly holds pending text" \
+    "the refusal should name the pending composer text"
+  [ "$(cat "$dir/fake/command")" = claude ] \
+    || fail "a pending composer refusal must leave the old agent running"
+  assert_no_grep "/exit" "$dir/fake/literal" \
+    "the exit command must not be concatenated onto pending composer text"
+  pass "fm-control relaunch: pending composer text refuses before the exit command is typed"
 }
 
-test_ambiguous_endpoint_relaunch_still_refuses() {
+test_relaunch_refuses_before_exit_when_the_composer_state_is_unproven() {
   local dir out rc
-  dir=$(new_case ambiguous rlamb)
-  add_ship_task "$dir" rlamb claude
-  printf 'some-unrelated-process' > "$dir/fake/command"
-  out=$(run_control "$dir" rlamb relaunch --note "should never reach here"); rc=$?
-  expect_code 1 "$rc" "a relaunch onto an unattributed endpoint should refuse"
-  assert_contains "$out" "positively classified" \
-    "the refusal should name the missing attribution, never treat ambiguous as absent"
-  [ -z "$(cat "$dir/fake/literal")" ] || fail "an ambiguous endpoint must receive no bytes"
-  [ "$(meta_field "$dir" rlamb window)" = "fmses:fm-rlamb" ] \
-    || fail "a refused relaunch must not touch the recorded endpoint"
-  pass "fm-control relaunch: an endpoint whose process cannot be attributed still refuses, unlike a positively missing one"
-}
+  dir=$(new_case unproven-exit rl44)
+  add_ship_task "$dir" rl44 claude
 
-test_missing_endpoint_relaunch_removes_its_recreated_endpoint_on_abort() {
-  local dir out rc meta real_mv
-  dir=$(new_case gone-abort rlmiss3)
-  add_ship_task "$dir" rlmiss3 claude
-  : > "$dir/fake/windows"
-  : > "$dir/fake/no-server"
-  printf '%s' "$dir/proj" > "$dir/fake/cwd"
-  meta="$dir/home/state/rlmiss3.meta"
-  real_mv=$(command -v mv)
-  make_mv_failure_stub "$dir"
-  out=$(FM_REAL_MV="$real_mv" FM_FAKE_META_PUBLISH_MV_FAIL="$meta" TMUX='' \
-    run_control "$dir" rlmiss3 relaunch --note "abort after the endpoint is recreated"); rc=$?
-  expect_code 1 "$rc" "a failed metadata publication should fail closed"$'\n'"$out"
-  [ "$(meta_field "$dir" rlmiss3 window)" = "fmses:fm-rlmiss3" ] \
-    || fail "a failed publication should retain the prior durable record"
-  [ ! -s "$dir/fake/windows" ] \
-    || fail "an endpoint recreated by this relaunch is its own until publication names it; an abort must not strand it (left: $(cat "$dir/fake/windows"))"
-  pass "fm-control relaunch: an abort before publication removes the endpoint it recreated, leaving none the durable record cannot name"
-}
+  out=$(FM_FAKE_COMPOSER_READ_FAIL=1 \
+    run_control "$dir" rl44 relaunch --note "preserve on an unreadable composer"); rc=$?
 
-test_missing_endpoint_relaunch_keeps_a_recreated_endpoint_its_record_names() {
-  local dir out rc meta real_mv
-  dir=$(new_case gone-published rlmiss4)
-  add_ship_task "$dir" rlmiss4 claude
-  : > "$dir/fake/windows"
-  : > "$dir/fake/no-server"
-  printf '%s' "$dir/proj" > "$dir/fake/cwd"
-  meta="$dir/home/state/rlmiss4.meta"
-  real_mv=$(command -v mv)
-  make_mv_failure_stub "$dir"
-  out=$(FM_REAL_MV="$real_mv" FM_FAKE_META_PUBLISH_MV_LOSE="$meta" TMUX='' \
-    run_control "$dir" rlmiss4 relaunch --note "publication lands but reports failure"); rc=$?
-  expect_code 1 "$rc" "an unconfirmable publication should fail closed"$'\n'"$out"
-  [ "$(meta_field "$dir" rlmiss4 window)" = "firstmate:fm-rlmiss4" ] \
-    || fail "the landed publication should leave the durable record naming the recreated endpoint (got '$(meta_field "$dir" rlmiss4 window)')"
-  grep -qxF "fm-rlmiss4" "$dir/fake/windows" \
-    || fail "an endpoint the published record already names must survive the abort (left: '$(cat "$dir/fake/windows")')"
-  [ "$(journal_field "$dir" rlmiss4 rollback)" = none-new-record-kept ] \
-    || fail "the journal should record that the published replacement record was kept"
-  pass "fm-control relaunch: an abort whose publication already landed keeps the endpoint that record names"
+  expect_code 1 "$rc" "a relaunch must refuse before typing an exit command when the composer state cannot be proven empty"
+  assert_contains "$out" "not proven empty" \
+    "the refusal should name the unproven composer state, not claim pending text"
+  assert_not_contains "$out" "visibly holds pending text" \
+    "an unreadable composer is not the same claim as observed pending text"
+  [ "$(cat "$dir/fake/command")" = claude ] \
+    || fail "an unproven composer refusal must leave the old agent running"
+  assert_no_grep "/exit" "$dir/fake/literal" \
+    "the exit command must not be typed when the composer state is not proven empty"
+  pass "fm-control relaunch: an unreadable composer fails safe before the exit command is typed"
 }
 
 test_relaunch_from_linked_home_preserves_recorded_worktree() {
@@ -881,9 +582,10 @@ test_disabled_relaunch_clears_prior_trace_context() {
 }
 
 test_relaunch_appends_the_progress_note_to_the_instructions() {
-  local dir out rc brief
+  local dir out rc brief launch_brief first_line role_line task_line
   dir=$(new_case note rl2)
   add_ship_task "$dir" rl2 claude
+  cp "$ROOT/AGENTS.md" "$dir/wt/AGENTS.md"
   out=$(run_control "$dir" rl2 relaunch --note "reproduced the crash in parser.go"); rc=$?
   expect_code 0 "$rc" "relaunch should succeed"$'\n'"$out"
   brief="$dir/home/data/rl2/brief.md"
@@ -892,7 +594,18 @@ test_relaunch_appends_the_progress_note_to_the_instructions() {
   assert_grep "reproduced the crash in parser.go" "$brief" "the note text should reach the replacement"
   assert_grep "reproduced the crash in parser.go" "$dir/home/state/rl2.control-relaunch.note" \
     "the note should also be preserved beside the transaction record"
-  pass "fm-control relaunch: the progress note lands in the instructions the replacement reads"
+  launch_brief="$dir/home/data/rl2/launch-brief.md"
+  first_line=$(sed -n '1p' "$launch_brief")
+  [ "$first_line" = '# Current worker role contract' ] ||
+    fail "a Firstmate-worktree relaunch did not establish the crewmate identity first"
+  role_line=$(grep -n '^# Current worker role contract$' "$launch_brief" | cut -d: -f1)
+  task_line=$(grep -n '^# Task$' "$launch_brief" | head -1 | cut -d: -f1)
+  [ "$role_line" -lt "$task_line" ] || fail "the relaunched worker identity followed its task content"
+  assert_grep "$dir/home/state/rl2.inbox" "$launch_brief" \
+    "the Firstmate-worktree relaunch omitted the worker's exact steering inbox"
+  assert_grep 'do not reject it as another home' "$launch_brief" \
+    "the Firstmate-worktree relaunch did not distinguish its inbox from cross-home state"
+  pass "fm-control relaunch: progress and the Firstmate-worktree worker identity reach the replacement"
 }
 
 test_relaunch_requires_a_note_for_a_ship_task() {
@@ -1312,6 +1025,71 @@ test_spawn_relaunch_without_a_harness_reuses_the_recorded_one() {
     || fail "fm-spawn --relaunch without --harness must reuse the recorded harness, got '$(meta_field "$dir" rl21 harness)'"
   assert_contains "$out" "spawned rl21 harness=claude" "the launch should report the recorded harness"
   pass "fm-spawn --relaunch: with no explicit harness it reuses the task's recorded one, never the crew default"
+}
+
+test_promoted_scout_relaunch_receives_the_current_delivery_contract() {
+  local dir home id brief launch out mode rule
+  for mode in no-mistakes direct-PR local-only; do
+    id="rl-promoted-${mode}"
+    dir=$(new_case "promoted-scout-$mode" "$id")
+    home="$dir/home"
+    fm_git_worktree "$dir/proj" "$dir/wt" "task-$id"
+    FM_HOME="$home" "$BRIEF" "$id" firstmate --scout >/dev/null \
+      || fail "$mode: could not scaffold the scout brief"
+    brief="$home/data/$id/brief.md"
+    sed 's/{TASK}/Fix the promotion relaunch contract./; s/{FIRSTMATE_SPEC}/Preserve the current delivery mode./' \
+      "$brief" > "$brief.filled"
+    mv "$brief.filled" "$brief"
+    {
+      echo "window=fmses:fm-$id"
+      echo "endpoint_task_id=$id"
+      echo "worktree=$dir/wt"
+      echo "project=$dir/proj"
+      echo "harness=claude"
+      echo "kind=scout"
+      echo "tasktmp=/tmp/fm-$id"
+      echo "model=default"
+      echo "effort=default"
+    } > "$home/state/$id.meta"
+    printf '%s\n' "fm-$id" > "$dir/fake/windows"
+    printf '%s' "$dir/wt" > "$dir/fake/cwd"
+
+    out=$(FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+      "$PROMOTE" "$id" --mode "$mode" --yolo off 2>&1) \
+      || fail "$mode: scout promotion should succeed: $out"
+    assert_grep 'This is a SCOUT task' "$brief" \
+      "$mode: the reproduction fixture lost the original scout delivery text"
+    assert_grep 'Never push to any remote and never open a PR' "$brief" \
+      "$mode: the reproduction fixture lost the stale scout prohibition"
+
+    printf 'zsh' > "$dir/fake/command"
+    out=$(run_spawn "$dir" "$id" --relaunch) \
+      || fail "$mode: promoted scout relaunch should succeed: $out"
+    launch="$home/data/$id/launch-brief.md"
+    assert_grep "This task is now kind=ship with mode=$mode" "$launch" \
+      "$mode: the replacement launch did not receive the promoted task identity"
+    assert_grep 'Any earlier "Never push" or scout-only delivery language in this file is superseded' "$launch" \
+      "$mode: the replacement launch left the stale scout prohibition readable at face value"
+    case "$mode" in
+      direct-PR)
+        rule="1. Never push to the default branch (push only your \`fm/$id\` branch). Never merge a PR." ;;
+      local-only)
+        rule="1. Never push to any remote and never open a PR. Work only on your \`fm/$id\` branch; firstmate handles the merge into local \`main\`." ;;
+      *)
+        rule='1. Never push to the default branch. Never merge a PR.' ;;
+    esac
+    assert_grep "$rule" "$launch" \
+      "$mode: the replacement launch did not receive the current ship push and merge safety rule"
+    assert_grep "git checkout -b fm/$id" "$launch" \
+      "$mode: the replacement launch did not receive its promoted branch name"
+    assert_grep 'Inventory this worktree' "$launch" \
+      "$mode: the replacement launch did not receive the scratch-state inventory step"
+    assert_grep 'Carry over only the intended fix changes' "$launch" \
+      "$mode: the replacement launch did not receive the carry-over boundary"
+    assert_grep "Delivery contract: mode=$mode" "$launch" \
+      "$mode: the replacement launch did not receive the actual ship delivery mode"
+  done
+  pass "fm-promote/fm-spawn --relaunch: the current ship contract supersedes stale scout delivery text"
 }
 
 # fm-spawn arms per-task wiring on harness PREFIXES, because a task launched
@@ -1797,44 +1575,9 @@ test_spawn_relaunch_refuses_a_live_agent() {
   add_ship_task "$dir" rl15 claude
   out=$(run_spawn "$dir" rl15 --relaunch --harness claude); rc=$?
   expect_code 1 "$rc" "relaunching into a live endpoint should refuse"
-  assert_contains "$out" "holds a live agent" "the refusal should name the live agent"
+  assert_contains "$out" "positively agent-free endpoint" "the refusal should demand an agent-free endpoint"
   assert_contains "$out" "fm-control.sh rl15 exit" "the refusal should point at the way to stop it"
   pass "fm-spawn --relaunch: refuses to launch a second agent into a live endpoint"
-}
-
-test_spawn_relaunch_recreates_a_missing_endpoint() {
-  local dir out rc
-  dir=$(new_case recreate rl41)
-  add_ship_task "$dir" rl41 claude
-  : > "$dir/fake/windows"
-  : > "$dir/fake/no-server"
-  printf '%s' "$dir/proj" > "$dir/fake/cwd"
-  # Unset for a deterministic session name (see the same note in
-  # test_missing_endpoint_relaunch_verifies_the_replacement_on_its_new_endpoint).
-  out=$(TMUX='' run_spawn "$dir" rl41 --relaunch --harness claude); rc=$?
-  expect_code 0 "$rc" "relaunching a positively missing endpoint should recreate it"$'\n'"$out"
-  [ "$(meta_field "$dir" rl41 window)" = "firstmate:fm-rl41" ] \
-    || fail "a missing endpoint should be recreated through the ordinary fresh-endpoint path (got '$(meta_field "$dir" rl41 window)')"
-  [ "$(meta_field "$dir" rl41 worktree)" = "$dir/wt" ] \
-    || fail "the recorded worktree must be reused, never a new one"
-  [ "$(cat "$dir/fake/cwd")" = "$dir/wt" ] \
-    || fail "the recreated endpoint should have been opened directly in the recorded worktree (got '$(cat "$dir/fake/cwd")')"
-  assert_no_grep "cd -- " "$dir/fake/keys" \
-    "an endpoint born in the recorded worktree needs no keystroke to get there"
-  pass "fm-spawn --relaunch: a positively missing endpoint is recreated in the recorded worktree, not adopted"
-}
-
-test_spawn_relaunch_refuses_an_ambiguous_endpoint() {
-  local dir out rc
-  dir=$(new_case unattributed rl42a)
-  add_ship_task "$dir" rl42a claude
-  printf 'some-unrelated-process' > "$dir/fake/command"
-  out=$(run_spawn "$dir" rl42a --relaunch --harness claude); rc=$?
-  expect_code 1 "$rc" "relaunching onto an unattributed endpoint should refuse"
-  assert_contains "$out" "rather than a positively agent-free or positively absent state" \
-    "the refusal should distinguish an unreadable/ambiguous read from a positively missing one"
-  [ ! -s "$dir/fake/keys" ] || fail "a refused relaunch must send nothing to the pane"
-  pass "fm-spawn --relaunch: an endpoint that cannot be positively classified still refuses, unlike a missing one"
 }
 
 test_spawn_relaunch_refuses_a_symlinked_task_record_before_inspection() {
@@ -1960,6 +1703,467 @@ test_spawn_relaunch_refuses_a_pane_outside_the_worktree() {
   pass "fm-spawn --relaunch: refuses to start a replacement outside the copy holding its work"
 }
 
+# --- 7. reclaiming a task whose endpoint is gone ----------------------------
+#
+# Before this, `missing` was a terminal state: fm-spawn --relaunch accepted only
+# `dead` and told the caller to stop the agent first, while fm-control exit
+# refused `missing` outright and told the caller to reconcile the task first -
+# and there is no reconcile verb. Each command named the other as its
+# prerequisite, so a task whose pane or workspace was destroyed could not be
+# reclaimed by anything, and any no-mistakes approval it was parked on had no
+# seat left to answer it.
+
+# strand_endpoint <case-dir> <id>: make a tmux endpoint read `missing` the way
+# a destroyed window does - a successful session inventory that omits the exact
+# window.
+strand_endpoint() {  # <case-dir> <id>
+  : > "$1/fake/windows"
+}
+
+# Every tmux `missing` refuses on BOTH verbs, whatever produced it. tmux is the
+# one verified backend whose absence cannot be proven from a task record: the
+# record carries no socket identity for the endpoint, and any inventory
+# describes only the server this process happens to address. So a window that
+# is merely on a server this seat cannot reach is indistinguishable from one
+# that was destroyed, and neither verb will guess.
+assert_tmux_missing_refuses() {  # <case-dir> <id> <what-was-staged>
+  local dir=$1 id=$2 what=$3 out rc brief_before
+
+  out=$(run_spawn "$dir" "$id" --relaunch --harness claude); rc=$?
+  expect_code 1 "$rc" "relaunch must refuse a tmux endpoint whose absence cannot be proven ($what)"$'\n'"$out"
+  assert_absent "$dir/fake/created-windows" "a refused relaunch must not create a window ($what)"
+  assert_absent "$dir/fake/created-sessions" "a refused relaunch must not create a session ($what)"
+  [ ! -s "$dir/fake/literal" ] || fail "a refused relaunch must send nothing into any pane ($what)"
+
+  brief_before=$(cat "$dir/home/data/$id/brief.md")
+  out=$(run_control "$dir" "$id" exit); rc=$?
+  expect_code 1 "$rc" "exit must refuse a tmux endpoint whose absence cannot be proven ($what)"$'\n'"$out"
+  assert_not_contains "$out" "endpoint-gone" \
+    "exit must not report a stop it cannot see ($what)"
+  [ ! -s "$dir/fake/literal" ] || fail "a refused exit must send nothing into any pane ($what)"
+
+  out=$(run_control "$dir" "$id" relaunch --note "this note must never reach a live agent"); rc=$?
+  expect_code 1 "$rc" "the relaunch transaction must fail closed ($what)"$'\n'"$out"
+  [ "$(cat "$dir/home/data/$id/brief.md")" = "$brief_before" ] \
+    || fail "a refused relaunch edited instructions an agent that may still be running is reading ($what)"
+  assert_absent "$dir/fake/created-windows" "a refused transaction must not create a window ($what)"
+  assert_absent "$dir/fake/created-sessions" "a refused transaction must not create a session ($what)"
+  [ ! -s "$dir/fake/literal" ] || fail "a refused transaction must launch nothing ($what)"
+}
+
+test_tmux_refuses_a_window_missing_from_its_session() {
+  local dir
+  dir=$(new_case tmux-gone rl60)
+  add_ship_task "$dir" rl60 claude
+  strand_endpoint "$dir" rl60
+  assert_tmux_missing_refuses "$dir" rl60 "window absent from a readable session inventory"
+  pass "tmux: a window absent from its session refuses both verbs rather than being assumed gone"
+}
+
+test_tmux_refuses_a_session_that_cannot_be_found() {
+  local dir
+  dir=$(new_case tmux-nosession rl61)
+  add_ship_task "$dir" rl61 claude
+  # Real tmux's answer to a renamed session, and to a different
+  # TMUX_TMPDIR/socket: definitive about the SESSION, silent about whether the
+  # window and its agent survived elsewhere.
+  : > "$dir/fake/session-missing"
+  assert_tmux_missing_refuses "$dir" rl61 "recorded session not found"
+  pass "tmux: an unfindable session refuses both verbs, so a live agent is never duplicated"
+}
+
+test_tmux_refuses_when_the_server_is_gone() {
+  local dir
+  dir=$(new_case tmux-noserver rl62)
+  add_ship_task "$dir" rl62 claude
+  # No server on the socket this process addresses. Another server may still be
+  # running the task's window, and the record cannot say which socket is its.
+  : > "$dir/fake/server-dead"
+  assert_tmux_missing_refuses "$dir" rl62 "no tmux server on this socket"
+  pass "tmux: a dead server on this socket refuses both verbs rather than proving absence"
+}
+
+test_reclaim_refuses_an_unreadable_endpoint() {
+  local dir out rc
+  dir=$(new_case gone-unreadable rl63)
+  add_ship_task "$dir" rl63 claude
+  # The inventory itself fails non-definitively. That is not evidence of
+  # absence, and reading it as one is exactly how two agents end up in one
+  # endpoint.
+  : > "$dir/fake/inventory-broken"
+
+  out=$(run_spawn "$dir" rl63 --relaunch --harness claude); rc=$?
+  expect_code 1 "$rc" "an unreadable endpoint must still refuse"
+  assert_contains "$out" "positively agent-free endpoint" \
+    "only a POSITIVELY proven agent-free endpoint may be relaunched into"
+  assert_absent "$dir/fake/created-windows" \
+    "a refused relaunch must not create an endpoint"
+  [ ! -s "$dir/fake/literal" ] || fail "a refused relaunch must launch nothing"
+  pass "reclaim: an unclassifiable endpoint is still refused, so two agents cannot share one"
+}
+
+# --- herdr: a stopped server is not a destroyed endpoint --------------------
+#
+# Stopping and restarting a named Herdr server preserves workspace, tab, pane
+# and label ids; only the harness processes and their registrations die
+# (docs/herdr-backend.md "Restart and liveness behavior"). The recovery-grade
+# classifier still reads a stopped server as `missing`, so a reclaim that
+# believed that verdict would abandon a pane that was about to come back and
+# open a second tab beside it.
+#
+# Canned/stateful fake only - never a real herdr session.
+make_herdr_stub() {  # <case-dir>
+  local fb="$1/fakebin"
+  mkdir -p "$fb"
+  # The herdr server-ensure poll must actually wait between reads, so this case
+  # keeps the real sleep rather than the tmux cases' instant stub.
+  rm -f "$fb/sleep"
+  cat > "$fb/herdr" <<'SH'
+#!/usr/bin/env bash
+set -u
+D=$FM_FAKE_DIR
+printf '%s\n' "$*" >> "$D/herdr-log"
+if [ "${1:-}" = status ] && [ "${2:-}" = --json ]; then
+  if [ -f "$D/herdr-stopped" ]; then
+    printf '{"client":{"version":"0.9.0","protocol":22},"server":{"running":false}}\n'
+  else
+    printf '{"client":{"version":"0.9.0","protocol":22},"server":{"running":true}}\n'
+  fi
+  exit 0
+fi
+if [ "${1:-}" = server ]; then
+  rm -f "$D/herdr-stopped"
+  exit 0
+fi
+if [ -f "$D/herdr-stopped" ]; then
+  # Every operational call against a stopped server fails at the transport,
+  # with no JSON body to classify.
+  echo 'error: could not connect to the herdr server' >&2
+  exit 1
+fi
+case "${1:-} ${2:-}" in
+  'pane get')
+    if [ "${3:-}" = "$(cat "$D/herdr-pane")" ]; then
+      printf '{"result":{"pane":{"pane_id":"%s","foreground_cwd":"%s"}}}\n' \
+        "${3:-}" "$(cat "$D/cwd")"
+    else
+      # Only the pane this case says survived can be read back. Any other pane
+      # id is structurally gone, which is herdr's `pane_not_found`.
+      printf '{"error":{"code":"pane_not_found"}}\n'
+    fi
+    exit 0 ;;
+  'agent get')
+    if [ -f "$D/herdr-agent-live" ]; then
+      # The agent came back with its server. Nothing here is reclaimable.
+      printf '{"result":{"agent":{"agent_status":"idle"}}}\n'
+    else
+      # A pane that comes back holding no agent is the adoptable state.
+      printf '{"error":{"code":"agent_not_found"}}\n'
+    fi
+    exit 0 ;;
+  'pane process-info')
+    # Only asked for once an agent IS registered, to prove it at process level.
+    printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":4242,"foreground_processes":[{"pid":4243,"name":"claude","argv":["claude"],"cmdline":"claude"}]}}}\n' \
+      "$(cat "$D/herdr-pane")"
+    exit 0 ;;
+  'pane send-text')
+    # Mirrors the tmux fake's `becomes`: delivering the launch brief is what
+    # makes an agent exist on this pane, so the control plane's alive-wait can
+    # observe the replacement come up. A launch arrives as a short line sourcing
+    # the staged launch file rather than the literal command, so read that file
+    # back before deciding what was delivered - exactly as the tmux fake above
+    # and tests/fixtures.sh do.
+    payload=${4:-}
+    case "$payload" in
+      ". '"*"'") staged=${payload#". '"}; staged=${staged%"'"}; [ ! -f "$staged" ] || payload=$(cat "$staged") ;;
+    esac
+    case "$payload" in
+      *'encode launch-brief'*) : > "$D/herdr-agent-live" ;;
+    esac
+    exit 0 ;;
+  'workspace list')
+    printf '{"result":{"workspaces":[]}}\n'
+    exit 0 ;;
+  'workspace create')
+    if [ -f "$D/herdr-workspace-create-fails" ]; then
+      echo 'error: workspace create failed' >&2
+      exit 1
+    fi
+    printf '{"result":{"workspace":{"workspace_id":"wsnew"},"tab":{"tab_id":"seedtab"}}}\n'
+    exit 0 ;;
+  'tab list')
+    printf '{"result":{"tabs":[]}}\n'
+    exit 0 ;;
+  'tab create')
+    # The re-created endpoint. Recording it lets a case prove the pane the
+    # record ends up naming is the one this call minted.
+    printf '%s\n' "$*" >> "$D/herdr-created-tabs"
+    printf '{"result":{"tab":{"tab_id":"tabnew"},"root_pane":{"pane_id":"%%9"}}}\n'
+    # From here on the new pane is the one that reads back.
+    printf '%s' '%9' > "$D/herdr-pane"
+    exit 0 ;;
+esac
+exit 0
+SH
+  chmod +x "$fb/herdr"
+}
+
+# add_herdr_ship_task <case-dir> <id> [session] [surviving-pane]: a ship task
+# recorded on the herdr backend, with its server stopped so its endpoint
+# classifies `missing`. <surviving-pane> is the pane id the fake will answer for
+# once that server is back; default is the recorded one (it survived the
+# restart). Pass a different id to model a pane that genuinely did not.
+add_herdr_ship_task() {  # <case-dir> <id> [session] [surviving-pane]
+  local dir=$1 id=$2 ses=${3:-fmlab} survivor=${4:-'%7'}
+  local home="$dir/home" proj="$dir/proj" wt="$dir/wt"
+  fm_git_worktree "$proj" "$wt" "task-$id"
+  mkdir -p "$home/data/$id"
+  cat > "$home/data/$id/brief.md" <<EOF
+# Task
+## Captain's intent
+Exercise a herdr reclaim safely.
+
+## Firstmate spec
+Keep the recorded endpoint when it outlives its server.
+EOF
+  {
+    echo "window=$ses:%7"
+    echo "endpoint_task_id=$id"
+    echo "worktree=$wt"
+    echo "project=$proj"
+    echo "harness=claude"
+    echo "kind=ship"
+    echo "mode=no-mistakes"
+    echo "yolo=off"
+    echo "tasktmp=/tmp/fm-$id"
+    echo "model=default"
+    echo "effort=default"
+    echo "backend=herdr"
+    echo "herdr_session=$ses"
+    echo "herdr_workspace_id=ws1"
+    echo "herdr_tab_id=tab1"
+    echo "herdr_pane_id=%7"
+  } > "$home/state/$id.meta"
+  printf '%s' "$wt" > "$dir/fake/cwd"
+  printf '%s' "$survivor" > "$dir/fake/herdr-pane"
+  : > "$dir/fake/herdr-log"
+  : > "$dir/fake/herdr-stopped"
+  TASK_TMPS+=("/tmp/fm-$id")
+}
+
+# Sets HERDR_CASE_DIR rather than echoing it, so callers invoke it as a plain
+# statement. A `dir=$(herdr_case_or_skip ...)` would run add_herdr_ship_task in
+# a command-substitution subshell, where its TASK_TMPS registration would
+# mutate a discarded copy and the EXIT trap would never remove the
+# out-of-tmproot /tmp/fm-<id> root the spawn creates.
+HERDR_CASE_DIR=
+herdr_case_or_skip() {  # <name> <id> [session] [surviving-pane]
+  HERDR_CASE_DIR=
+  command -v jq >/dev/null 2>&1 || return 1
+  HERDR_CASE_DIR=$(new_case "$1" "$2")
+  add_herdr_ship_task "$HERDR_CASE_DIR" "$2" "${3:-fmlab}" "${4:-%7}"
+  make_herdr_stub "$HERDR_CASE_DIR"
+  return 0
+}
+
+test_herdr_reclaim_adopts_a_pane_that_outlived_its_server() {
+  local dir out rc=0 log stray
+  herdr_case_or_skip gone-herdr rl68 || {
+    echo "skip - herdr reclaim needs jq (the herdr adapter parses JSON with it)"
+    return 0
+  }
+  dir=$HERDR_CASE_DIR
+
+  out=$(run_spawn "$dir" rl68 --relaunch --harness claude) || rc=$?
+  log=$(cat "$dir/fake/herdr-log")
+  expect_code 0 "$rc" "a pane that outlived its stopped server is adoptable"$'\n'"$out"$'\n'"$log"
+
+  assert_contains "$log" "server --session fmlab" \
+    "the reclaim must bring the RECORDED session's server back before deciding anything"
+  assert_contains "$log" "agent get %7 --session fmlab" \
+    "the reclaim must re-read the recorded pane once its server is running"
+  assert_not_contains "$log" "workspace create" \
+    "adopting a preserved pane must not create a workspace"
+  assert_not_contains "$log" "tab create" \
+    "adopting a preserved pane must not open a second tab beside it"
+  # Every call belongs to the session the record names. A rebind resolves its
+  # container from the ambient session instead, which is how the preserved pane
+  # ends up orphaned in a workspace nothing points at.
+  stray=$(printf '%s\n' "$log" | grep -v -- '--session fmlab$' | grep -v '^status --json$' || true)
+  [ -z "$stray" ] || fail "a herdr reclaim touched a session the record does not name: $stray"
+  assert_contains "$out" "window=fmlab:%7" "the reclaim should report the adopted endpoint"
+  [ "$(meta_field "$dir" rl68 herdr_pane_id)" = '%7' ] \
+    || fail "the adopted record's pane id changed, got $(meta_field "$dir" rl68 herdr_pane_id)"
+  [ "$(meta_field "$dir" rl68 herdr_tab_id)" = tab1 ] \
+    || fail "the adopted record's tab id changed, got $(meta_field "$dir" rl68 herdr_tab_id)"
+  [ "$(meta_field "$dir" rl68 window)" = 'fmlab:%7' ] \
+    || fail "the adopted record's endpoint moved, got $(meta_field "$dir" rl68 window)"
+  assert_contains "$log" "pane send-text %7 " \
+    "the replacement's launch brief must be delivered into the adopted pane"
+  pass "reclaim: a herdr pane that outlived its stopped server is adopted, never orphaned beside a new tab"
+}
+
+test_herdr_exit_reports_already_stopped_when_the_pane_outlived_its_server() {
+  local dir out rc=0
+  herdr_case_or_skip gone-herdr-exit rl72 || {
+    echo "skip - herdr exit needs jq (the herdr adapter parses JSON with it)"
+    return 0
+  }
+  dir=$HERDR_CASE_DIR
+
+  out=$(run_control "$dir" rl72 exit) || rc=$?
+  expect_code 0 "$rc" "a pane that outlived its stopped server holds no agent, which is success"$'\n'"$out"
+  assert_contains "$out" "already-stopped" \
+    "the endpoint is there and idle, which is the ordinary already-stopped outcome"
+  assert_not_contains "$out" "endpoint-gone" \
+    "a pane that survived its server's restart was never gone"
+  [ "$(meta_field "$dir" rl72 window)" = 'fmlab:%7' ] \
+    || fail "exit must leave the recorded endpoint exactly as it found it"
+  pass "fm-control exit: a herdr pane that outlived its stopped server is already-stopped, not gone"
+}
+
+test_herdr_rebind_stays_in_the_recorded_session() {
+  local dir out rc=0 log
+  # The record names session `fmlab`; this seat has no ambient HERDR_SESSION, so
+  # the adapter's own default is `default`. The recorded pane does NOT come back
+  # with the server, so this reclaim really does rebind - and the rebind must
+  # land in `fmlab`, never in `default`.
+  herdr_case_or_skip gone-herdr-pin rl73 fmlab '%none' || {
+    echo "skip - herdr rebind needs jq (the herdr adapter parses JSON with it)"
+    return 0
+  }
+  dir=$HERDR_CASE_DIR
+
+  out=$(run_spawn "$dir" rl73 --relaunch --harness claude) || rc=$?
+  log=$(cat "$dir/fake/herdr-log")
+  expect_code 0 "$rc" "a herdr pane that did not survive its server should be rebound"$'\n'"$out"$'\n'"$log"
+
+  assert_contains "$log" "tab create" "a destroyed pane must be replaced by a fresh tab"
+  [ -z "$(grep -v -- '--session fmlab$' <<<"$log" | grep -v '^status --json$' || true)" ] \
+    || fail "the rebind used a herdr session the record does not name: $log"
+  [ "$(meta_field "$dir" rl73 herdr_session)" = fmlab ] \
+    || fail "the rebound record left its recorded herdr session, got $(meta_field "$dir" rl73 herdr_session)"
+  [ "$(meta_field "$dir" rl73 window)" = 'fmlab:%9' ] \
+    || fail "the rebound endpoint should be the new pane in the recorded session, got $(meta_field "$dir" rl73 window)"
+  [ "$(meta_field "$dir" rl73 herdr_pane_id)" = '%9' ] \
+    || fail "the rebound record should name the pane the reclaim minted, got $(meta_field "$dir" rl73 herdr_pane_id)"
+  pass "reclaim: a herdr rebind is created in the session the record names, never the ambient one"
+}
+
+test_herdr_reclaim_refuses_an_agent_that_came_back() {
+  local dir out rc log
+  herdr_case_or_skip gone-herdr-alive rl74 || {
+    echo "skip - herdr reclaim needs jq (the herdr adapter parses JSON with it)"
+    return 0
+  }
+  dir=$HERDR_CASE_DIR
+  # The server was stopped, so the first read says `missing` - but starting it
+  # brings the pane AND its agent back. A rebind here would put a second agent
+  # in this task's worktree, which is the whole reason absence is re-proven.
+  : > "$dir/fake/herdr-agent-live"
+
+  out=$(run_spawn "$dir" rl74 --relaunch --harness claude); rc=$?
+  log=$(cat "$dir/fake/herdr-log")
+  expect_code 1 "$rc" "a returning agent must refuse, never be duplicated"$'\n'"$out"$'\n'"$log"
+  assert_contains "$out" "alive" "the refusal should name the state it actually read"
+  assert_not_contains "$log" "tab create" "a refused reclaim must not mint a second tab"
+  assert_not_contains "$log" "workspace create" "a refused reclaim must not create a workspace"
+  [ "$(meta_field "$dir" rl74 herdr_pane_id)" = '%7' ] \
+    || fail "a refused reclaim rewrote the record's pane id"
+  pass "reclaim: a herdr agent that came back with its server refuses, so one worktree keeps one agent"
+}
+
+test_herdr_reclaim_keeps_the_task_whole() {
+  local dir out rc=0 head_before
+  herdr_case_or_skip gone-herdr-work rl75 fmlab '%none' || {
+    echo "skip - herdr reclaim needs jq (the herdr adapter parses JSON with it)"
+    return 0
+  }
+  dir=$HERDR_CASE_DIR
+  printf 'landed on the branch\n' > "$dir/wt/committed.txt"
+  git -C "$dir/wt" add committed.txt
+  git -C "$dir/wt" -c user.email=t@example.com -c user.name=t commit -qm "work in progress"
+  head_before=$(git -C "$dir/wt" rev-parse HEAD)
+  printf 'never committed\n' > "$dir/wt/dirty.txt"
+
+  # A reclaim rebinds the ENDPOINT and nothing else. Everything that identifies
+  # the task must come through untouched: a record row the reclaim does not
+  # own, the armed watcher check and the private binding that authorizes it,
+  # and the status log the supervisor reads.
+  printf '%s\n' "pr=https://example.invalid/pr/7" >> "$dir/home/state/rl75.meta"
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$dir/home/state/rl75.check.sh"
+  chmod 0700 "$dir/home/state/rl75.check.sh"
+  FM_HOME="$dir/home" "$ROOT/bin/fm-check-register.sh" rl75 >/dev/null \
+    || fail "could not arm a custom check for the reclaim fixture"
+  printf 'working: parked on an approval nobody can answer\n' >> "$dir/home/state/rl75.status"
+
+  out=$(run_control "$dir" rl75 relaunch --note "the pane was destroyed; pick the work back up") || rc=$?
+  expect_code 0 "$rc" "the owning seat should be able to reclaim a task whose pane is gone"$'\n'"$out"
+
+  [ "$(git -C "$dir/wt" rev-parse HEAD)" = "$head_before" ] \
+    || fail "a reclaim moved the worktree's HEAD"
+  [ "$(git -C "$dir/wt" rev-parse --abbrev-ref HEAD)" = "task-rl75" ] \
+    || fail "a reclaim changed the worktree's branch"
+  assert_contains "$(cat "$dir/wt/dirty.txt")" "never committed" \
+    "a reclaim destroyed or rewrote an uncommitted change"
+  assert_present "$dir/wt/committed.txt" "a reclaim destroyed committed work"
+
+  [ "$(meta_field "$dir" rl75 worktree)" = "$dir/wt" ] \
+    || fail "a reclaim must keep the recorded worktree"
+  [ "$(meta_field "$dir" rl75 pr)" = "https://example.invalid/pr/7" ] \
+    || fail "a reclaim dropped a record row it does not own"
+  assert_present "$dir/home/state/rl75.check.sh" "a reclaim retired the task's armed check"
+  assert_present "$dir/home/state/rl75.check-trust" "a reclaim broke the armed check's registration"
+  assert_contains "$(cat "$dir/home/state/rl75.status")" "parked on an approval nobody can answer" \
+    "a reclaim truncated the status log"
+  assert_contains "$(cat "$dir/home/data/rl75/brief.md")" "the pane was destroyed" \
+    "the replacement must inherit the progress note"
+  [ "$(journal_field "$dir" rl75 exit_result)" = endpoint-gone ] \
+    || fail "the transaction should record that the endpoint was already gone"
+  pass "reclaim: a herdr reclaim rebinds the endpoint and leaves the whole rest of the task alone"
+}
+
+test_herdr_rebind_failure_from_a_plain_shell_names_the_real_cause() {
+  local dir out rc
+  # No HERDR_* env at all, which is how an operator reclaims from ssh or cron.
+  # The adapter's ambient session then reads `default` while the record names
+  # `fmlab`, but the cross-session launcher guard was never consulted - this
+  # seat claims no launcher pane, so placement fell back to the recorded
+  # session's labeled container and the container failed for its own reason.
+  herdr_case_or_skip gone-herdr-plain rl77 fmlab '%none' || {
+    echo "skip - herdr reclaim needs jq (the herdr adapter parses JSON with it)"
+    return 0
+  }
+  dir=$HERDR_CASE_DIR
+  : > "$dir/fake/herdr-workspace-create-fails"
+
+  out=$(run_spawn "$dir" rl77 --relaunch --harness claude); rc=$?
+  expect_code 1 "$rc" "a container that cannot be ensured must refuse"$'\n'"$out"
+  assert_contains "$out" "fmlab" "the refusal should name the session the reclaim was targeting"
+  assert_not_contains "$out" "this seat is running in herdr session" \
+    "a seat with no launcher pane never hit the cross-session guard, so the refusal must not blame one"
+  assert_not_contains "$out" "a reclaim never moves a task to another session" \
+    "the operator must not be sent to re-run from another seat when that would not help"
+  pass "reclaim: a rebind refused from a plain shell reports the real cause, not a fabricated session mismatch"
+}
+
+test_herdr_reclaim_of_a_secondmate_names_its_own_owner() {
+  local dir out rc
+  herdr_case_or_skip gone-herdr-secondmate rl76 fmlab '%none' || {
+    echo "skip - herdr reclaim needs jq (the herdr adapter parses JSON with it)"
+    return 0
+  }
+  dir=$HERDR_CASE_DIR
+  printf '%s\n' "kind=secondmate" "home=$dir/wt" >> "$dir/home/state/rl76.meta"
+
+  out=$(run_spawn "$dir" rl76 --relaunch --harness claude); rc=$?
+  expect_code 1 "$rc" "a secondmate reclaim belongs to the secondmate respawn path"
+  assert_contains "$out" "--secondmate" "the refusal should name the path that owns this recovery"
+  assert_not_contains "$(cat "$dir/fake/herdr-log")" "tab create" \
+    "the refusal must happen before any endpoint is created"
+  pass "reclaim: a herdr secondmate whose endpoint is gone is sent to its own respawn owner"
+}
+
 test_relaunch_reverifies_an_already_in_flight_item_instead_of_rewriting_it() {
   local dir out rc=0
   command -v tasks-axi >/dev/null 2>&1 || {
@@ -1996,16 +2200,8 @@ test_relaunch_moves_a_drifted_item_back_in_flight() {
 }
 
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
-test_missing_endpoint_relaunch_recreates_it
-test_missing_endpoint_relaunch_verifies_the_replacement_on_its_new_endpoint
-test_ambiguous_endpoint_relaunch_still_refuses
-test_missing_session_over_a_live_server_still_refuses
-test_absent_window_found_in_another_session_still_refuses
-test_recreated_endpoint_outwaits_a_slow_settling_pane
-test_absent_window_found_nowhere_recreates
-test_multiple_parked_tasks_all_relaunch_after_a_reboot
-test_missing_endpoint_relaunch_removes_its_recreated_endpoint_on_abort
-test_missing_endpoint_relaunch_keeps_a_recreated_endpoint_its_record_names
+test_relaunch_refuses_before_exit_when_the_composer_holds_pending_text
+test_relaunch_refuses_before_exit_when_the_composer_state_is_unproven
 test_relaunch_from_linked_home_preserves_recorded_worktree
 test_relaunch_preserves_durable_task_metadata
 test_relaunch_serializes_concurrent_durable_metadata_publication
@@ -2029,6 +2225,7 @@ test_secondmate_relaunch_onto_a_crewmate_only_adapter_refuses_before_stop
 test_explicit_secondmate_harness_ignores_configured_profile_axes
 test_ship_relaunch_ignores_the_crew_harness_config
 test_spawn_relaunch_without_a_harness_reuses_the_recorded_one
+test_promoted_scout_relaunch_receives_the_current_delivery_contract
 test_prefixed_prior_harness_wiring_is_still_retired
 test_muse_session_binding_is_retired_on_a_harness_switch
 test_cursor_session_binding_is_retired_on_a_harness_switch
@@ -2050,14 +2247,22 @@ test_concurrent_relaunch_is_refused
 test_direct_spawn_relaunch_participates_in_the_lifecycle_lock
 test_promotion_participates_in_the_lifecycle_lock_before_metadata_resolution
 test_spawn_relaunch_refuses_a_live_agent
-test_spawn_relaunch_recreates_a_missing_endpoint
-test_spawn_relaunch_refuses_an_ambiguous_endpoint
-test_spawn_relaunch_refuses_a_missing_address_over_a_live_server
 test_spawn_relaunch_refuses_a_symlinked_task_record_before_inspection
 test_spawn_relaunch_keeps_its_early_meta_lock_continuous
 test_spawn_relaunch_refuses_a_pending_authoritative_close
 test_spawn_relaunch_refuses_contradicting_flags
 test_spawn_relaunch_refuses_an_unrecorded_task
 test_spawn_relaunch_refuses_a_pane_outside_the_worktree
+test_tmux_refuses_a_window_missing_from_its_session
+test_tmux_refuses_a_session_that_cannot_be_found
+test_tmux_refuses_when_the_server_is_gone
+test_reclaim_refuses_an_unreadable_endpoint
+test_herdr_reclaim_adopts_a_pane_that_outlived_its_server
+test_herdr_exit_reports_already_stopped_when_the_pane_outlived_its_server
+test_herdr_rebind_stays_in_the_recorded_session
+test_herdr_reclaim_refuses_an_agent_that_came_back
+test_herdr_reclaim_keeps_the_task_whole
+test_herdr_reclaim_of_a_secondmate_names_its_own_owner
+test_herdr_rebind_failure_from_a_plain_shell_names_the_real_cause
 test_relaunch_reverifies_an_already_in_flight_item_instead_of_rewriting_it
 test_relaunch_moves_a_drifted_item_back_in_flight

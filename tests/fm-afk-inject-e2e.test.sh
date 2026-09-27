@@ -132,9 +132,12 @@ done
 LOOP
 chmod +x "$LOOP_SCRIPT"
 
-# Start the loop in the supervisor pane.
-"$REAL_TMUX" -L "$SOCKET" send-keys -t "$SUPERVISOR_PANE" \
-  "bash '$LOOP_SCRIPT' '$LOG_FILE'" Enter
+# Start the loop as the pane command. Typing its launch into a freshly created
+# detached shell races that shell's startup and can leave the command sitting
+# unsubmitted, making later fixture text look like shell input instead of the
+# deterministic composer this test owns.
+"$REAL_TMUX" -L "$SOCKET" respawn-pane -k -t "$SUPERVISOR_PANE" -- \
+  bash "$LOOP_SCRIPT" "$LOG_FILE"
 sleep 1  # let the loop start and settle
 
 # tmux shim: redirects bare `tmux` to the private socket. Optionally swallows

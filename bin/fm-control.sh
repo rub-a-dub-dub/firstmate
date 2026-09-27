@@ -30,15 +30,35 @@
 #              every uncommitted change. Interrupts first when the task reads
 #              busy, then submits the harness's exit command. Postcondition:
 #              the backend's recovery-grade classifier reports the agent gone.
-#              Already-stopped is success (idempotent).
-#   relaunch   Transactionally replace the agent with a new one, in the SAME
-#              worktree, on the same or a newly chosen harness/model/effort -
-#              so switching harness is one ordinary use of this verb. The
-#              recorded endpoint is adopted when agent-free, or recreated
-#              fresh when its address no longer resolves and the task's
-#              endpoint is then found nowhere on the backend
-#              (docs/agent-control.md owns that distinction). An
-#              explicit `default` model or effort clears that
+#              Already-stopped is success (idempotent). An endpoint that reads
+#              `missing` is put through the control plane's per-backend absence
+#              proof (fm_control_endpoint_absence_verdict) before anything is
+#              claimed about it, because `missing` also covers an endpoint that
+#              is merely unreachable from this seat. That proof exists only on
+#              HERDR, whose reads are scoped to the session the record names:
+#              proven gone reports `endpoint-gone` rather than
+#              `already-stopped`, because the endpoint this verb normally
+#              preserves did not survive; a pane that turns out to be there and
+#              idle is the ordinary `already-stopped`; one whose agent is back
+#              takes the ordinary interrupt-then-exit path. A tmux `missing`
+#              always REFUSES: a task record carries no socket identity for its
+#              endpoint, so this verb cannot tell a destroyed window from one on
+#              a tmux server it cannot address, and it will not claim a stop it
+#              cannot see.
+#   relaunch   Transactionally replace the running agent with a new one, in the
+#              SAME worktree - and the same endpoint whenever that endpoint
+#              still exists - on the same or a newly chosen
+#              harness/model/effort - so switching harness is one ordinary use
+#              of this verb. When the recorded endpoint is instead proven gone -
+#              a Herdr pane or workspace destroyed in churn - the launch owner
+#              re-creates one in that worktree, in the herdr session the record
+#              names, and the task's record rebinds to it; that is how a task
+#              whose terminal was destroyed is reclaimed by the home that owns
+#              it, rather than being stranded with a parked approval nobody can
+#              answer. Reclaim is HERDR-ONLY for the reason `exit` gives above:
+#              a tmux `missing` cannot be proven absent from a task record, so
+#              it refuses.
+#              An explicit `default` model or effort clears that
 #              axis for the replacement. With no explicit axis, a secondmate
 #              re-resolves its durable config/secondmate-harness pin (harness
 #              plus its optional model and effort tokens) exactly as any other
@@ -50,10 +70,8 @@
 #              inherits the local copy but none of the conversation; a
 #              secondmate reconciles its own home's records at startup, so its
 #              standing charter is never rewritten.
-#              Records a durable checkpoint and that note, exits the old agent
-#              (skipped only when that same backend-wide sweep proves its
-#              endpoint absent, so there is no agent left to stop), then
-#              delegates the launch to its single owner,
+#              Records a durable checkpoint and that note, exits the old agent,
+#              then delegates the launch to its single owner,
 #              bin/fm-spawn.sh --relaunch. A failure before publication keeps
 #              the prior durable record in place and reports the concrete
 #              state; it never leaves a half-transitioned task claiming to be
@@ -90,6 +108,8 @@
 #     than reported as successful blind.
 #   - An ambiguous or unreadable endpoint state refuses; only a positively
 #     classified state acts.
+#   - A composer that visibly holds pending text refuses before an exit command
+#     is typed, so existing text is preserved instead of being concatenated.
 #
 # Environment knobs (all bounded waits, seconds):
 #   FM_CONTROL_POLL              poll interval for postcondition waits (0.5)
@@ -451,9 +471,9 @@ retire_busy_incarnation() {
 }
 
 # do_exit: stop the running agent, preserving endpoint and worktree. Prints
-# `already-stopped` or `stopped`.
+# `already-stopped`, `endpoint-gone`, or `stopped`.
 do_exit() {
-  local state cmd verdict cancel interrupt_result=not-needed
+  local state cmd verdict composer_state cancel absence interrupt_result=not-needed
   require_state_verified_backend exit
   state=$(agent_state)
   case "$state" in
@@ -462,7 +482,40 @@ do_exit() {
       return 0
       ;;
     alive) ;;
-    missing) die "task $ID's recorded endpoint is gone, so there is no agent to stop. If its endpoint is gone for good, relaunch it with bin/fm-control.sh $ID relaunch --note '<progress>'; otherwise reconcile the task first." ;;
+    missing)
+      # `missing` on its own is not a finding about the endpoint: it conflates
+      # "destroyed" with "unreachable from this seat". Route it through the
+      # control plane's one absence proof - the same one the relaunch gate uses
+      # - and report what that proof actually established, never more.
+      absence=$(fm_control_endpoint_absence_verdict "$BACKEND" "$T")
+      case "${absence%%$'\t'*}" in
+        gone)
+          # Proven gone, so the agent that lived in it went with it: exit's
+          # postcondition already holds and there is nothing to send. Its own
+          # outcome rather than `already-stopped`, because the endpoint this
+          # verb normally preserves did not survive. The worktree and every
+          # uncommitted change are untouched, and `relaunch` re-creates the
+          # endpoint from here.
+          printf 'endpoint-gone'
+          return 0
+          ;;
+        dead)
+          # The endpoint was only unreachable and is there after all, holding
+          # no agent - a herdr pane whose session server was merely stopped is
+          # the common case. Nothing is gone, so this is the ordinary
+          # already-stopped outcome.
+          printf 'already-stopped'
+          return 0
+          ;;
+        alive)
+          # The agent came back with its endpoint. Fall through to the ordinary
+          # alive path: interrupt if busy, then the harness's exit command.
+          ;;
+        *)
+          die "task $ID's endpoint $T reads 'missing', but ${absence#*$'\t'}; exit will not claim an agent stopped at an address it cannot trust, nor send lifecycle input to one"
+          ;;
+      esac
+      ;;
     *) die "task $ID's endpoint reads '$state' rather than a positively classified state; refusing to send a lifecycle command into an unattributed endpoint" ;;
   esac
   # A busy agent is interrupted first before the exit command is submitted.
@@ -483,6 +536,17 @@ do_exit() {
       ;;
   esac
   cmd=$(fm_control_exit_command "$HARNESS")
+  composer_state=$(fm_backend_composer_state "$BACKEND" "$T" "$LABEL" 2>/dev/null) \
+    || composer_state=unknown
+  case "$composer_state" in
+    empty) ;;
+    pending)
+      die "task $ID's composer visibly holds pending text; refusing to type the $cmd exit command because it would concatenate onto that text. Clear or submit the pending text, then retry '$VERB'"
+      ;;
+    *)
+      die "task $ID's composer state is '$composer_state', not proven empty; refusing to type the $cmd exit command because it could concatenate onto existing text. Clear the composer, then retry '$VERB'"
+      ;;
+  esac
   # The submit verdict is NOT the postcondition here: a successful exit command
   # destroys the composer the verdict is read from, so a post-exit read can
   # legitimately report anything. Only a hard transport failure aborts; the
@@ -589,8 +653,16 @@ relaunch_rollback() {
           echo "error: $ID's agent stopped but relaunch did not reach replacement launch; no agent is running, and its work plus progress note are preserved at $WT" >&2
           ;;
         *)
-          journal_write "failed:$RELAUNCH_PHASE" "rollback=none-agent-state-$state" || true
-          echo "error: relaunch of $ID failed while stopping the old agent and its state is '$state'; the durable record and progress note were retained for recovery" >&2
+          # The old agent was NOT proven stopped, so no replacement is coming
+          # and the agent that may still be reading these instructions is the
+          # original one. The note exists to brief a replacement; leaving it in
+          # a possibly-live agent's brief would be an unrequested edit to a
+          # running task. Restore byte-exact, exactly as the alive case does.
+          if [ -n "$RELAUNCH_BRIEF" ] && [ -f "$BRIEF_PRIOR" ]; then
+            cp -p "$BRIEF_PRIOR" "$RELAUNCH_BRIEF" 2>/dev/null || true
+          fi
+          journal_write "failed:$RELAUNCH_PHASE" "rollback=instructions-restored-agent-state-$state" || true
+          echo "error: relaunch of $ID failed while stopping the old agent and its state is '$state', so it was not proven stopped; its original instructions were restored and the durable record was retained for recovery" >&2
           ;;
       esac
       ;;
@@ -836,18 +908,7 @@ do_relaunch() {
   journal_write noted "${CHECKPOINT_LINES[@]}" "$note_line"
 
   journal_write stopping "${CHECKPOINT_LINES[@]}" "$note_line"
-  if [ "$(agent_state)" = missing ] && fm_backend_endpoint_absent "$BACKEND" "$T"; then
-    # A missing address whose endpoint is then found nowhere on the backend is
-    # strictly safer than an agent-free endpoint: there is provably no pane and
-    # no agent left to stop. A missing address whose endpoint still exists
-    # under another one proves only that the recorded address stopped
-    # resolving, so it falls through to do_exit, whose own `missing` refusal
-    # stops the relaunch before the agent is touched. The recreate path applies
-    # the identical test (bin/fm-spawn.sh --relaunch, docs/agent-control.md).
-    exit_result='already-absent'
-  else
-    exit_result=$(do_exit)
-  fi
+  exit_result=$(do_exit)
   journal_write exited "${CHECKPOINT_LINES[@]}" "$note_line" "exit_result=$exit_result"
 
   # The launch owner (fm-spawn --relaunch) clears the previous incarnation's
@@ -860,19 +921,28 @@ do_relaunch() {
   if FM_CONTROL_RELAUNCH_TX="$RELAUNCH_TX" \
       "$SCRIPT_DIR/fm-spawn.sh" "${spawn_args[@]}" >/dev/null; then
     RELAUNCH_META_PUBLISHED=1
+    # $T was resolved from the record before the launch. When the recorded
+    # endpoint was gone, the launch owner created a fresh one and republished
+    # the record pointing at it, so every postcondition below must be read from
+    # the endpoint the task now HAS, not the one it had. Re-resolving through
+    # the same shared validation is what makes that safe: a record that no
+    # longer passes it refuses here rather than leaving this transaction
+    # polling an address nothing owns.
+    # stdout is dropped (it is only the resolved target), but the refusal on
+    # stderr names the exact row that failed - and in this one branch the record
+    # was just rewritten by the launch owner, so that row is the whole
+    # diagnostic. Let it through rather than dying with nothing to act on.
+    if fm_backend_validate_task_endpoint "$META" "$ID" >/dev/null \
+       && [ -n "$FM_BACKEND_VALIDATED_TARGET" ]; then
+      T=$FM_BACKEND_VALIDATED_TARGET
+    else
+      die "the replacement agent for $ID was launched, but task $ID's republished record no longer passes endpoint validation (the refusal above names the row), so this transaction cannot say which endpoint to confirm it on; reconcile $META before any further control action"
+    fi
   else
     [ "$(fm_meta_get "$META" control_relaunch_tx)" != "$RELAUNCH_TX" ] \
       || RELAUNCH_META_PUBLISHED=1
     die "the replacement agent for $ID could not be launched on $TARGET_HARNESS"
   fi
-
-  # A missing endpoint is recreated fresh rather than adopted (fm-spawn.sh
-  # --relaunch), so the just-published record can name a different endpoint
-  # than the one this process started with. Re-read it before proving the
-  # replacement is alive; an adopted endpoint re-reads the same value it
-  # already had.
-  T=$(fm_meta_get "$META" window)
-  [ -n "$T" ] || die "task $ID's replacement record has no recorded endpoint to verify"
 
   state=$(wait_agent_state "$LAUNCH_WAIT" alive) || {
     die "the replacement agent for $ID did not come up within ${LAUNCH_WAIT}s (endpoint reads '$state')"
