@@ -1,0 +1,73 @@
+################################################################
+## BEFORE the fix (bf2cd38)  (bin from: /var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T//noci-e2e.EAoqLV/base)
+################################################################
+
+--- ci step log the fake `no-mistakes axi logs --step ci` replays ---
+[ci] waiting for checks on PR #41...
+[ci] repository declares no CI (no_ci: true) - treating as all checks passed - still monitoring until merged or closed
+[ci] base branch advanced (aaaaaaa..bbbbbbb), re-arming CI monitor timeout
+
+--- 1. what the crew reads: bin/fm-crew-state.sh pkm-instruction-budget-ship ---
+state: working · source: run-step · validating (running)
+
+--- 2. the predicates the wedge ladder asks (real bin/fm-classify-lib.sh) ---
+crew_absorb_class          -> working
+crew_done_no_active_run    -> false (wedge ladder keeps escalating)
+
+--- 3. the wedge ladder itself: real wedge_timer_check() from bin/fm-watch.sh ---
+    (idle pane, wedge timer 500s past the 240s threshold, 3 prior escalations)
+    watcher stdout: stale: fm:fm-pkm-instruction-budget-ship (idle 500s, possible wedge, escalation 4, demand-deep-inspection: same pane has wedge-escalated 4 times in a row - do not re-absorb on the run-step/pane state alone)
+    watch-triage log: (none)
+    queued stale wakes: 1
+    wedge-escalation counter now: 4
+
+
+################################################################
+## AFTER  the fix (working tree)  (bin from: /Users/crossbow/.no-mistakes/worktrees/00644a303d6a/01M3GN3K6DKM4AB1KA1MDS79H5)
+################################################################
+
+--- ci step log the fake `no-mistakes axi logs --step ci` replays ---
+[ci] waiting for checks on PR #41...
+[ci] repository declares no CI (no_ci: true) - treating as all checks passed - still monitoring until merged or closed
+[ci] base branch advanced (aaaaaaa..bbbbbbb), re-arming CI monitor timeout
+
+--- 1. what the crew reads: bin/fm-crew-state.sh pkm-instruction-budget-ship ---
+state: done · source: run-step · checks green: PR ready for review (still monitoring for merge/close)
+
+--- 2. the predicates the wedge ladder asks (real bin/fm-classify-lib.sh) ---
+crew_absorb_class          -> none
+crew_done_no_active_run    -> true  (wedge ladder stops: awaiting merge)
+
+--- 3. the wedge ladder itself: real wedge_timer_check() from bin/fm-watch.sh ---
+    (idle pane, wedge timer 500s past the 240s threshold, 3 prior escalations)
+    watcher stdout: (ladder emitted no wake)
+    watch-triage log: [2026-09-26T22:46:59-0700] absorbed stale (reconciled state is done with no active run - awaiting merge, not a wedge): fm:fm-pkm-instruction-budget-ship
+    queued stale wakes: 0
+    wedge-escalation counter now: (cleared)
+
+
+################################################################
+## guardrail matrix (fixed bin) - ci log -> crew state
+################################################################
+
+### declared no-CI, then base-advance re-arm (the incident)
+    ci log: [ci] repository declares no CI (no_ci: true) - treating as all checks passed - still monitoring until merged or closed
+    ci log: [ci] base branch advanced (aaaaaaa..bbbbbbb), re-arming CI monitor timeout
+    => state: done · source: run-step · checks green: PR ready for review (still monitoring for merge/close)
+
+### declared no-CI, re-arm, then a real issue appears
+    ci log: [ci] repository declares no CI (no_ci: true) - treating as all checks passed - still monitoring until merged or closed
+    ci log: [ci] base branch advanced (aaaaaaa..bbbbbbb), re-arming CI monitor timeout
+    ci log: [ci] issues detected: merge conflict - auto-fixing (attempt 2/10)...
+    => state: working · source: run-step · validating (running)
+
+### declared no-CI, re-arm, then checks start failing
+    ci log: [ci] repository declares no CI (no_ci: true) - treating as all checks passed - still monitoring until merged or closed
+    ci log: [ci] base branch advanced (aaaaaaa..bbbbbbb), re-arming CI monitor timeout
+    ci log: [ci] 2 checks failed
+    => state: working · source: run-step · validating (running)
+
+### ordinary green CI, then base-advance re-arm (unchanged rule)
+    ci log: [ci] all CI checks passed - still monitoring until merged or closed
+    ci log: [ci] base branch advanced (aaaaaaa..bbbbbbb), re-arming CI monitor timeout
+    => state: working · source: run-step · validating (running)

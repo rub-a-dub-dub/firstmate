@@ -1,0 +1,16 @@
+# Regression proof: the two new fm-crew-state no-CI cases (plus the untouched
+# green-then-rearm sibling), same test bodies, run against base bin/ (bf2cd38)
+# and fixed bin/ (fdfd5c3).
+
+$ cd <base bf2cd38 tree> && bash tests/noci-only.test.sh
+not ok - declared no-CI marker remains done after base-advance rearm (missing: 'state: done')
+--- output ---
+state: working · source: run-step · validating (running)
+EXIT=1
+
+$ cd <fixed fdfd5c3 tree> && bash tests/noci-only.test.sh
+ok - declared no-CI monitor remains done after base-advance rearm
+ok - a fresh issue after a declared no-CI marker is not masked
+ok - base-advance rearm after green stays working
+all fm-crew-state no-CI tests passed
+EXIT=0
