@@ -829,9 +829,9 @@ resolve_entry() {  # <origin-or-empty> <entry>; prints "<id> <how>" or fails
       0) printf '%s archived-answer' "$legacy"; return 0 ;;
       2) return 2 ;;
     esac
-    fail "no captain-held task $entry and no migrated hold for it in this home's configured backlog (data directory $DATA); the nearest legacy identity $legacy also resolves to nothing"
+    fail "no captain-held task $entry, no migrated hold for it, and no archived Done row recording its answer in this home's configured backlog (data directory $DATA); the nearest legacy identity $legacy also resolves to nothing"
   fi
-  fail "no captain-held task $entry and no migrated hold for it in this home's configured backlog (data directory $DATA)"
+  fail "no captain-held task $entry, no migrated hold for it, and no archived Done row recording its answer in this home's configured backlog (data directory $DATA)"
 }
 
 body_hold_set_timestamp() {  # <decoded-task-body>
