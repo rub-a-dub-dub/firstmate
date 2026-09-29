@@ -134,8 +134,9 @@
 # `--none` is an explicit semantic attestation that the just-reviewed surface
 # has no unresolved captain call, and is refused while the origin still has an
 # open keyed status decision. With a non-empty inventory, every listed task is
-# verified durable (actively captain-held, or closed with a recorded answer),
-# the inventory is unioned idempotently into the metadata, and every still-open
+# verified durable (actively captain-held, closed with a recorded answer, or
+# pruned into the Done archive with that resolution record intact), the
+# inventory is unioned idempotently into the metadata, and every still-open
 # keyed status decision is transferred to its durable owner with a
 # `captain-held [key=...]` status close naming the inventory. Later review
 # passes may add ids. A post-teardown visual review can complete against the
@@ -459,6 +460,74 @@ body_has_resolution_record() {  # <task-body>
   return 1
 }
 
+# A Done row can age out of the active markdown backlog before its originating
+# scout is torn down. Accept that archived identity only when the latest row
+# for the id still carries the same resolution record verify_hold_durable
+# requires from a live row. Looking at the latest occurrence keeps an older
+# answered incarnation from answering for a newer bare close of a reused id.
+archive_has_resolution_record() {  # <task-id>
+  local id=$1 archive found
+  archive=$(fm_backlog_archive_file "$DATA") || {
+    printf 'fm-captain-hold: the Done archive cannot be resolved for %s: %s\n' \
+      "$id" "${FM_BACKLOG_TRANSITION_ERROR:-data directory $DATA cannot be resolved}" >&2
+    return 2
+  }
+  [ -e "$archive" ] || return 1
+  if [ ! -f "$archive" ] || [ -L "$archive" ] || [ ! -r "$archive" ]; then
+    printf 'fm-captain-hold: the Done archive for %s is not a readable regular file: %s\n' \
+      "$id" "$archive" >&2
+    return 2
+  fi
+  if ! found=$(LC_ALL=C awk -v id="$id" '
+    function finish_row() {
+      if (matching) latest_valid = valid
+    }
+    BEGIN {
+      prefix = "- [x] " id " - "
+      matching = 0
+      valid = 0
+      latest_valid = 0
+      leader = ""
+    }
+    substr($0, 1, 6) == "- [x] " {
+      finish_row()
+      matching = (substr($0, 1, length(prefix)) == prefix)
+      valid = 0
+      leader = ""
+      next
+    }
+    substr($0, 1, 3) == "## " {
+      finish_row()
+      matching = 0
+      valid = 0
+      leader = ""
+      next
+    }
+    matching {
+      line = $0
+      sub(/^  /, "", line)
+      if (line == "Resolution recorded by fm-captain-hold.") {
+        leader = "captain"
+      } else if (line == "Resolution recorded by fm-decision-hold.") {
+        leader = "decision"
+      } else if (line == "Captain decision:" && leader != "") {
+        valid = 1
+      } else if (line == "Reconciliation evidence:" && leader == "captain") {
+        valid = 1
+      }
+    }
+    END {
+      finish_row()
+      if (latest_valid) print "found"
+    }
+  ' "$archive" 2>/dev/null); then
+    printf 'fm-captain-hold: reading the Done archive for %s failed: %s\n' \
+      "$id" "$archive" >&2
+    return 2
+  fi
+  [ "$found" = found ]
+}
+
 # The recorded decision digest of either record format, from the show-escaped
 # body (multi-line bodies print as one quoted line with \n escapes). Records
 # are prepended, so the first match is the newest record.
@@ -723,10 +792,11 @@ resolve_migrated_entry() {  # <origin-or-empty> <entry>
 # Resolve one inventory entry or channel key to the task that carries it: the
 # exact task id when it exists, else the legacy derived identity, else - on the
 # beads backend - the migrated row the markdown-to-beads hold migration wrote.
-# Prints "<resolved id> <how>", where <how> is exact, legacy, migrated-note or
-# migrated-prefix, so a caller can record which evidence carried the attestation.
+# Prints "<resolved id> <how>", where <how> is exact, legacy, migrated-note,
+# migrated-prefix, or archived-answer, so a caller can record which evidence
+# carried the attestation.
 resolve_entry() {  # <origin-or-empty> <entry>; prints "<id> <how>" or fails
-  local origin=$1 entry=$2 legacy migrated rc
+  local origin=$1 entry=$2 legacy migrated rc archive_status
   if task_show "$entry"; then
     printf '%s exact' "$entry"
     return 0
@@ -745,8 +815,20 @@ resolve_entry() {  # <origin-or-empty> <entry>; prints "<id> <how>" or fails
     2) return 2 ;;
     124) return 124 ;;
   esac
+  archive_status=0
+  archive_has_resolution_record "$entry" || archive_status=$?
+  case "$archive_status" in
+    0) printf '%s archived-answer' "$entry"; return 0 ;;
+    2) return 2 ;;
+  esac
   if [ -n "$origin" ] && [ "$origin" != "$BINDING_ANY" ]; then
     legacy=$(legacy_hold_id "$origin" "$entry")
+    archive_status=0
+    archive_has_resolution_record "$legacy" || archive_status=$?
+    case "$archive_status" in
+      0) printf '%s archived-answer' "$legacy"; return 0 ;;
+      2) return 2 ;;
+    esac
     fail "no captain-held task $entry and no migrated hold for it in this home's configured backlog (data directory $DATA); the nearest legacy identity $legacy also resolves to nothing"
   fi
   fail "no captain-held task $entry and no migrated hold for it in this home's configured backlog (data directory $DATA)"
@@ -807,7 +889,7 @@ verify_entry_durable() {  # <origin-or-empty> <entry>; prints "<id> <how>"
     exit "$resolve_status"
   fi
   printf '%s\n' "$resolved"
-  verify_hold_durable "${resolved%% *}"
+  [ "${resolved##* }" = archived-answer ] || verify_hold_durable "${resolved%% *}"
 }
 
 command_hold() {

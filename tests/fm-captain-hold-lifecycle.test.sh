@@ -1221,6 +1221,73 @@ test_out_of_band_close_is_recordable() {
   pass "an out-of-band close is recordable with the captain's word and nothing else"
 }
 
+# A completed scout keeps its attested inventory after the captain-held row is
+# answered. Done-history retention may then prune that answered row into the
+# archive before the scout is torn down. The archived resolution record still
+# satisfies the gate, while a bare out-of-band close in the same archive does
+# not become an answer merely because its row was pruned.
+test_pruned_answered_call_satisfies_completion_gate() {
+  local home id call bare_id bare_call
+  home=$(make_home pruned-answered-call)
+  id=sample-pruned-answer-review
+  call=sample-pruned-answer-call
+  mkdir -p "$home/data/$id"
+  tasks_in "$home" add "$id" "Investigate the pruned answer" --kind scout \
+    --repo sample --start >/dev/null \
+    || fail "could not create the pruned-answer origin"
+  write_origin_meta "$home" "$id"
+  printf 'done: report complete\n' > "$home/state/$id.status"
+  printf '# Pruned answer review\n\nOne captain choice remains.\n' > "$home/data/$id/report.md"
+  run_captain "$home" hold "$call" --title "Choose the pruned answer" \
+    --reason "captain choice pending" --repo sample --origin "$id" >/dev/null \
+    || fail "could not register the pruned captain-held task"
+  run_captain "$home" complete "$id" "$call" >/dev/null \
+    || fail "completion failed before the pruned answer"
+  printf 'Choose the archived route.\n' > "$home/pruned-answer.txt"
+  run_captain "$home" answer "$call" --decision-file "$home/pruned-answer.txt" >/dev/null \
+    || fail "could not answer the captain-held task before pruning"
+  tasks_in "$home" prune --keep 0 --state "done" >/dev/null \
+    || fail "could not prune the answered captain-held task"
+  assert_no_grep "$call" "$home/data/backlog.md" \
+    "the answered captain-held task was not pruned from the active backlog"
+  assert_grep "$call" "$home/data/done-archive.md" \
+    "the pruned captain-held task did not reach the done archive"
+  run_captain "$home" complete "$id" --none >/dev/null \
+    || fail "the archived recorded answer did not satisfy completion"
+  run_teardown "$home" "$id" >/dev/null 2> "$home/teardown.err" \
+    || fail "teardown refused the scout after its answered call was pruned: $(cat "$home/teardown.err")"
+
+  bare_id=sample-pruned-bare-review
+  bare_call=sample-pruned-bare-call
+  mkdir -p "$home/data/$bare_id"
+  tasks_in "$home" add "$bare_id" "Investigate the pruned bare close" --kind scout \
+    --repo sample --start >/dev/null \
+    || fail "could not create the pruned bare-close origin"
+  write_origin_meta "$home" "$bare_id"
+  printf 'done: report complete\n' > "$home/state/$bare_id.status"
+  printf '# Pruned bare close review\n\nOne captain choice remains.\n' > "$home/data/$bare_id/report.md"
+  run_captain "$home" hold "$bare_call" --title "Choose the bare close" \
+    --reason "captain choice pending" --repo sample --origin "$bare_id" >/dev/null \
+    || fail "could not register the bare-close captain-held task"
+  run_captain "$home" complete "$bare_id" "$bare_call" >/dev/null \
+    || fail "completion failed before the bare out-of-band close"
+  tasks_in "$home" "done" "$bare_call" >/dev/null \
+    || fail "could not close the unanswered task out of band"
+  tasks_in "$home" prune --keep 0 --state "done" >/dev/null \
+    || fail "could not prune the unanswered out-of-band close"
+  if run_captain "$home" complete "$bare_id" --none \
+      > "$home/bare-complete.out" 2> "$home/bare-complete.err"; then
+    fail "a pruned task closed without a recorded answer satisfied completion"
+  fi
+  if run_teardown "$home" "$bare_id" \
+      > "$home/bare-teardown.out" 2> "$home/bare-teardown.err"; then
+    fail "teardown accepted a pruned task closed without a recorded answer"
+  fi
+  assert_present "$home/state/$bare_id.meta" \
+    "refused teardown removed the unanswered scout metadata"
+  pass "a pruned recorded answer satisfies completion without accepting a bare archived close"
+}
+
 # A post-teardown visual review completes against the surviving report and
 # durable tasks, with no volatile task metadata and no second decision database.
 test_visual_review_uses_shared_completion_owner() {
@@ -4045,6 +4112,7 @@ TESTS=(
   test_interrupted_answer_preserves_hold_age
   test_deferral_leaves_captains_call_until_due
   test_out_of_band_close_is_recordable
+  test_pruned_answered_call_satisfies_completion_gate
   test_visual_review_uses_shared_completion_owner
   test_none_inventory_and_resolved_prose_do_not_create_holds
   test_terminal_single_owner_status_decision_does_not_block_empty_inventory
