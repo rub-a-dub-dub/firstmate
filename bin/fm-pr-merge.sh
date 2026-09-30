@@ -37,6 +37,77 @@
 # source fails, so known missing checks and all read errors are reported together.
 # github_branch_rules_unavailable_on_plan owns the narrow plan-unavailable
 # exception; every other unreadable required source refuses.
+# An absent pull_request check is never read as a passing one. The rule does
+# NOT look at the rollup at all - not at whether it is empty, and not at what
+# it reports - because the rollup is the very surface that collapsed "no CI
+# configured" and "the checks never arrived" into one green-looking string.
+# The rule has two
+# steps. First, per-pull-request: does any workflow's pull_request trigger
+# actually apply to THIS pull request (github_repo_has_pr_ci_workflow)? A
+# workflow file declaring the trigger at all is only half the question: a
+# declared trigger's own base-branch and path filters are then judged against
+# this pull request's base branch and changed files
+# (github_workflow_applies_to_pr), because a trigger whose filters never fire
+# for this pull request - a paths filter none of this pull request's files
+# touch, a branches filter that excludes this pull request's base - produces
+# no run by construction, and GitHub was never going to check it. An
+# applicable trigger ARMS the rule; a repository with no pull_request-
+# triggered workflow at all, or one where every such workflow's filters
+# confirm none of them cover this pull request, genuinely has no PR CI for
+# this pull request, absence of checks there is expected, and it merges
+# exactly as it did before this gate existed. This is a text heuristic over
+# each workflow's YAML, not a real parser, so a filter it cannot confidently
+# evaluate - an unfamiliar glob form, a changed-file list it could not read -
+# is never resolved toward "does not apply": it counts the pull request as
+# covered instead, because refusing a mergeable pull request is recoverable
+# by hand while merging an unchecked one is not. Each workflow's text is read
+# at the pull request's own MERGE ref - the head merged into the base, the
+# tree GitHub itself resolves a pull_request run from - and at no other ref,
+# so the filters judged here are the filters GitHub evaluates: a long-lived
+# base branch whose filters differ from the default branch's is judged by its
+# own copy of them, and a pull request that edits .github/workflows/ is judged
+# by its own edit rather than by a committed copy that no longer describes the
+# run. A merge ref that cannot be established leaves the read inconclusive and
+# disarms the rule, the same as any other read that never confirmed an absence.
+# pull_request_target
+# deliberately does NOT arm it, even though it is also a pull-request
+# trigger: GitHub records such a run under the pull_request_target event and
+# against the BASE branch's SHA, so it can never appear in step two's
+# head-SHA-filtered pull_request count no matter how that query is widened.
+# Absence is therefore expected by construction for a repository whose only
+# PR trigger is pull_request_target, which is exactly what step one exists to
+# exempt; arming on it would instead trap every one of that repository's pull
+# requests in a refusal its green, running CI can never clear. Second,
+# per-head: once a trigger is confirmed to apply, the current head must show
+# at least one Actions run whose event is pull_request
+# (github_check_dropped_ci_event), counted through the API's own event filter
+# rather than by whether any run object exists at the SHA - a workflow_dispatch
+# diagnostic run leaves a run on the same SHA without ever carrying the
+# pull_request event and without ever attaching to the PR, and counting it
+# would read a manual diagnostic as proof the checks arrived. A run count of
+# zero refuses the merge, whatever the rollup says beside it, and the age of
+# the delivery chooses the wording: "not arrived yet, re-check" while it is
+# younger than the grace window, a suspected dropped event once it is older,
+# because GitHub's own pull_request delivery to Actions can silently drop for a
+# given push. Older than the Actions run retention window, though, a zero count
+# is expired evidence rather than a confirmed absence - GitHub has purged the
+# runs, no retry can ever bring them back, and a refusal no retry can clear
+# would leave merging outside firstmate as the operator's only route - so that
+# one age disarms the check with a note instead of refusing. Every age is
+# measured from the LATER of the head commit's own date and the pull request's
+# createdAt, the moment a delivery could first have been expected, so an old
+# branch opened as a fresh pull request is judged on its fresh delivery rather
+# than exempted by a commit date that says nothing about whether any run was
+# ever created; never from the pull request's updatedAt, which any comment,
+# label or approval bumps and which would therefore reset the clock on the
+# ordinary approve-then-merge path. A date that cannot be read therefore keeps
+# the refusal: it falls back to the wording that names both delivery causes,
+# never to the retention exemption. A read taken BEFORE any absence is
+# confirmed - an unestablished merge ref, an unreadable workflow listing, an
+# unreadable run count - leaves today's merge behavior untouched, and every
+# stand-down, including a filter-confirmed one, says so on stderr, because an
+# inconclusive read must never become a refusal a healthy pull request cannot
+# clear and an exemption must never be granted in silence.
 # Every failing condition is reported, not just the first.
 # The verified head is then passed to gh as
 # --match-head-commit, so a push that lands between that read and the merge
@@ -59,6 +130,30 @@
 # own view still proves a landed merge, and every outcome it cannot prove
 # refuses, reporting the failed gh read and naming both failed reads when the
 # gh-axi view could not prove the outcome either.
+# A separate attended --waive-no-ci-evidence <pr-url> may be passed once,
+# naming the exact pull request being merged as its own argument; it waives
+# only the confirmed-absence refusal above (the grace and dropped verdicts of
+# github_check_dropped_ci_event), never a red or missing named check, which
+# --allow-red already owns, and never any other refusal condition in this
+# script. Its argument must equal this invocation's own canonical URL, so a
+# copied flag can never carry over onto a different pull request. Like
+# --allow-red it is refused while the away-posture record exists and never
+# applies on GitLab, where a merge already requires the head pipeline to have
+# succeeded. When it actually waives a refusal that would otherwise have
+# fired, the merge's persisted authority is recorded as attended-ci-waived
+# instead of attended, so the waiver survives in
+# state/<task-id>.merge-authority and in the captain-facing merge outcome
+# (bin/fm-merge-authority-lib.sh, bin/fm-merge-outcome-lib.sh); passing it
+# when no such refusal actually fires leaves the ordinary attended authority
+# unchanged.
+# A used waiver also changes what this run itself announces: because the
+# waived head had no check report at all, its verified line drops the
+# ordinary "every required check green" claim, reporting instead that no
+# check is red at that head - naming any check --allow-red waived, so the
+# line stays true when both escapes compose - and that the head's missing
+# CI evidence was waived. The stand-downs above, which concluded no CI
+# evidence was ever obtainable rather than overriding any, keep the
+# ordinary wording.
 # If the pull request remains open and the base branch has an effective
 # merge_queue rule, an attended refusal names the queue's configured merge
 # method and exact --attended-override -- --auto --<method> retry flags. While
@@ -1212,9 +1307,10 @@ github_required_checks_missing() {
 # caller can retry a still-computing mergeability read instead of refusing.
 github_verify_mergeable() {
   local json fields line red name covered missing unreported producers runs
-  local total=0 named=0 refusals='' mergeable_refusal='' waived_notice=''
+  local total=0 named=0 refusals='' mergeable_refusal='' waived_notice='' waived_red=''
   local state='' draft='' mergeable='' merge_state='' live_head='' base=''
   local created='' merge_ref=''
+  FM_PR_NO_CI_EVIDENCE_WAIVED=false
 
   if ! json=$(gh pr view "$URL" --json state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,createdAt,potentialMergeCommit,statusCheckRollup 2>/dev/null) \
     || [ -z "$json" ]; then
@@ -1343,11 +1439,13 @@ FIELDS
         [ "$check" = "$name" ] && covered=1
       done
     fi
-    [ "$covered" -eq 1 ] || {
+    if [ "$covered" -eq 1 ]; then
+      waived_red="${waived_red:+$waived_red, }$name"
+    else
       refusals="$refusals  - check '$name' is not green
 "
       uncovered="${uncovered:+$uncovered, }$name"
-    }
+    fi
   done <<EOF
 $red
 EOF
@@ -1405,8 +1503,8 @@ EOF
   fi
   if [ -n "$waived_notice" ]; then
     printf '%s\n' "$waived_notice" >&2
-    printf 'verified: %s is open and mergeable, with every unwaived required check reported and no unwaived check red at head %s, and its missing CI evidence waived\n' \
-      "$URL" "$live_head" >&2
+    printf 'verified: %s is open and mergeable, with no check red at head %s%s and its missing CI evidence waived\n' \
+      "$URL" "$live_head" "${waived_red:+ other than waived $waived_red,}" >&2
   else
     printf 'verified: %s is open and mergeable, with every unwaived required check reported and every unwaived check green at head %s\n' \
       "$URL" "$live_head" >&2
