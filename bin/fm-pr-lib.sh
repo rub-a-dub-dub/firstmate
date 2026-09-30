@@ -25,8 +25,8 @@
 # even though the inode and file content are unchanged. Durable recovery
 # comparisons made through fm_pr_identity_matches therefore tolerate a
 # device-only difference and refuse a genuine inode or content change. Live
-# poll authentication stays stricter: fm_pr_poll_artifacts_valid requires the
-# full recorded identities, and the watcher may update only a proved
+# poll authentication stays stricter: fm_pr_poll_artifacts_valid compares the
+# full recorded identities itself, and the watcher may update only a proved
 # device-only shift through fm_pr_poll_registration_rerecord_device.
 
 FM_PR_PROVIDER=
@@ -114,14 +114,16 @@ FM_PR_POLL_RETIREMENT_REJECTED=
 FM_PR_POLL_REJECT_REASON=
 
 # Which component of a recorded identity a fm_pr_identity_matches call refused
-# - unreadable, content, or inode - so a caller can name it.
+# - unreadable, content, or inode - so a caller can tell an unhashable file
+# from a tampered one rather than reading a bare authentication failure.
 # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
 FM_PR_IDENTITY_MISMATCH=
 
 # Compare a live file against a recorded identity and content hash, tolerating
 # a device-only difference: the inode and the bytes must both match, and either
-# a changed inode or changed bytes refuses. Callers that additionally require
-# the recorded device compare it themselves.
+# a changed inode or changed bytes refuses. This is the durable-recovery
+# comparison; live poll authentication requires the whole recorded identity and
+# compares it directly.
 fm_pr_identity_matches() {
   local path=$1 expected_identity=$2 expected_hash=$3
   local live_identity live_hash live_inode expected_inode
@@ -136,6 +138,7 @@ fm_pr_identity_matches() {
   if [ "$live_hash" != "$expected_hash" ]; then
     FM_PR_IDENTITY_MISMATCH=content
   else
+    # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
     FM_PR_IDENTITY_MISMATCH=inode
   fi
   return 1
@@ -712,33 +715,21 @@ fm_pr_poll_artifacts_valid() {
   # The recorded identities bind the registration to the exact sidecar and
   # check file objects published in its own transaction, so a byte-identical
   # replacement or a torn re-arm pairing one generation's check with another's
-  # registration is refused. Live authentication also requires the recorded
-  # device, which the shared comparison deliberately tolerates for durable
-  # recovery, so it is compared here on its own.
-  if ! fm_pr_identity_matches "$data" "$FM_PR_REG_DATA_IDENTITY" "$FM_PR_REG_DATA_HASH"; then
-    FM_PR_POLL_REJECT_REASON="data file $FM_PR_IDENTITY_MISMATCH"
-    return 1
-  fi
+  # registration is refused. Both artifacts' bytes are already proved against
+  # the recorded hashes above, so live authentication compares the whole
+  # recorded identity here, naming its inode and device components apart.
   data_identity=$(fm_pr_file_identity "$data") || {
-    FM_PR_POLL_REJECT_REASON="data file unreadable"
-    return 1
-  }
-  if [ "$data_identity" != "$FM_PR_REG_DATA_IDENTITY" ]; then
-    FM_PR_POLL_REJECT_REASON="data file device"
-    return 1
-  fi
-  if ! fm_pr_identity_matches "$check" "$FM_PR_REG_CHECK_IDENTITY" "$FM_PR_REG_TEMPLATE_HASH"; then
-    FM_PR_POLL_REJECT_REASON="check file $FM_PR_IDENTITY_MISMATCH"
-    return 1
-  fi
+    FM_PR_POLL_REJECT_REASON="data file unreadable"; return 1; }
+  [ "${data_identity#*:}" = "${FM_PR_REG_DATA_IDENTITY#*:}" ] || {
+    FM_PR_POLL_REJECT_REASON="data file inode"; return 1; }
+  [ "$data_identity" = "$FM_PR_REG_DATA_IDENTITY" ] || {
+    FM_PR_POLL_REJECT_REASON="data file device"; return 1; }
   check_identity=$(fm_pr_file_identity "$check") || {
-    FM_PR_POLL_REJECT_REASON="check file unreadable"
-    return 1
-  }
-  if [ "$check_identity" != "$FM_PR_REG_CHECK_IDENTITY" ]; then
-    FM_PR_POLL_REJECT_REASON="check file device"
-    return 1
-  fi
+    FM_PR_POLL_REJECT_REASON="check file unreadable"; return 1; }
+  [ "${check_identity#*:}" = "${FM_PR_REG_CHECK_IDENTITY#*:}" ] || {
+    FM_PR_POLL_REJECT_REASON="check file inode"; return 1; }
+  [ "$check_identity" = "$FM_PR_REG_CHECK_IDENTITY" ] || {
+    FM_PR_POLL_REJECT_REASON="check file device"; return 1; }
 }
 
 # Everything fm_pr_poll_artifacts_valid proves except that the registration's

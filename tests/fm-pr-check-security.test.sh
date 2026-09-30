@@ -3638,14 +3638,9 @@ test_identity_reports_an_unhashable_file_as_unreadable() {
     || fail "an unhashable path was reported as $FM_PR_IDENTITY_MISMATCH rather than unreadable"
   pass "a file that stats but cannot be hashed is reported as unreadable, not as tampering"
 }
-# fm_pr_poll_artifacts_valid's structural checks (cmp against the check
-# template, and comparing the sidecar's parsed fields against the
-# registration) catch most content forgeries before an identity is ever
-# compared, but they do not catch every one: the sidecar parser stops after
-# five lines and only refuses a sixth that is newline-terminated, so trailing
-# bytes without a final newline survive it and the content hash inside
-# fm_pr_identity_matches is what refuses them. The retirement check file has
-# no earlier content gate at all, so it exercises the same branch directly.
+# fm_pr_poll_retirement_check_valid has no content gate ahead of it - only
+# fm_pr_private_file_valid and then fm_pr_identity_matches - so the retiring
+# check file is what exercises that comparison's content arm directly.
 test_retirement_check_identity_refuses_content_change() {
   local dir state receipt
   dir=$(make_case retirement-content-change-check)

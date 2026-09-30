@@ -467,6 +467,109 @@ test_recovery_grade_read_widens_only_at_its_own_boundary() {
   pass "herdr recovery-grade read: a stopped server means missing there, and nowhere else"
 }
 
+# fm_control_endpoint_absence_verdict is the ONE owner of "may this endpoint be
+# re-created", shared by fm-control.sh's exit/relaunch verbs and the secondmate
+# liveness sweep. On herdr it answers from
+# fm_backend_herdr_endpoint_absence_recheck: the RECORDED session's server is
+# started first - only the server, so nothing is created - and the recorded
+# pane is then re-read through that session's own socket. A wrong `gone` is
+# what would put a second agent in a worktree that already holds one, and
+# herdr is where that is easy to get wrong: a restarted server PRESERVES
+# workspace, tab, and pane ids, so a pane that is merely unreachable now may be
+# about to come back. Absence is therefore claimed only from positive evidence
+# of it - a pane the server itself reports gone - and every read that leaves
+# the question open refuses, including a server that would not start at all.
+herdr_absence_responses() {  # <dir-suffix> -> echoes the response dir
+  local dir="$TMP_ROOT/absence-verdict-$1"
+  mkdir -p "$dir/responses"
+  : > "$dir/log"
+  printf '%s\n' "$dir/responses"
+}
+
+herdr_absence_verdict() {  # <dir-suffix> <target> [override-shell] -> "<verdict>|<reason?>"
+  local dir="$TMP_ROOT/absence-verdict-$1" target=$2 override=${3:-} fb out
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$dir/log" FM_HERDR_RESPONSES="$dir/responses" \
+    FM_HERDR_SCRIPT_STATUS=1 \
+    bash -c '. "$0/bin/fm-backend.sh"
+      . "$0/bin/fm-control-lib.sh"
+      '"$override"'
+      fm_control_endpoint_absence_verdict herdr "$1"' "$ROOT" "$target")
+  case "${out#*$'\t'}" in
+    '') printf '%s|no-reason\n' "${out%%$'\t'*}" ;;
+    *) printf '%s|has-reason\n' "${out%%$'\t'*}" ;;
+  esac
+}
+
+test_herdr_absence_verdict_proves_absence_only_from_positive_evidence() {
+  local resp out
+
+  # The server is up and answers about the recorded pane itself: it is gone.
+  resp=$(herdr_absence_responses gone)
+  printf '{"client":{"protocol":22},"server":{"running":true}}\n' > "$resp/1.out"
+  printf '{"error":{"code":"pane_not_found","message":"pane w1:p2 not found"}}\n' > "$resp/2.out"
+  out=$(herdr_absence_verdict gone fmtest:w1:p2)
+  [ "$out" = 'gone|no-reason' ] \
+    || fail "a pane the server itself reports gone proves absence, got '$out'"
+
+  # A pane the server still resolves is there after all. It holds no agent, so
+  # it is adoptable - but it must never read as absent.
+  resp=$(herdr_absence_responses present)
+  printf '{"client":{"protocol":22},"server":{"running":true}}\n' > "$resp/1.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p2"}}}\n' > "$resp/2.out"
+  printf '{"error":{"code":"agent_not_found","message":"no agent"}}\n' > "$resp/3.out"
+  out=$(herdr_absence_verdict present fmtest:w1:p2)
+  [ "$out" = 'dead|no-reason' ] \
+    || fail "a pane the server still resolves must never read gone, got '$out'"
+
+  # The widening that recovers a task parked across a server restart: the pane
+  # read fails uninterpretably and the session's own server is positively
+  # stopped, which is absence for every pane in it.
+  resp=$(herdr_absence_responses stopped)
+  printf '{"client":{"protocol":22},"server":{"running":true}}\n' > "$resp/1.out"
+  printf 'Error: socket unavailable\n' > "$resp/2.out"; printf '1\n' > "$resp/2.exit"
+  printf '{"client":{"protocol":22},"server":{"running":false}}\n' > "$resp/3.out"
+  out=$(herdr_absence_verdict stopped fmtest:w1:p2)
+  [ "$out" = 'gone|no-reason' ] \
+    || fail "a stopped session server proves every pane in it gone, got '$out'"
+
+  # Fails closed. An unreadable pane over a RUNNING server is not evidence of
+  # absence, and neither is a server state that cannot itself be read.
+  resp=$(herdr_absence_responses unreachable)
+  printf '{"client":{"protocol":22},"server":{"running":true}}\n' > "$resp/1.out"
+  printf 'Error: socket unavailable\n' > "$resp/2.out"; printf '1\n' > "$resp/2.exit"
+  printf '{"client":{"protocol":22},"server":{"running":true}}\n' > "$resp/3.out"
+  out=$(herdr_absence_verdict unreachable fmtest:w1:p2)
+  [ "$out" = 'unproven|has-reason' ] \
+    || fail "an unreadable pane over a RUNNING server establishes no absence, got '$out'"
+
+  resp=$(herdr_absence_responses unknown-server)
+  printf '{"client":{"protocol":22},"server":{"running":true}}\n' > "$resp/1.out"
+  printf 'Error: socket unavailable\n' > "$resp/2.out"; printf '1\n' > "$resp/2.exit"
+  printf 'not json at all\n' > "$resp/3.out"; printf '1\n' > "$resp/3.exit"
+  out=$(herdr_absence_verdict unknown-server fmtest:w1:p2)
+  [ "$out" = 'unproven|has-reason' ] \
+    || fail "a server state that cannot itself be read must fail closed, got '$out'"
+
+  # The ordering the proof rests on: the recorded pane is only believed once
+  # its own server has been brought back. A server that will not start leaves
+  # every pane in it unreachable, never proven gone - the reading that would
+  # otherwise abandon a live agent to a second one.
+  resp=$(herdr_absence_responses no-server)
+  printf '{"error":{"code":"pane_not_found","message":"pane w1:p2 not found"}}\n' > "$resp/1.out"
+  out=$(herdr_absence_verdict no-server fmtest:w1:p2 \
+    'fm_backend_herdr_server_ensure() { return 1; }')
+  [ "$out" = 'unproven|has-reason' ] \
+    || fail "a session server that will not start proves nothing about its panes, got '$out'"
+
+  # A target this backend cannot even parse reaches no server at all, so it
+  # cannot have proven anything.
+  out=$(herdr_absence_verdict unparseable fmtest)
+  [ "$out" = 'unproven|has-reason' ] \
+    || fail "an unparseable target must never read gone, got '$out'"
+  pass "herdr endpoint absence: only a gone pane or a stopped server proves it, and an unstartable server never does"
+}
+
 # --- stale agent registration over a shell-only pane (issue #4115) -----------
 #
 # Herdr keeps a Pi registration (`agent get` -> agent=pi, agent_status=idle)
@@ -5754,6 +5857,7 @@ test_workspace_label_different_secondmates_get_different_labels
 test_cli_helper_sets_env_and_appends_trailing_session_flag
 test_agent_state_bypasses_a_stale_client_shadowing_a_compatible_one
 test_recovery_grade_read_widens_only_at_its_own_boundary
+test_herdr_absence_verdict_proves_absence_only_from_positive_evidence
 test_stale_registration_over_a_shell_only_pane_is_agent_free
 test_stale_registration_ignores_status_and_reads_the_process
 test_pane_agent_session_ref_reports_a_resumable_reference_with_its_agent
