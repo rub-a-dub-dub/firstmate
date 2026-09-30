@@ -1,0 +1,54 @@
+--- data/backlog.md Done section, before retention pruning ---
+## Done
+- [x] cowork-awaiting-verify-burndown-resolution-schema - Choose the resolution schema (repo: cowork) (kind: captain) (done 2026-09-29) (hold: captain choice pending) (hold-kind: captain)
+  Resolution recorded by fm-captain-hold.
+  Decision digest: 95856e3d1e22f2536c591ee473f7a88f6e9f290659b0a6934c2d0376db26ea4e
+  Resolution mode: answered
+
+  Captain decision:
+  Use the two-field resolution schema.
+
+  Origin: cowork-awaiting-verify-burndown
+
+
+$ tasks-axi prune --keep 0 --state done   # Done-history retention
+ok: prune done -> archived 1 (kept 0)
+help[1]:
+  - Run `tasks-axi list --state done` to see retained Done items
+
+--- data/backlog.md Done section, after retention pruning ---
+## Done
+
+--- data/done-archive.md ---
+
+## Archived 2026-09-29
+- [x] cowork-awaiting-verify-burndown-resolution-schema - Choose the resolution schema (repo: cowork) (kind: captain) (done 2026-09-29) (hold: captain choice pending) (hold-kind: captain)
+  Resolution recorded by fm-captain-hold.
+  Decision digest: 95856e3d1e22f2536c591ee473f7a88f6e9f290659b0a6934c2d0376db26ea4e
+  Resolution mode: answered
+
+  Captain decision:
+  Use the two-field resolution schema.
+
+  Origin: cowork-awaiting-verify-burndown
+
+
+$ bin/fm-captain-hold.sh complete cowork-awaiting-verify-burndown --none
+complete: cowork-awaiting-verify-burndown captain-call inventory reviewed (cowork-awaiting-verify-burndown-resolution-schema)
+[exit 0]
+
+$ bin/fm-teardown.sh cowork-awaiting-verify-burndown
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+teardown cowork-awaiting-verify-burndown complete (window firstmate:fm-cowork-awaiting-verify-burndown, worktree /tmp/nm-taskaxi-01M3QRZ/home-after/projects/missing-cowork-awaiting-verify-burndown)
+Backlog: cowork-awaiting-verify-burndown is closed in /private/tmp/nm-taskaxi-01M3QRZ/home-after/data/backlog.md. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+[exit 0]
+
+$ ls state/cowork-awaiting-verify-burndown.meta   # scout still registered?
+ls: /tmp/nm-taskaxi-01M3QRZ/home-after/state/cowork-awaiting-verify-burndown.meta: No such file or directory
+state/cowork-awaiting-verify-burndown.meta is gone - the scout was torn down

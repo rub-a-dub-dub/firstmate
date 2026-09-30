@@ -1,0 +1,45 @@
+=== Case A: the archived row was closed out of band, never answered ===
+
+--- data/done-archive.md (no resolution record) ---
+
+## Archived 2026-09-29
+- [x] cowork-bare-close-call - Choose the route (repo: cowork) (kind: captain) (done 2026-09-29) (hold: captain choice pending) (hold-kind: captain)
+  Captain hold set: 2026-09-30T00:59:26Z
+
+  Origin: cowork-bare-close-scout
+
+$ bin/fm-captain-hold.sh complete cowork-bare-close-scout --none
+fm-captain-hold: no captain-held task cowork-bare-close-call, no migrated hold for it, and no archived Done row recording its answer in this home's configured backlog (data directory /tmp/nm-taskaxi-01M3QRZ/home-guard/data); the nearest legacy identity cowork-bare-close-scout-decision-cowork-bare-close-call also resolves to nothing
+[exit 1]
+
+$ bin/fm-teardown.sh cowork-bare-close-scout
+fm-captain-hold: no captain-held task cowork-bare-close-call, no migrated hold for it, and no archived Done row recording its answer in this home's configured backlog (data directory /tmp/nm-taskaxi-01M3QRZ/home-guard/data); the nearest legacy identity cowork-bare-close-scout-decision-cowork-bare-close-call also resolves to nothing
+REFUSED: scout task cowork-bare-close-scout has not passed the captain-call completion gate.
+Inventory its report and any visual review through bin/fm-captain-hold.sh before teardown.
+[exit 1]
+
+$ ls state/cowork-bare-close-scout.meta
+/tmp/nm-taskaxi-01M3QRZ/home-guard/state/cowork-bare-close-scout.meta
+
+
+=== Case B: one call id archived twice - answered first, closed bare second ===
+
+--- archived rows for cowork-reused-call ---
+rows: 2
+9:- [x] cowork-reused-call - Choose the route (repo: cowork) (kind: captain) (done 2026-09-29) (hold: captain choice pending) (hold-kind: captain)
+21:- [x] cowork-reused-call - Choose the route (repo: cowork) (kind: captain) (done 2026-09-29) (hold: captain choice pending) (hold-kind: captain)
+12:  Resolution mode: answered
+
+$ bin/fm-captain-hold.sh complete cowork-reused-second-scout --none
+fm-captain-hold: no captain-held task cowork-reused-call, no migrated hold for it, and no archived Done row recording its answer in this home's configured backlog (data directory /tmp/nm-taskaxi-01M3QRZ/home-guard/data); the nearest legacy identity cowork-reused-second-scout-decision-cowork-reused-call also resolves to nothing
+[exit 1]
+
+$ bin/fm-teardown.sh cowork-reused-second-scout
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+fm-captain-hold: no captain-held task cowork-reused-call, no migrated hold for it, and no archived Done row recording its answer in this home's configured backlog (data directory /tmp/nm-taskaxi-01M3QRZ/home-guard/data); the nearest legacy identity cowork-reused-second-scout-decision-cowork-reused-call also resolves to nothing
+REFUSED: scout task cowork-reused-second-scout has not passed the captain-call completion gate.
+Inventory its report and any visual review through bin/fm-captain-hold.sh before teardown.
+[exit 1]
+
+$ ls state/cowork-reused-second-scout.meta
+/tmp/nm-taskaxi-01M3QRZ/home-guard/state/cowork-reused-second-scout.meta

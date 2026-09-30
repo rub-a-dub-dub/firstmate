@@ -1,0 +1,19 @@
+--- data/done-archive.md is present but is not a readable regular file ---
+drwxr-xr-x crossbow wheel 64 B Tue Sep 29 18:00:33 2026 <home>/data/done-archive.md
+
+$ printf "missing-call\tnorth\n" | bin/fm-captain-hold.sh answers --any-origin --source "captured board result"
+skipped: missing-call (hold resolution refused: fm-captain-hold: the Done archive for missing-call is not a readable regular file: /private<home>/data/done-archive.md)
+answers: closed=0 skipped=1
+[exit 1]
+
+$ bin/fm-captain-hold.sh complete missing-scout missing-call
+fm-captain-hold: origin missing-scout is not owned by the active home <home>
+[exit 1]
+
+
+=== the Done archive itself cannot be read: refuse, never accept ===
+--- chmod 000 data/done-archive.md ---
+
+$ bin/fm-captain-hold.sh complete cowork-bare-close-scout --none
+fm-captain-hold: the Done archive for cowork-bare-close-call is not a readable regular file: /private<home>/data/done-archive.md
+[exit 2]
