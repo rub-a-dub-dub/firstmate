@@ -1345,7 +1345,7 @@ command_answers() {
     id=${id%% *}
     if [ "$resolve_rc" = 2 ]; then
       reason=$(tr -d '\n' < "$err")
-      printf 'skipped: %s (migrated-hold scan refused%s)\n' "$key" "${reason:+: $reason}"
+      printf 'skipped: %s (hold resolution refused%s)\n' "$key" "${reason:+: $reason}"
       skipped=$((skipped + 1))
       continue
     fi
