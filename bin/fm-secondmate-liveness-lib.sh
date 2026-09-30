@@ -233,6 +233,18 @@ fm_secondmate_liveness_probe() {  # <meta> <id> <full|poll>
         FM_SM_LIVE_KILL=1
         FM_SM_LIVE_CAUSE="confirmed agent absence on existing endpoint"
       else
+        # A `missing` address only proves the recorded endpoint stopped
+        # resolving - a renamed session or a window moved out of the recorded
+        # one reads exactly the same while the agent keeps running elsewhere -
+        # so a relaunch, the one outcome that can duplicate a live agent onto
+        # its own worktree, must additionally prove the endpoint is absent from
+        # the backend's whole surface. A backend with no such probe reports
+        # "not absent" and simply never qualifies.
+        if ! fm_backend_endpoint_absent "$backend" "$target"; then
+          FM_SM_LIVE_STATUS=skipped
+          FM_SM_LIVE_REASON="recorded endpoint '$target' does not resolve, but it could not be proven absent from $backend, so its agent may be alive there; reconcile the endpoint before any relaunch"
+          return 0
+        fi
         FM_SM_LIVE_CAUSE="recorded endpoint confidently missing"
       fi
       FM_SM_LIVE_WHERE="backend=$backend"

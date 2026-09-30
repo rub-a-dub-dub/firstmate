@@ -1538,8 +1538,9 @@ wedge_dead_record() {  # <window> <since-file> <triage-label> <idle-age> <pane-h
 # read. The dead-record probe runs last, so the cheaper deferrals keep the panes
 # they already own on their existing bounded cadences and only a pane that
 # would otherwise alarm pays for a backend read.
-wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file> <task> <pane-hash>
-  local win=$1 since_file=$2 label=$3 escalation_file=$4 task=$5 hash=$6 since age n reason evidence reconciled
+wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file> <task> <pane-hash> <run-activity-outranks>
+  local win=$1 since_file=$2 label=$3 escalation_file=$4 task=$5 hash=$6 run_activity=${7:-0}
+  local since age n reason evidence reconciled
   since=$(cat "$since_file" 2>/dev/null || true)
   case "$since" in
     ''|*[!0-9]*)
@@ -1554,20 +1555,32 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
       age=$(( age - since ))
       if [ "$age" -ge "$STALE_ESCALATE_SECS" ]; then
         reconciled=$(crew_wedge_reconciliation_state "$task") || reconciled=
-        case "$reconciled" in
-          done)
-            rm -f "$since_file" "$escalation_file"
-            clear_deferral_tracking "$(window_key "$win")"
-            triage_log "absorbed $label (reconciled state is done with no active run - awaiting merge, not a wedge): $win"
-            return 0
-            ;;
-          recent)
-            wedge_defer_run_activity "$win" "$since_file" "$label" "$age"
-            return 0
-            ;;
-        esac
+        # A reconciled `done` is a permanent stop, not a deferral, so it is
+        # checked first and unconditionally: the captain never authorized a
+        # merge decision for a task with no live run left to wedge, and a task
+        # with no active run can never report recent activity anyway.
+        if [ "$reconciled" = done ]; then
+          rm -f "$since_file" "$escalation_file"
+          clear_deferral_tracking "$(window_key "$win")"
+          triage_log "absorbed $label (reconciled state is done with no active run - awaiting merge, not a wedge): $win"
+          return 0
+        fi
+        # A declaration or a still-open supervisor decision explains the quiet
+        # before any liveness verdict does, and keeps the ladder on the bounded
+        # wait cadence rather than misreporting the lane as wedged. Consulted
+        # ahead of the recent-run arm so a declared wait owns its own throttle.
         if evidence=$(wedge_wait_evidence "$task") &&
            wedge_defer_wait "$win" "$since_file" "$label" "$age" "$evidence"; then
+          return 0
+        fi
+        # A LIVE no-mistakes run reporting recent activity outranks pane-idle
+        # time on the staleness paths, where idle time is the whole basis of the
+        # suspicion. It deliberately does NOT reach the busy-turn bound, which
+        # passes 0: a busy pane already proves liveness, and that bound exists
+        # for the opposite problem - a hung foreground call hiding behind a busy
+        # footer - which a separate process's log activity cannot rule out.
+        if [ "$run_activity" -eq 1 ] && [ "$reconciled" = recent ]; then
+          wedge_defer_run_activity "$win" "$since_file" "$label" "$age"
           return 0
         fi
         if crew_worktree_written_since "$task" "$STATE" "$since_file"; then
@@ -1732,7 +1745,7 @@ busy_turn_bound_check() {  # <window> <task> <hash> <since-file> <escalation-fil
     handle_paused_stale "$win" "$task" "$h"
     return 0
   fi
-  wedge_timer_check "$win" "$since_file" "busy (no completed turn)" "$escalation_file" "$task" "$h"
+  wedge_timer_check "$win" "$since_file" "busy (no completed turn)" "$escalation_file" "$task" "$h" 0
   return 1
 }
 
@@ -3134,7 +3147,7 @@ EOF
             # wedge timer is running for it) - keep treating it that way
             # without re-reading the crew state every poll, and without
             # letting the still-captain-relevant log line re-surface it.
-            wedge_timer_check "$w" "$ssf" "stale (overridden terminal status)" "$ewf" "$task" "$h"
+            wedge_timer_check "$w" "$ssf" "stale (overridden terminal status)" "$ewf" "$task" "$h" 1
           fi
           # else: already surfaced as genuinely terminal on a prior poll of
           # this same hash - nothing left to do (matches the original,
@@ -3177,12 +3190,12 @@ EOF
                 paused)  handle_paused_stale "$w" "$task" "$h" ;;
                 working) clear_pause_state "$key"
                          printf '%s' "$h" > "$sf"
-                         wedge_timer_check "$w" "$ssf" "non-terminal stale (provably working after a declared pause)" "$ewf" "$task" "$h"
+                         wedge_timer_check "$w" "$ssf" "non-terminal stale (provably working after a declared pause)" "$ewf" "$task" "$h" 1
                          triage_log "absorbed non-terminal stale (provably working): $w" ;;
                 *)       handle_paused_stale "$w" "$task" "$h" ;;
               esac
             else
-              wedge_timer_check "$w" "$ssf" "non-terminal stale" "$ewf" "$task" "$h"
+              wedge_timer_check "$w" "$ssf" "non-terminal stale" "$ewf" "$task" "$h" 1
             fi
           fi
         fi

@@ -492,17 +492,12 @@ MODEL=$(printf '%s' "$SNAP" | jq \
        | ([.decisions_open[]? | select(.source == "backlog" and .verb == "captain-hold"
             and live_captain_call)]) as $captain_holds
        | ([.holds[]? | select(.source == "backlog")]) as $backlog_holds
-       | ([.queued[]? | select(.blocked_reason != null)]) as $external_holds
        | . + {
            bearings_captain_holds:$captain_holds,
-           bearings_holds:(if .current.state == "no_active_work" and ($external_holds | length) > 0
-                           then $external_holds
-                           elif .current.state == "captain_decision" then $backlog_holds
+           bearings_holds:(if .current.state == "captain_decision" then $backlog_holds
                            else .holds end),
            bearings_state:(
-             if .current.state == "no_active_work" and ($external_holds | length) > 0 then
-               "externally_held"
-             elif .current.state == "captain_decision" then
+             if .current.state == "captain_decision" then
                if ($captain_holds | length) > 0 then "captain_decision"
                elif (.active_children | length) > 0 then "active_child_work"
                elif ($backlog_holds | length) > 0 then "externally_held"

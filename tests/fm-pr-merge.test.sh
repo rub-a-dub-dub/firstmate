@@ -28,6 +28,7 @@ MR_STALE_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 
 JQ_BIN=$(command -v jq) || fail "these tests read glab's JSON with the real jq, which was not found"
 REAL_MV=$(command -v mv) || fail "these tests need mv to simulate a failed poll publish"
+REAL_DATE=$(command -v date) || fail "these tests need date to pin the grace-window clock"
 
 # Build a fresh sandbox for one test case: a state dir with task metadata and a
 # directory for its forge-command mocks. Echoes the case directory.
@@ -57,6 +58,17 @@ make_case() {
   # rule, so nothing is required unless a case says otherwise.
   write_github_required "$case_dir"
   : > "$case_dir/gh.log"
+  # Empty by default: an empty workflow listing reads as "no PR CI" (see
+  # github_repo_has_pr_ci_workflow), so every case that never calls
+  # set_pr_ci_workflow/set_push_only_workflow/set_workflows_404 keeps the
+  # merge behavior it had before the dropped-CI-event gate.
+  : > "$case_dir/github-workflows-listing"
+  : > "$case_dir/github-workflow-content-b64"
+  : > "$case_dir/github-pr-run-count"
+  : > "$case_dir/github-commit-date"
+  # Empty by default: a case that never calls set_pr_files never needs its
+  # workflow's paths filter, if any, evaluated against real changed files.
+  : > "$case_dir/github-pr-files"
   # The worktree is a git copy whose HEAD is on a remote-tracking ref, as a
   # pushed ship task's is, so fm-pr-check.sh's named-head gate accepts it when
   # the forge supplies no head (GitLab). No project clone exists on disk.
@@ -89,6 +101,153 @@ write_github_required() {
   printf '[{"type":"deletion"}%s]\n' "${rules:+,$rules}" > "$case_dir/github-required-rules.json"
 }
 
+# The pull request's merge ref - the head merged into the base, which is what
+# GitHub resolves a pull_request run from and therefore the only ref
+# fm-pr-merge.sh reads workflow text at. Fixed per case unless a test sets its
+# own, so a test pinning per-ref workflow copies has a ref to key them on.
+FM_TEST_MERGE_REF=5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e
+
+# The pull request's own createdAt, which the retention exemption requires past
+# the window alongside the head commit's date. The default sits an hour before
+# the epoch pin_now uses, so an ordinary case is neither in grace nor expired.
+FM_TEST_PR_CREATED=2025-12-31T23:00:00Z
+
+# Arm this case's repository as having a pull_request-triggering workflow, so
+# github_repo_has_pr_ci_workflow reads FM_PR_GITHUB_PR_CI=yes. A caller may
+# pass its own workflow YAML text (e.g. to exercise the array or nested-block
+# trigger spellings); the default declares pull_request in the ordinary
+# nested-block style.
+set_pr_ci_workflow() {
+  local case_dir=$1
+  local content=${2:-'on:
+  pull_request:
+  push:
+'}
+  printf 'ci.yml\n' > "$case_dir/github-workflows-listing"
+  printf '%s' "$content" | base64 > "$case_dir/github-workflow-content-b64"
+}
+
+# The pull request's own createdAt as the live view reports it, which the
+# retention exemption requires past the window alongside the head commit's
+# date. Args: case_dir iso8601
+set_pr_created() {
+  local case_dir=$1 created=$2
+  # shellcheck disable=SC2016  # $c is jq's --arg variable, not a shell expansion.
+  "$JQ_BIN" --arg c "$created" '.createdAt = $c' \
+    "$case_dir/github-view.json" > "$case_dir/github-view.json.tmp"
+  mv "$case_dir/github-view.json.tmp" "$case_dir/github-view.json"
+}
+
+# The merge ref the live view reports, which is the only ref fm-pr-merge.sh
+# reads workflow text at. GitHub reports it as a potentialMergeCommit object,
+# or null for a pull request whose test merge has not been computed, which an
+# empty argument here reproduces. Args: case_dir sha
+set_merge_ref() {
+  local case_dir=$1 ref=$2
+  # shellcheck disable=SC2016  # $r is jq's --arg variable, not a shell expansion.
+  "$JQ_BIN" --arg r "$ref" \
+    '.potentialMergeCommit = (if $r == "" then null else {oid: $r} end)' \
+    "$case_dir/github-view.json" > "$case_dir/github-view.json.tmp"
+  mv "$case_dir/github-view.json.tmp" "$case_dir/github-view.json"
+}
+
+# The copy of .github/workflows/ci.yml that lives on one specific ref, as
+# GitHub would serve it for ?ref=<that ref>. Every other ref keeps whatever
+# set_pr_ci_workflow stored. Args: case_dir ref content
+set_pr_ci_workflow_on_ref() {
+  local case_dir=$1 ref=$2 content=$3
+  printf '%s' "$content" | base64 > "$case_dir/github-workflow-content-b64.$ref"
+}
+
+# A workflow file exists but declares no pull_request trigger (e.g. push- or
+# schedule-only), so github_repo_has_pr_ci_workflow still reads "no" despite
+# .github/workflows being non-empty.
+set_push_only_workflow() {
+  local case_dir=$1
+  printf 'ci.yml\n' > "$case_dir/github-workflows-listing"
+  printf 'on:\n  push:\n' | base64 > "$case_dir/github-workflow-content-b64"
+}
+
+# The repository's only pull-request trigger is pull_request_target, the
+# fork-safe pattern for CI that needs secrets. GitHub files those runs under
+# the pull_request_target event and against the base branch's SHA, so the head
+# SHA can never show a pull_request-event run for them, and the gate must not
+# arm on this.
+set_pull_request_target_workflow() {
+  local case_dir=$1
+  printf 'ci.yml\n' > "$case_dir/github-workflows-listing"
+  printf 'on:\n  pull_request_target:\n    branches: [main]\n' \
+    | base64 > "$case_dir/github-workflow-content-b64"
+}
+
+# The repository has no .github/workflows directory at all (a 404 on the
+# listing), the other proof (besides an empty listing) that a repository
+# genuinely has no PR CI.
+set_workflows_404() {
+  local case_dir=$1
+  : > "$case_dir/github-workflows-404"
+}
+
+# The count of pull_request-event Actions runs at the PR's current head SHA,
+# as github_check_dropped_ci_event reads it via the API's own ?event= filter.
+set_pr_run_count() {
+  local case_dir=$1 count=$2
+  printf '%s\n' "$count" > "$case_dir/github-pr-run-count"
+}
+
+# This pull request's changed file paths, as github_pr_changed_files reads
+# them, lazily, only when some workflow's pull_request trigger declares a
+# paths or paths-ignore filter. Args: case_dir path...
+set_pr_files() {
+  local case_dir=$1
+  shift
+  printf '%s\n' "$@" > "$case_dir/github-pr-files"
+}
+
+# The changed-file read fails outright, the way a 502 fails it, so a case can
+# prove what a paths filter does when the files it must be judged against
+# cannot be read at all.
+fail_pr_files() {
+  local case_dir=$1
+  : > "$case_dir/github-pr-files-fail"
+}
+
+# The head commit's date read fails outright, the way a 502 or a secondary rate
+# limit fails it, so a case can prove what the gate does when it cannot
+# establish the age of a head whose run count it already read as zero.
+fail_commit_date() {
+  local case_dir=$1
+  : > "$case_dir/github-commit-fail"
+}
+
+# The head commit's committer date, as github_check_dropped_ci_event reads it
+# to judge the grace window against the clock pinned by pin_now.
+set_commit_date() {
+  local case_dir=$1 date=$2
+  printf '%s\n' "$date" > "$case_dir/github-commit-date"
+}
+
+# Pin what the merge script sees as "now" to a fixed epoch, so a grace-window
+# case is not a race against the wall clock. The script takes its clock from
+# date itself and offers no override, so this mocks the command: only the bare
+# `date -u +%s` reading of now is answered from the case, and every other form
+# - including both the `date -u -j -f ...` (BSD) and `date -u -d ...` (GNU)
+# spellings fm_utc_iso_to_epoch tries in turn - is handed to the real date, so
+# the ISO parsing under test stays the platform's own.
+pin_now() {
+  local case_dir=$1 epoch=$2
+  printf '%s\n' "$epoch" > "$case_dir/now-epoch"
+  cat > "$case_dir/fakebin/date" <<'SH'
+#!/usr/bin/env bash
+if [ "$#" -eq 2 ] && [ "$1" = -u ] && [ "$2" = +%s ]; then
+  cat "$FM_TEST_NOW_EPOCH"
+  exit 0
+fi
+exec "$FM_TEST_REAL_DATE" "$@"
+SH
+  chmod +x "$case_dir/fakebin/date"
+}
+
 # Live GitHub JSON for the pre-merge verify, plus gh-axi for the
 # post-merge fallback view. Merge itself is `gh pr merge --match-head-commit`.
 # Args: case_dir head_sha
@@ -96,7 +255,7 @@ write_github_live_json() {
   local case_dir=$1 head=$2
   printf '%s\n' "$head" > "$case_dir/github-head"
   cat > "$case_dir/github-view.json" <<JSON
-{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"main","statusCheckRollup":[{"__typename":"CheckRun","name":"ci","status":"COMPLETED","conclusion":"SUCCESS"}]}
+{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"main","createdAt":"$FM_TEST_PR_CREATED","potentialMergeCommit":{"oid":"$FM_TEST_MERGE_REF"},"statusCheckRollup":[{"__typename":"CheckRun","name":"ci","status":"COMPLETED","conclusion":"SUCCESS"}]}
 JSON
 }
 
@@ -104,7 +263,7 @@ write_github_red_json() {
   local case_dir=$1 head=$2 name=$3
   printf '%s\n' "$head" > "$case_dir/github-head"
   cat > "$case_dir/github-view.json" <<JSON
-{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"main","statusCheckRollup":[{"__typename":"CheckRun","name":"$name","status":"COMPLETED","conclusion":"FAILURE"}]}
+{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"main","createdAt":"$FM_TEST_PR_CREATED","potentialMergeCommit":{"oid":"$FM_TEST_MERGE_REF"},"statusCheckRollup":[{"__typename":"CheckRun","name":"$name","status":"COMPLETED","conclusion":"FAILURE"}]}
 JSON
 }
 
@@ -139,7 +298,7 @@ write_github_rollup_json() {
   done
   printf '%s\n' "$head" > "$case_dir/github-head"
   cat > "$case_dir/github-view.json" <<JSON
-{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"main","statusCheckRollup":[$rollup]}
+{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"$head","baseRefName":"main","createdAt":"$FM_TEST_PR_CREATED","potentialMergeCommit":{"oid":"$FM_TEST_MERGE_REF"},"statusCheckRollup":[$rollup]}
 JSON
 }
 
@@ -240,7 +399,64 @@ case "${1:-} ${2:-}" in
     cat "$FM_TEST_GH_OUTCOME"
     exit 0
     ;;
+  api\ repos/*/contents/.github/workflows|api\ repos/*/contents/.github/workflows\?*)
+    if [ -f "${FM_TEST_GH_WORKFLOWS_404:-}" ]; then
+      echo 'gh: Not Found (HTTP 404)' >&2
+      exit 1
+    fi
+    cat "$FM_TEST_GH_WORKFLOWS_LISTING"
+    exit 0
+    ;;
+  api\ repos/*/contents/.github/workflows/*)
+    # GitHub serves whatever the requested ref holds, so a case that stores a
+    # per-ref copy of the file gets that copy for that ref and the shared one
+    # for every other ref - the difference a reader pinned to the wrong ref
+    # cannot see.
+    workflow_ref=${2##*\?ref=}
+    if [ "$workflow_ref" != "$2" ] \
+      && [ -f "$FM_TEST_GH_WORKFLOW_CONTENT_B64.$workflow_ref" ]; then
+      cat "$FM_TEST_GH_WORKFLOW_CONTENT_B64.$workflow_ref"
+    else
+      cat "$FM_TEST_GH_WORKFLOW_CONTENT_B64"
+    fi
+    exit 0
+    ;;
+  api\ repos/*/actions/runs\?*)
+    # A manual workflow_dispatch diagnostic run can sit at the head, so an
+    # unfiltered query reports one run while the pull_request-filtered one
+    # reports the case's configured count. A reader that drops
+    # &event=pull_request therefore reads the diagnostic run as proof the
+    # checks arrived.
+    case "$*" in
+      *event=pull_request*) cat "$FM_TEST_GH_PR_RUN_COUNT" ;;
+      *) printf '1\n' ;;
+    esac
+    exit 0
+    ;;
+  api\ repos/*/commits/*)
+    case " $* " in
+      *"/check-runs"*) ;;
+      *)
+        if [ -f "${FM_TEST_GH_COMMIT_FAIL:-}" ]; then
+          echo 'gh: Bad gateway (HTTP 502)' >&2
+          exit 1
+        fi
+        cat "$FM_TEST_GH_COMMIT_DATE"
+        exit 0
+        ;;
+    esac
+    ;;&
   api\ *)
+    case " $* " in
+      *"pulls/"*"/files"*)
+        if [ -f "${FM_TEST_GH_PR_FILES_FAIL:-}" ]; then
+          echo 'gh: Bad gateway (HTTP 502)' >&2
+          exit 1
+        fi
+        cat "$FM_TEST_GH_PR_FILES"
+        exit 0
+        ;;
+    esac
     # The required-check reads: the branch itself, and its rules read without
     # the merge-queue filter the queue reader below applies.
     case " $* " in
@@ -459,6 +675,16 @@ run_pr_merge() {
   FM_TEST_GH_LOG="$case_dir/gh.log" \
   FM_TEST_GH_OUTCOME="$case_dir/github-outcome" \
   FM_TEST_GH_RULES="$case_dir/github-rules" \
+  FM_TEST_GH_WORKFLOWS_404="$case_dir/github-workflows-404" \
+  FM_TEST_GH_WORKFLOWS_LISTING="$case_dir/github-workflows-listing" \
+  FM_TEST_GH_WORKFLOW_CONTENT_B64="$case_dir/github-workflow-content-b64" \
+  FM_TEST_GH_PR_RUN_COUNT="$case_dir/github-pr-run-count" \
+  FM_TEST_GH_PR_FILES="$case_dir/github-pr-files" \
+  FM_TEST_GH_PR_FILES_FAIL="$case_dir/github-pr-files-fail" \
+  FM_TEST_GH_COMMIT_DATE="$case_dir/github-commit-date" \
+  FM_TEST_GH_COMMIT_FAIL="$case_dir/github-commit-fail" \
+  FM_TEST_REAL_DATE="$REAL_DATE" \
+  FM_TEST_NOW_EPOCH="$case_dir/now-epoch" \
   FM_TEST_GH_VIEW_JSON="$case_dir/github-view.json" \
   FM_TEST_GH_MERGEABLE_SEQUENCE="${FM_TEST_GH_MERGEABLE_SEQUENCE:-}" \
   FM_TEST_GH_MERGEABLE_CALLS="$case_dir/mergeable-calls" \
@@ -3832,6 +4058,244 @@ test_allow_missing_follows_the_allow_red_rules() {
   pass "fm-pr-merge --allow-missing is single use, attended-only, and GitHub-only like --allow-red"
 }
 
+# Zero pull_request-event runs at the head, but the head commit is younger
+# than the grace window: not arrived yet, not actionable, and never reported
+# as a suspected drop.
+test_dropped_ci_event_within_grace_window_is_not_actionable() {
+  local case_dir rc head
+  head=4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a
+  case_dir=$(make_case github-ci-grace-window)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir"
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:57:00Z # 180s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/104 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "ci-grace-window: not-yet-arrived CI must not merge"
+  assert_grep 'its delivery is younger than the grace window' "$case_dir/stderr" \
+    "ci-grace-window: the grace-window reason was not reported"
+  assert_no_grep 'suspected dropped' "$case_dir/stderr" \
+    "ci-grace-window: a fresh head must never be reported as a suspected drop"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "ci-grace-window: gh pr merge ran before CI could have arrived"
+  pass "fm-pr-merge treats a fresh zero-run head as not-yet-arrived, not a drop"
+}
+
+# Zero pull_request-event runs at the head, and the head commit is older than
+# the grace window: this is the near-miss the detection rule exists to catch
+# - a genuinely green-looking rollup (empty statusCheckRollup) must never be
+# merged.
+test_dropped_ci_event_past_grace_window_refuses_as_suspected_drop() {
+  local case_dir rc head
+  head=5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+  case_dir=$(make_case github-ci-suspected-drop)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir"
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/105 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "ci-suspected-drop: a stale zero-run head must refuse"
+  assert_grep 'suspected dropped CI event' "$case_dir/stderr" \
+    "ci-suspected-drop: the suspected-drop reason was not reported"
+  assert_grep 'wait and retry this merge first' "$case_dir/stderr" \
+    "ci-suspected-drop: the refusal must offer the retry before the drop verdict"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "ci-suspected-drop: gh pr merge ran on a suspected dropped CI event"
+
+  # --allow-red never waives this: the remedy is re-dispatch or rebase
+  # (report Section 3), or the separate attended --waive-no-ci-evidence
+  # escape covered below, never this per-check override.
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/105 \
+    --allow-red ci \
+    > "$case_dir/stdout-allow-red" 2> "$case_dir/stderr-allow-red"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "ci-suspected-drop: --allow-red must not waive a suspected dropped event"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "ci-suspected-drop: gh pr merge ran under --allow-red on a suspected dropped event"
+  pass "fm-pr-merge never treats a suspected dropped CI event as green, even with --allow-red"
+}
+
+# --waive-no-ci-evidence is the attended escape for the two refusals above
+# (grace and dropped) that --allow-red cannot reach because they sit outside
+# its per-check loop entirely.
+test_waive_no_ci_evidence_merges_grace_and_dropped_heads() {
+  local case_dir head url
+
+  # Grace: within the grace window, waived anyway once attended and certain.
+  head=4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a
+  case_dir=$(make_case github-waive-ci-grace)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir"
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:57:00Z # 180s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+  url=https://github.com/example/repo/pull/121
+
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-no-ci-evidence "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "waive-ci-grace: --waive-no-ci-evidence should merge past the grace-window refusal"$'\n'"$(cat "$case_dir/stderr")"
+  assert_logged_gh_merge "$case_dir" 121 example/repo --squash
+  assert_grep 'attended-ci-waived' "$case_dir/stderr" \
+    "waive-ci-grace: the waiver notice did not name attended-ci-waived"
+
+  # Dropped: past the grace window, the suspected-drop verdict, waived anyway.
+  head=5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+  case_dir=$(make_case github-waive-ci-dropped)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir"
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+  url=https://github.com/example/repo/pull/122
+
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-no-ci-evidence "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "waive-ci-dropped: --waive-no-ci-evidence should merge past the suspected-drop refusal"$'\n'"$(cat "$case_dir/stderr")"
+  assert_logged_gh_merge "$case_dir" 122 example/repo --squash
+  assert_grep 'attended-ci-waived' "$case_dir/stderr" \
+    "waive-ci-dropped: the waiver notice did not name attended-ci-waived"
+
+  pass "fm-pr-merge's attended --waive-no-ci-evidence merges past both the grace and suspected-drop no-evidence refusals"
+}
+
+# The point of the change: a used waiver has to survive as an auditable
+# record, not just a stderr line that scrolls away. bin/fm-merge-authority-lib.sh's
+# persisted state/<task-id>.merge-authority is that record.
+test_waive_no_ci_evidence_records_attended_ci_waived_authority() {
+  local case_dir head url record expected
+  head=5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b
+  case_dir=$(make_case github-waive-ci-audit)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir"
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+  url=https://github.com/example/repo/pull/123
+
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-no-ci-evidence "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "waive-ci-audit: the waived merge should succeed"$'\n'"$(cat "$case_dir/stderr")"
+
+  record="$case_dir/state/task-x1.merge-authority"
+  [ -f "$record" ] || fail "waive-ci-audit: no merge-authority record was persisted"
+  expected=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n' \
+    fm-merge-authority-v1 github github.com example/repo 123 attended-ci-waived)
+  [ "$(cat "$record")" = "$expected" ] \
+    || fail "waive-ci-audit: persisted merge authority was not attended-ci-waived: $(cat "$record")"
+  assert_grep "merge landed: task-x1 $url attended-ci-waived" \
+    "$case_dir/state/.wake-queue" \
+    "waive-ci-audit: the captain-facing durable outcome did not tag attended-ci-waived"
+  pass "fm-pr-merge records a used --waive-no-ci-evidence waiver as attended-ci-waived merge authority"
+}
+
+test_waive_no_ci_evidence_is_refused_while_away() {
+  local case_dir rc head url
+  head=6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a
+  case_dir=$(make_case github-waive-ci-away)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set_pr_ci_workflow "$case_dir"
+  set_pr_run_count "$case_dir" 0
+  set_commit_date "$case_dir" 2025-12-31T23:00:00Z # 3600s before "now"
+  pin_now "$case_dir" 1767225600 # 2026-01-01T00:00:00Z
+  write_away_record "$case_dir" --words 'merge task-x1 when green'
+  url=https://github.com/example/repo/pull/124
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-no-ci-evidence "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "waive-ci-away: --waive-no-ci-evidence must be refused while away"
+  assert_grep '--waive-no-ci-evidence is attended-only' "$case_dir/stderr" \
+    "waive-ci-away: refusal did not name attended-only"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "waive-ci-away: gh pr merge ran despite away --waive-no-ci-evidence"
+  pass "fm-pr-merge refuses --waive-no-ci-evidence while the away-posture record exists"
+}
+
+test_waive_no_ci_evidence_requires_matching_url_and_single_use() {
+  local case_dir rc head url other_url
+  head=afafafafafafafafafafafafafafafafafafafaf
+  url=https://github.com/example/repo/pull/127
+  other_url=https://github.com/example/repo/pull/128
+
+  case_dir=$(make_case github-waive-ci-wrong-url)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-no-ci-evidence "$other_url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "waive-ci-wrong-url: a mismatched PR URL must be refused"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "waive-ci-wrong-url: gh pr merge ran for a mismatched --waive-no-ci-evidence URL"
+
+  case_dir=$(make_case github-waive-ci-equals)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-no-ci-evidence="$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "waive-ci-equals: the equals form must be refused"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "waive-ci-equals: gh pr merge ran for the equals alias"
+
+  case_dir=$(make_case github-waive-ci-duplicate)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$url" \
+    --waive-no-ci-evidence "$url" --waive-no-ci-evidence "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "waive-ci-duplicate: a repeated waiver must be refused"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "waive-ci-duplicate: gh pr merge ran for a duplicated --waive-no-ci-evidence"
+
+  pass "fm-pr-merge accepts --waive-no-ci-evidence only once and only for the exact PR being merged"
+}
+
+test_waive_no_ci_evidence_refused_on_gitlab() {
+  local case_dir rc
+  case_dir=$(make_gitlab_case gitlab-waive-ci)
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$MR_URL" --waive-no-ci-evidence "$MR_URL" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "gitlab-waive-ci: --waive-no-ci-evidence must not apply on GitLab"
+  assert_grep '--waive-no-ci-evidence does not apply to GitLab' "$case_dir/stderr" \
+    "gitlab-waive-ci: refusal did not name GitLab"
+  [ ! -s "$case_dir/glab.log" ] || fail "gitlab-waive-ci: glab ran despite --waive-no-ci-evidence"
+  pass "fm-pr-merge refuses --waive-no-ci-evidence on GitLab"
+}
+
+
 test_gitlab_head_override_args_refuse_before_recording
 test_secondmate_merge_reports_upward_once
 test_secondmate_merge_reports_on_the_local_route
@@ -3876,6 +4340,13 @@ test_away_record_cannot_change_between_the_authority_read_and_the_merge
 test_a_record_made_unreadable_before_the_merge_refuses_it
 test_merge_refuses_when_the_away_record_cannot_be_locked
 test_allow_red_refused_on_gitlab
+test_dropped_ci_event_within_grace_window_is_not_actionable
+test_dropped_ci_event_past_grace_window_refuses_as_suspected_drop
+test_waive_no_ci_evidence_merges_grace_and_dropped_heads
+test_waive_no_ci_evidence_records_attended_ci_waived_authority
+test_waive_no_ci_evidence_is_refused_while_away
+test_waive_no_ci_evidence_requires_matching_url_and_single_use
+test_waive_no_ci_evidence_refused_on_gitlab
 test_required_check_that_never_reported_refuses
 test_required_checks_reported_and_green_merge
 test_red_and_unreported_checks_are_reported_together

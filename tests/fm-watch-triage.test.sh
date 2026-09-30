@@ -560,26 +560,42 @@ test_crew_is_provably_working_classifier() {
   pass "crew_is_provably_working: only working+run-step/pane is provable; idle/finished/parked/failed/unknown surface"
 }
 
-# The wedge timer's narrower live-run predicate answers yes only when
-# fm-crew-state.sh itself reports recent pipeline activity. A bare run-step,
-# pane evidence, and every non-working state continue down the ordinary timer.
-test_crew_run_activity_recent_classifier() {
+# The wedge timer's one reconciliation read answers `recent` only when
+# fm-crew-state.sh itself reports recent pipeline activity, and `done` only for
+# a reconciled task with no active run. A bare run-step, a coarse run-step
+# verdict, pane evidence, and every unattributed state leave it with no verdict
+# and continue down the ordinary timer.
+test_crew_wedge_reconciliation_state_classifier() {
   local dir fakebin
-  dir=$(make_case run-activity-recent); fakebin="$dir/fakebin"
+  dir=$(make_case wedge-reconciliation-state); fakebin="$dir/fakebin"
   export FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh"
   export FM_FAKE_CREW_STATE
   FM_FAKE_CREW_STATE='state: working · source: run-step · validating (fixing) · activity: recent'
-  crew_run_activity_recent a || fail "a live run reporting recent activity was not recognized"
-  FM_FAKE_CREW_STATE='state: working · source: run-step · validating (fixing)'
-  ! crew_run_activity_recent a || fail "a fixing run without a recency marker was treated as recent"
-  FM_FAKE_CREW_STATE='state: working · source: pane · harness busy'
-  ! crew_run_activity_recent a || fail "pane evidence alone was treated as recent run activity"
+  [ "$(crew_wedge_reconciliation_state a)" = recent ] \
+    || fail "a live run reporting recent activity was not read as recent"
   FM_FAKE_CREW_STATE='state: done · source: run-step · checks green'
-  ! crew_run_activity_recent a || fail "a completed run was treated as recent live activity"
+  [ "$(crew_wedge_reconciliation_state a)" = done ] \
+    || fail "a reconciled done task was not read as done"
+  FM_FAKE_CREW_STATE='state: working · source: run-step · validating (fixing)'
+  [ -z "$(crew_wedge_reconciliation_state a)" ] \
+    || fail "a fixing run that emitted no recency marker was treated as recent"
+  FM_FAKE_CREW_STATE='state: working · source: run-step · ci running'
+  [ -z "$(crew_wedge_reconciliation_state a)" ] \
+    || fail "a run-step verdict with no activity marker was treated as recent"
+  FM_FAKE_CREW_STATE='state: working · source: run-step · validating (background run)'
+  [ -z "$(crew_wedge_reconciliation_state a)" ] \
+    || fail "a coarse run-step verdict was treated as recent"
+  FM_FAKE_CREW_STATE='state: working · source: pane · harness busy'
+  [ -z "$(crew_wedge_reconciliation_state a)" ] \
+    || fail "pane evidence alone was treated as a recent live run"
+  FM_FAKE_CREW_STATE='state: unknown · source: none · worktree gone'
+  [ -z "$(crew_wedge_reconciliation_state a)" ] \
+    || fail "an unattributed crew was treated as a recent live run"
   FM_FAKE_CREW_STATE='state: working · source: run-step · validating (fixing) · activity: recent'
-  ! crew_run_activity_recent "" || fail "empty id treated as recent live activity"
+  [ -z "$(crew_wedge_reconciliation_state "")" ] \
+    || fail "empty id produced a reconciliation verdict"
   unset FM_FAKE_CREW_STATE
-  pass "crew_run_activity_recent requires the live run-step recency marker"
+  pass "crew_wedge_reconciliation_state: only a reconciled done, or a live run-step verdict carrying its own activity: recent marker, answers"
 }
 
 # status_is_paused: the shared pause verb test both consumers read (so neither
@@ -4545,6 +4561,168 @@ test_wedge_escalation_suppressed_by_recent_run_activity() {
 # Once the same timer re-checks to a completed task with no active run, stop
 # the ladder and clear its escalation state rather than demanding another deep
 # inspection of a PR that is merely awaiting merge.
+# The busy-turn bound exists for the OPPOSITE evidence problem: a busy pane
+# already proves liveness, so the bound is there to catch a hung foreground call
+# hiding behind a busy footer - exactly the shape of a worker whose own
+# `no-mistakes` drive call wedged while the pipeline's fix agent keeps logging
+# from a separate process. A run's reported activity therefore must not reach
+# that bound, only the staleness paths where pane-idle time is the whole basis
+# of the suspicion.
+test_busy_turn_bound_not_suppressed_by_recent_run_activity() {
+  local dir state fakebin out capture_file window key pane_hash sig pid
+  dir=$(make_case busy-bound-recent-activity); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-busy-activerun"
+  printf 'Working...' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/busy-activerun.meta"
+  record_pi_busy "$state" busy-activerun
+  printf 'working: setup complete\n' > "$state/busy-activerun.status"
+  sig=$(seen_sig "$state/busy-activerun.status"); printf '%s' "$sig" > "$state/.seen-busy-activerun_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "Working...")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  # No completed turn ever recorded for this task: age the spawn record itself.
+  touch -t 200001010000 "$state/busy-activerun.meta"
+  # The pipeline's own agent is logging happily in its separate process.
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (fixing) · activity: recent'
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "a busy pane past the turn-age bound escalated before the wedge threshold: $(cat "$out")"
+  fi
+  [ -s "$state/.stale-since-$key" ] || fail "a busy pane past the turn-age bound did not start a wedge timer"
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional busy-bound phase-A stop"
+
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "a hung foreground call was hidden by the pipeline's own run activity"
+  grep -F "stale: $window" "$out" >/dev/null || fail "the busy turn-age escalation did not print the stale wake"
+  grep -F "possible wedge" "$out" >/dev/null || fail "the busy turn-age escalation did not flag a possible wedge"
+  [ ! -e "$state/.run-active-since-$key" ] \
+    || fail "the busy-turn bound opened a recent-activity deferral chain it must never reach"
+  unset FM_FAKE_CREW_STATE
+  pass "a busy pane past the turn-age bound still wedge-escalates while its no-mistakes run reports recent activity"
+}
+
+# The other direction: a recorded run that is still nominally running/fixing but
+# whose OWN last_activity has gone quiet must not be vouched for - a dead run
+# cannot excuse a quiet pane, and doing so would convert this exact false
+# positive into a missed real wedge.
+test_wedge_escalation_not_suppressed_by_quiet_run_activity() {
+  local dir state fakebin out drain_out capture_file window key pane_hash sig pid
+  dir=$(make_case nonterminal-stale-quiet-activity); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
+  window="test:fm-quietrun"
+  printf 'idle building output' > "$capture_file"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/quietrun.meta"
+  printf 'working: still compiling\n' > "$state/quietrun.status"
+  sig=$(seen_sig "$state/quietrun.status"); printf '%s' "$sig" > "$state/.seen-quietrun_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle building output")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  # The recorded run is nominally still "fixing", but its own last_activity has
+  # gone quiet, so fm-crew-state.sh emits no recency marker at all.
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (fixing)'
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "watcher exited for a fresh provably-working non-terminal stale (should absorb): $(cat "$out")"
+  fi
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional phase-A watcher stop"
+
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher did not escalate a quiet-activity run past the threshold"
+  grep -F "stale: $window" "$out" >/dev/null || fail "escalation did not print a stale wake"
+  grep -F "possible wedge" "$out" >/dev/null || fail "a run whose last_activity went quiet did not still escalate as a possible wedge"
+  [ ! -e "$state/.stale-since-$key" ] || fail "stale-since timer was not cleared after escalation"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the wedge escalation failed"
+  grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "wedge escalation was not queued"
+  unset FM_FAKE_CREW_STATE
+  pass "a live run whose last_activity has gone quiet still wedge-escalates past the threshold"
+}
+
+# Regression (2026-09-11 jr-voice incident, fix round): a crew on a declared
+# wait that appends an informational `note:` must not put the watcher into a
+# per-poll wake loop. fm-crew-state.sh reads the log's CURRENT declared state,
+# so it keeps reporting `paused` underneath the trailing note:, while every
+# declared-wait gate in this watcher still reads the bare last line and sees no
+# wait. While the absorb classifier forwarded that status-log pause the two
+# disagreed on every single poll: the loop top cleared the pause bookkeeping
+# (taking the re-surface throttle AND the stale suppressor with it), the missing
+# suppressor made the very next poll a first sighting again, and the paused
+# absorber re-created both and re-surfaced - once per FM_POLL, forever, for any
+# wait older than the re-surface cadence. With the absorb classifier answering
+# from run-step/pane evidence only, the window surfaces once and then ages on
+# the ordinary bounded ladder, exactly as it did before crew state learned to
+# read past the last line.
+test_declared_pause_under_trailing_note_does_not_wake_every_poll() {
+  local dir state fakebin out capture_file statusf window key pane_hash sig pid back round wakes
+  dir=$(make_case pause-trailing-note); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/held.status"
+  window="test:fm-held"
+  printf 'idle, holding for upstream\n' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/held.meta"
+  printf 'paused: holding for the upstream tool release\nnote: found a related edge case worth flagging\n' > "$statusf"
+  # Older than the re-surface cadence below, so the pre-fix loop is free to fire
+  # its bounded recheck on every poll rather than being hidden by the window.
+  back=$(( $(date +%s) - 500 ))
+  if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$statusf"
+  else touch -m -d "@$back" "$statusf"; fi
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-held_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle, holding for upstream")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+
+  # Each round is one poll of an UNCHANGED window. A wake exits the watcher, so
+  # the round is acknowledged before the next launch: without that the pending
+  # recovery episode suppresses every later wake and the loop this test exists to
+  # catch would be invisible. Wakes are therefore counted from what the watcher
+  # actually reported, not from the queue the acknowledgement consumes.
+  round=1
+  while [ "$round" -le 5 ]; do
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+      FM_FAKE_TMUX_CURRENT_COMMAND=zsh \
+      FM_FAKE_CREW_STATE='state: paused · source: status-log · holding for the upstream tool release' \
+      FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+      FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" &
+    pid=$!
+    if wait_poll_cycle "$state" "$pid"; then
+      reap "$pid"
+    elif kill -0 "$pid" 2>/dev/null; then
+      reap "$pid"
+      fail "trailing-note watcher round $round timed out before completing a poll cycle"
+    else
+      wait "$pid" || fail "trailing-note watcher round $round failed: $(cat "$out")"
+    fi
+    ack_stopped_cycle "$state" >/dev/null 2>&1 || true
+    round=$((round + 1))
+  done
+  wakes=$(grep -cF "stale: $window" "$out" 2>/dev/null || echo 0)
+  [ "$wakes" -le 1 ] || fail "a declared wait under a trailing note: woke $wakes times across five unchanged polls"
+  pass "a declared wait under a trailing note: surfaces once instead of waking on every poll"
+}
+
 test_wedge_timer_stops_when_reconciled_state_becomes_done() {
   local dir state fakebin out capture_file window key pane_hash sig pid
   dir=$(make_case wedge-stops-when-done); state="$dir/state"; fakebin="$dir/fakebin"
@@ -6816,7 +6994,7 @@ test_stale_is_terminal_classifier
 test_classifier_primitives
 test_unrecognized_status_prefix_is_visible
 test_crew_is_provably_working_classifier
-test_crew_run_activity_recent_classifier
+test_crew_wedge_reconciliation_state_classifier
 test_status_is_paused_classifier
 test_crew_absorb_class_classifier
 test_crew_worktree_written_since_classifier
@@ -6875,6 +7053,9 @@ test_terminal_stale_surfaced
 test_stale_terminal_status_overridden_by_active_run
 test_nonterminal_stale_provably_working_absorbed_then_escalated
 test_wedge_escalation_suppressed_by_recent_run_activity
+test_busy_turn_bound_not_suppressed_by_recent_run_activity
+test_wedge_escalation_not_suppressed_by_quiet_run_activity
+test_declared_pause_under_trailing_note_does_not_wake_every_poll
 test_wedge_timer_stops_when_reconciled_state_becomes_done
 test_wedge_escalation_marks_demand_deep_inspection_after_threshold
 test_wedge_escalation_resets_when_pane_becomes_active

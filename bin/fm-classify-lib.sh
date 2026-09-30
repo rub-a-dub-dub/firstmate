@@ -363,8 +363,11 @@ status_is_paused_or_captain_held() {  # <status-line>
 # pause. Only a resolved line for the pause's own phase key (the keyed
 # activity fold's key, where a keyless line is its own phase) retracts it, as
 # does any other later event. A captain-held line counts only while it is the
-# latest event. Bounded like last_status_line: only a tail window made wholly of
-# resolved events widens the read to the whole file.
+# latest event. A note: line is commentary, never a state a crew moved to, so
+# it is walked past exactly like a resolved line rather than ending the wait -
+# a worker that flags an aside while still parked is still parked. Bounded like
+# last_status_line: only a tail window made wholly of resolved or note events
+# widens the read to the whole file.
 status_declared_wait_line() {  # <status-file>
   local f=$1 last verb resolve legacy_re
   last=$(last_status_line "$f")
@@ -374,7 +377,7 @@ status_declared_wait_line() {  # <status-file>
   fi
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   status_line_verb "$last" verb
-  [ "$verb" = "$resolve" ] || return 0
+  case "$verb" in "$resolve"|note) ;; *) return 0 ;; esac
   legacy_re="^[[:space:]]*(${FM_CAPTAIN_RE:-$FM_CLASSIFY_CAPTAIN_RE_DEFAULT})"
   tail -n "$FM_CLASSIFY_EVENT_WINDOW_LINES" "$f" 2>/dev/null \
     | _fm_status_declared_wait_scan "$resolve" "$legacy_re" \
@@ -400,6 +403,7 @@ _fm_status_declared_wait_scan() {  # <resolve-verb> <legacy-captain-re>
     status_line_verb "$line" verb
     case "$verb" in
       "$resolve") ;;
+      note) continue ;;
       "${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}") ;;
       *) return 0 ;;
     esac
@@ -2505,20 +2509,6 @@ crew_wedge_reconciliation_state() {  # <id> -> done|recent
       ;;
   esac
   return 1
-}
-
-# Positive evidence from the active pipeline step itself, narrower than pane or
-# generic working evidence. The wedge timer uses it only at an escalation
-# threshold, where a quiet pane is expected while a separate fix agent logs.
-crew_run_activity_recent() {  # <id>
-  [ "$(crew_wedge_reconciliation_state "$1")" = recent ]
-}
-
-# A task whose reconciled state is done has no worker left to wedge. This is a
-# permanent stop for an existing ladder, not a deferral or an inference from
-# the absence of working evidence.
-crew_done_no_active_run() {  # <id>
-  [ "$(crew_wedge_reconciliation_state "$1")" = "done" ]
 }
 
 # 0 if crew <id>'s authoritative current state is a declared external-wait pause.
