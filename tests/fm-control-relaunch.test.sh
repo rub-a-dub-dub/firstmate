@@ -123,6 +123,20 @@ case "${1:-}" in
       printf '╭────╮\n│    │\n╰────╯\n'
     fi
     exit 0 ;;
+  list-sessions)
+    # The endpoint-absence owner asks THIS, and only a definitively absent
+    # server proves anything: a running server that does not list the window
+    # cannot tell a destroyed window from one on a socket it cannot address.
+    if [ -f "$D/server-dead" ]; then
+      echo 'no server running on /tmp/tmux-1000/default' >&2
+      exit 1
+    fi
+    if [ -f "$D/inventory-broken" ]; then
+      echo 'lost server' >&2
+      exit 1
+    fi
+    printf '%s\n' "$(cat "$D/session-name" 2>/dev/null || printf firstmate)"
+    exit 0 ;;
   list-windows)
     # The three shapes real tmux answers a per-session inventory with. The
     # first two are DEFINITIVE and classify `missing`; the third is not and
@@ -1899,15 +1913,29 @@ test_tmux_refuses_a_session_that_cannot_be_found() {
   pass "tmux: an unfindable session refuses both verbs, so a live agent is never duplicated"
 }
 
-test_tmux_refuses_when_the_server_is_gone() {
-  local dir
+# The one tmux read that proves absence: no server at all on the socket this
+# process addresses. Every window that server held died with it, so the
+# recorded endpoint cannot be holding an agent - the reboot case, and the
+# reason a machine restart recovers a parked task instead of stranding it.
+# Its siblings above stay refusals precisely because they are answers from a
+# RUNNING server, which cannot tell a destroyed window from a live one on a
+# socket this process cannot address.
+test_tmux_recovers_a_task_whose_server_is_gone() {
+  local dir out rc
   dir=$(new_case tmux-noserver rl62)
   add_ship_task "$dir" rl62 claude
-  # No server on the socket this process addresses. Another server may still be
-  # running the task's window, and the record cannot say which socket is its.
   : > "$dir/fake/server-dead"
-  assert_tmux_missing_refuses "$dir" rl62 "no tmux server on this socket"
-  pass "tmux: a dead server on this socket refuses both verbs rather than proving absence"
+
+  out=$(run_control "$dir" rl62 exit); rc=$?
+  expect_code 0 "$rc" "exit must accept a definitively absent server"$'\n'"$out"
+  assert_contains "$out" "endpoint-gone" \
+    "exit should report the endpoint the absent server took with it"
+
+  out=$(run_spawn "$dir" rl62 --relaunch --harness claude); rc=$?
+  expect_code 0 "$rc" "relaunch must re-create an endpoint a dead server proved gone"$'\n'"$out"
+  assert_present "$dir/fake/created-windows" \
+    "a relaunch onto a proven-gone endpoint must re-create its window"
+  pass "tmux: a dead server on this socket is the one provable absence, so both verbs recover the task"
 }
 
 test_reclaim_refuses_an_unreadable_endpoint() {
@@ -2446,7 +2474,7 @@ test_spawn_relaunch_refuses_an_unrecorded_task
 test_spawn_relaunch_refuses_a_pane_outside_the_worktree
 test_tmux_refuses_a_window_missing_from_its_session
 test_tmux_refuses_a_session_that_cannot_be_found
-test_tmux_refuses_when_the_server_is_gone
+test_tmux_recovers_a_task_whose_server_is_gone
 test_reclaim_refuses_an_unreadable_endpoint
 test_herdr_relaunch_resumes_only_the_registered_pi_session
 test_herdr_reclaim_adopts_a_pane_that_outlived_its_server

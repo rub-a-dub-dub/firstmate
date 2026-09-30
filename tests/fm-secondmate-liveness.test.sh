@@ -310,6 +310,89 @@ SH
   printf '%s\n' "$fakebin"
 }
 
+make_endpoint_absent_tmux() {
+  local dir=$1 fakebin
+  fakebin=$(fm_fakebin "$dir")
+  mkdir -p "$dir/fake-state/sessions"
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+set -u
+FS=${FM_TEST_TMUX_STATE:?}
+LOG=${FM_TMUX_CALL_LOG:?}
+no_server_error() {
+  printf 'no server running on /tmp/tmux-test/default\n' >&2
+  exit 1
+}
+target_session() {  # <target> -> session name, stripping a leading = (tmux's
+                     # exact-match prefix) and a trailing :window
+  local t=${1#=}
+  printf '%s' "${t%%:*}"
+}
+case "${1:-}" in
+  list-sessions)
+    [ -e "$FS/no-server" ] && no_server_error
+    for f in "$FS"/sessions/*; do
+      [ -e "$f" ] || continue
+      basename "$f"
+    done
+    exit 0
+    ;;
+  has-session)
+    [ -e "$FS/no-server" ] && exit 1
+    shift
+    t=
+    while [ $# -gt 0 ]; do case "$1" in -t) t=$2; shift 2 ;; *) shift ;; esac; done
+    [ -f "$FS/sessions/$(target_session "$t")" ]
+    exit $?
+    ;;
+  new-session)
+    rm -f "$FS/no-server"
+    shift
+    name=
+    while [ $# -gt 0 ]; do case "$1" in -s) name=$2; shift 2 ;; *) shift ;; esac; done
+    printf '' >> "$FS/sessions/$name"
+    printf 'new-session -s %s\n' "$name" >> "$LOG"
+    exit 0
+    ;;
+  list-windows)
+    [ -e "$FS/no-server" ] && no_server_error
+    shift
+    t=
+    while [ $# -gt 0 ]; do case "$1" in -t) t=$2; shift 2 ;; *) shift ;; esac; done
+    session=$(target_session "$t")
+    if [ ! -f "$FS/sessions/$session" ]; then
+      printf "can't find session: %s\n" "$session" >&2
+      exit 1
+    fi
+    cat "$FS/sessions/$session"
+    exit 0
+    ;;
+  new-window)
+    shift
+    sess= wname=
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -t) sess=$2; shift 2 ;;
+        -n) wname=$2; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    session=$(target_session "$sess")
+    printf '%s\n' "$wname" >> "$FS/sessions/$session"
+    printf 'new-window -t %s -n %s\n' "$session" "$wname" >> "$LOG"
+    printf '@1\n'
+    exit 0
+    ;;
+  set-window-option|send-keys|display-message|capture-pane|kill-window)
+    exit 0
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/tmux"
+  printf '%s\n' "$fakebin"
+}
+
 # new_world <name>: a scratch firstmate HOME (state/, watcher beacon, pinned
 # harness) with no kind=secondmate meta yet. FM_ROOT is left to resolve
 # naturally to the real checkout under test ($ROOT), exactly as production
@@ -469,7 +552,7 @@ test_sweep_reports_a_missing_tmux_secondmate_instead_of_relaunching_it() {
 
   assert_contains "$out" "SECONDMATE_LIVENESS: secondmate sm1: skipped:" \
     "an unprovable tmux absence must be reported, never silently skipped"
-  assert_contains "$out" "tmux absence cannot be proven from a task record" \
+  assert_contains "$out" "the tmux server this process addresses is running and does not list that window" \
     "the skip should name the control plane's own reason"
   assert_not_contains "$(cat "$log")" "new-window" \
     "a missing tmux secondmate must not be relaunched on an unprovable absence"
@@ -718,9 +801,11 @@ test_remote_poll_probe_unreachable_preserves_route() {
 # The `missing` arm delegates to the control plane's one absence owner, and
 # only a positively `gone` verdict may re-create an endpoint. The verdict
 # itself is stubbed here because its per-backend reads are that function's own
-# contract (fm-control-lib.sh owns them, exercised in tests/fm-backend.test.sh);
-# what this pins is the probe's use of the answer, which is the decision that
-# can duplicate a live agent onto its own worktree.
+# contract (fm-control-lib.sh owns them; tests/fm-backend.test.sh's
+# test_tmux_absence_verdict_is_gone_only_for_an_absent_server pins the tmux
+# arm, and the sweep cases below drive the real verdict end to end); what this
+# pins is the probe's use of the answer, which is the decision that can
+# duplicate a live agent onto its own worktree.
 probe_local_with_verdict() {  # <w> <verdict-line> -> "<status>|<state>|<kill>|<cause>|<where>|<reason>"
   local w=$1 verdict=$2
   env STATE="$w/home/state" FM_HOME="$w/home" FM_DATA_OVERRIDE="$w/home/data" \
@@ -749,14 +834,99 @@ test_missing_endpoint_relaunches_only_on_a_gone_verdict() {
   [ "$out" = 'skipped|missing|0|||recorded endpoint '"'"'firstmate:fm-sm1'"'"' does not resolve, and no socket identity to prove it by; its agent may still be alive there, so reconcile the endpoint before any relaunch' ] \
     || fail "an unproven absence must report the verdict's own reason and relaunch nothing, got: $out"
 
+  # The owner carries a reason only with `unproven`; for a verdict it DID
+  # establish it prints a bare `dead\t` / `alive\t`, so the report must name
+  # that verdict rather than interpolating an empty clause and claiming the
+  # agent may still be alive there.
   for verdict in alive dead bogus; do
     out=$(probe_local_with_verdict "$w" "$(printf '%s\t' "$verdict")")
-    case "$out" in
-      skipped\|missing\|0\|\|\|*) ;;
-      *) fail "a '$verdict' verdict must not authorize relaunch or a kill, got: $out" ;;
-    esac
+    [ "$out" = "skipped|missing|0|||recorded endpoint 'firstmate:fm-sm1' did not resolve on the first read, and the endpoint absence proof answered '$verdict', which does not authorize re-creating it" ] \
+      || fail "a '$verdict' verdict must report itself and relaunch nothing, got: $out"
   done
   pass "poll probe: a missing endpoint is re-created only when the absence owner proves it gone"
+}
+
+test_sweep_reboot_with_no_server_recreates_endpoint() {
+  local w fb tmuxfb fs log out
+  w=$(new_world sweep-reboot-single)
+  add_sm_home "$w" sm1 firstmate:fm-sm1
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_endpoint_absent_tmux "$w")
+  fs="$w/fake-state"
+  log="$w/calls.log"; : > "$log"
+  # A genuine reboot: no tmux server at all, so the window cannot exist
+  # anywhere on the backend. Absence of a server is what makes this the safe
+  # case - unlike the rename/move cases above, there is nowhere left an agent
+  # could still be running.
+  : > "$fs/no-server"
+
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" missing "$log" FM_TEST_TMUX_STATE="$fs")
+
+  assert_not_contains "$out" "SECONDMATE_LIVENESS:" \
+    "a successful reboot recovery should stay silent by default"
+  assert_contains "$(cat "$log")" "new-window -t firstmate -n fm-sm1" \
+    "a genuinely rebooted secondmate should be recreated"
+  pass "sweep: a genuine reboot with no tmux server still recreates the endpoint"
+}
+# The same reboot rule, seen across a fleet: the FIRST parked mate's recovery
+# starts a server, and from that moment every later mate reads "running server,
+# window not listed" - which is the unprovable case, indistinguishable from a
+# renamed session or a window alive on a socket this process cannot address.
+# So the later mates are REPORTED rather than recreated. That is the deliberate
+# cost of proving absence only from a definitively absent server: a fleet
+# reboot recovers one mate automatically and hands the rest to the captain,
+# instead of risking a second agent on a worktree that still has one.
+test_sweep_reboot_recovers_the_first_parked_secondmate_and_reports_the_rest() {
+  local base fb tmuxfb fs log out id w
+  base="$TMP_ROOT/sweep-reboot-fleet"
+  mkdir -p "$base"
+  tmuxfb=$(make_endpoint_absent_tmux "$base")
+  fs="$base/fake-state"
+  fb=$(make_toolchain "$base")
+  : > "$fs/no-server"
+  log="$base/calls.log"; : > "$log"
+
+  w=$(new_world sweep-reboot-fleet-sm1)
+  add_sm_home "$w" sm1 "firstmate:fm-sm1"
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" missing "$log" FM_TEST_TMUX_STATE="$fs")
+  assert_not_contains "$out" "SECONDMATE_LIVENESS:" \
+    "the first mate meets a genuinely absent server, so its recovery is silent"
+  assert_contains "$(cat "$log")" "new-window -t firstmate -n fm-sm1" \
+    "the first mate parked across the reboot should be recreated"
+  [ -s "$fs/sessions/firstmate" ] \
+    || fail "recreating the first parked secondmate should have started the server the rest then see"
+
+  for id in sm2 sm3; do
+    w=$(new_world "sweep-reboot-fleet-$id")
+    add_sm_home "$w" "$id" "firstmate:fm-$id"
+    out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" missing "$log" FM_TEST_TMUX_STATE="$fs")
+    assert_contains "$out" "SECONDMATE_LIVENESS: secondmate $id: skipped:" \
+      "$id meets the server the first recovery started, so its absence is unprovable and must be reported"
+    assert_not_contains "$(cat "$log")" "new-window -t firstmate -n fm-$id" \
+      "$id must not be recreated on an unprovable absence"
+  done
+  pass "sweep: a fleet reboot recovers the mate that meets no server and reports every later one"
+}
+
+# The other half of the same rule: a RUNNING server that simply does not list
+# the window proves nothing - it reads the same as a renamed session, a moved
+# window, or one alive on a socket this process cannot address - so the sweep
+# reports it instead of putting a second agent on the worktree.
+test_sweep_live_server_without_the_window_refuses_relaunch() {
+  local w fb tmuxfb fs log out
+  w=$(new_world sweep-live-server-no-window)
+  add_sm_home "$w" sm1 firstmate:fm-sm1
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_endpoint_absent_tmux "$w")
+  fs="$w/fake-state"
+  log="$w/calls.log"; : > "$log"
+  printf 'othertask\n' > "$fs/sessions/other"
+
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" missing "$log" FM_TEST_TMUX_STATE="$fs")
+
+  assert_contains "$out" "SECONDMATE_LIVENESS: secondmate sm1: skipped:" \
+    "a live server that cannot prove the window gone must report, not relaunch"
+  assert_not_contains "$(cat "$log")" "new-window" \
+    "a window missing from a running server must never be recreated"
+  pass "sweep: a running server that does not list the window refuses the relaunch"
 }
 test_missing_endpoint_relaunches_only_on_a_gone_verdict
 test_tmux_agent_state_classifies
@@ -772,6 +942,9 @@ test_sweep_never_acts_on_transient_unreadability
 test_sweep_reports_dead_endpoint_relaunch_failure
 test_sweep_never_acts_on_unverified_harness_dead_reading
 test_sweep_converges_no_retouch_once_alive
+test_sweep_reboot_with_no_server_recreates_endpoint
+test_sweep_reboot_recovers_the_first_parked_secondmate_and_reports_the_rest
+test_sweep_live_server_without_the_window_refuses_relaunch
 test_sweep_skipped_under_detect_only
 test_sweep_noop_with_no_secondmate_meta
 test_sweep_skips_mate_whose_liveness_lock_is_held

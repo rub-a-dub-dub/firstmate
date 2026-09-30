@@ -1219,8 +1219,79 @@ test_peek_conformance_old_vs_new
 test_spawn_symlinked_project_prefix_avoids_false_refusal
 test_teardown_conformance_old_vs_new
 test_spawn_refuses_unknown_backend_flag
+
+# fm_control_endpoint_absence_verdict is the ONE owner of "may this endpoint be
+# re-created", shared by fm-control.sh's exit/relaunch verbs and the secondmate
+# liveness sweep. On tmux it may answer `gone` for exactly one read - a
+# definitively absent server, which is the reboot case - and must answer
+# `unproven` for every other read, because a task record carries no socket
+# identity and a window missing from a RUNNING server's inventory is
+# indistinguishable from one renamed, moved, or alive on another socket.
+make_absence_verdict_tmux() {  # <dir> <mode> -> echoes fakebin
+  local dir=$1 mode=$2 fakebin
+  fakebin="$dir/$mode-bin"
+  mkdir -p "$fakebin"
+  cat > "$fakebin/tmux" <<SH
+#!/usr/bin/env bash
+case "\${1:-} \$FM_TEST_TMUX_MODE" in
+  "list-sessions no-server")
+    printf 'no server running on /tmp/tmux-test/default\n' >&2
+    exit 1 ;;
+  "list-sessions socket-refused")
+    printf 'error connecting to /tmp/tmux-test/default (Connection refused)\n' >&2
+    exit 1 ;;
+  "list-sessions unreadable")
+    printf 'some other tmux failure\n' >&2
+    exit 1 ;;
+  "list-sessions "*)
+    printf 'firstmate\nother\n'
+    exit 0 ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/tmux"
+  printf '%s\n' "$fakebin"
+}
+
+verdict_for() {  # <mode> -> "<verdict>|<has-reason>"
+  local mode=$1 fakebin out
+  fakebin=$(make_absence_verdict_tmux "$TMP_ROOT/absence-verdict" "$mode")
+  out=$(PATH="$fakebin:$PATH" FM_TEST_TMUX_MODE="$mode" \
+    fm_control_endpoint_absence_verdict tmux 'firstmate:fm-sm1')
+  case "${out#*$'\t'}" in
+    '') printf '%s|no-reason\n' "${out%%$'\t'*}" ;;
+    *) printf '%s|has-reason\n' "${out%%$'\t'*}" ;;
+  esac
+}
+
+test_tmux_absence_verdict_is_gone_only_for_an_absent_server() {
+  local out
+  # shellcheck source=bin/fm-control-lib.sh
+  . "$ROOT/bin/fm-control-lib.sh"
+
+  out=$(verdict_for no-server)
+  [ "$out" = 'gone|no-reason' ] \
+    || fail "a definitively absent tmux server is the one provable absence, got: $out"
+  out=$(verdict_for socket-refused)
+  [ "$out" = 'gone|no-reason' ] \
+    || fail "a refused socket is the same absent-server answer, got: $out"
+
+  # A RUNNING server that simply does not list the window proves nothing: that
+  # is the renamed-session / moved-window / foreign-socket case, and treating
+  # it as absence is what puts a second agent on a live worktree.
+  out=$(verdict_for running)
+  [ "$out" = 'unproven|has-reason' ] \
+    || fail "a running server must never prove a window absent, got: $out"
+
+  out=$(verdict_for unreadable)
+  [ "$out" = 'unproven|has-reason' ] \
+    || fail "an inventory that could not be read establishes no absence, got: $out"
+  pass "tmux endpoint absence: only a definitively absent server is gone; every other read is unproven"
+}
+
 test_spawn_refuses_codex_app_backend_flag
 test_spawn_refuses_unknown_fm_backend_env
 test_spawn_default_backend_writes_no_meta_field
 test_spawn_explicit_backend_flag_beats_autodetect_herdr_env
 test_spawn_autodetect_nesting_resolves_tmux_silently
+test_tmux_absence_verdict_is_gone_only_for_an_absent_server

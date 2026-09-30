@@ -3057,7 +3057,7 @@ test_secondmate_liveness_tick_reports_an_unprovable_missing_endpoint_once() {
   run_liveness_leg "$dir" missing FM_FAKE_WINDOW_GONE=1; pid=$LIVENESS_PID
   wait_for_exit "$pid" 300 || fail "the watcher did not exit on its missing-endpoint wake"
   out="$dir/watch-missing.out"
-  grep -F 'check: secondmate sm1 endpoint is missing and cannot be proven gone, so it was not relaunched' "$out" >/dev/null \
+  grep -F 'check: secondmate sm1 endpoint is missing and was not relaunched' "$out" >/dev/null \
     || fail "an unprovable missing endpoint was not reported: $(cat "$out" "$dir/watch-missing.err")"
   assert_not_contains "$(cat "$dir/tmux.log")" "new-window" \
     "an endpoint that cannot be proven gone must not be relaunched"
@@ -3098,7 +3098,7 @@ test_secondmate_liveness_tick_reports_an_unprovable_missing_endpoint_once() {
   rm -f "$state/.secondmate-liveness-tick"
   run_liveness_leg "$dir" missing-twice FM_FAKE_WINDOW_GONE=1; pid=$LIVENESS_PID
   wait_for_exit "$pid" 300 || fail "a fresh loss after a recovery did not report"
-  grep -F 'check: secondmate sm1 endpoint is missing and cannot be proven gone' "$dir/watch-missing-twice.out" >/dev/null \
+  grep -F 'check: secondmate sm1 endpoint is missing and was not relaunched' "$dir/watch-missing-twice.out" >/dev/null \
     || fail "a second episode was not reported: $(cat "$dir/watch-missing-twice.out" "$dir/watch-missing-twice.err")"
   pass "watch liveness: an unprovable missing endpoint is reported once per episode, never relaunched"
 }

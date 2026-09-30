@@ -247,16 +247,24 @@ fm_secondmate_liveness_probe() {  # <meta> <id> <full|poll>
         # needs the control plane's own absence proof - the same single owner
         # `exit` and `relaunch` consult, so the answer cannot drift into two
         # verdicts for one endpoint. Only a positively `gone` endpoint
-        # authorizes re-creating it; tmux always answers `unproven`, so a
-        # missing tmux secondmate is reported for reconciliation rather than
-        # relaunched.
-        local absence
+        # authorizes re-creating it; every other verdict is reported for
+        # reconciliation rather than relaunched. The owner carries a reason
+        # only with `unproven` - it prints a bare `dead\t` or `alive\t` when it
+        # DID classify the endpoint - so the report names the verdict itself
+        # in that case rather than claiming an absence nobody established.
+        local absence verdict detail
         absence=$(fm_control_endpoint_absence_verdict "$backend" "$target")
-        case "${absence%%$'\t'*}" in
+        verdict=${absence%%$'\t'*}
+        detail=${absence#*$'\t'}
+        case "$verdict" in
           gone) FM_SM_LIVE_CAUSE="recorded endpoint confidently missing" ;;
           *)
             FM_SM_LIVE_STATUS=skipped
-            FM_SM_LIVE_REASON="recorded endpoint '$target' does not resolve, and ${absence#*$'\t'}; its agent may still be alive there, so reconcile the endpoint before any relaunch"
+            if [ -n "$detail" ]; then
+              FM_SM_LIVE_REASON="recorded endpoint '$target' does not resolve, and $detail; its agent may still be alive there, so reconcile the endpoint before any relaunch"
+            else
+              FM_SM_LIVE_REASON="recorded endpoint '$target' did not resolve on the first read, and the endpoint absence proof answered '$verdict', which does not authorize re-creating it"
+            fi
             return 0
             ;;
         esac

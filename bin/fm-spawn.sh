@@ -3514,11 +3514,13 @@ if [ "$RELAUNCH" -eq 1 ]; then
     # ids) from these values, which is the whole rebind - the task id, brief,
     # worktree, armed poll and status log are untouched.
     #
-    # Herdr is the ONLY backend that reaches here: the gate above rebinds only
-    # on a PROVEN-gone endpoint, and absence is provable only on herdr, whose
-    # every read is scoped to the session the record names
-    # (fm_control_endpoint_absence_verdict owns that argument). tmux and every
-    # secondmate were already refused, so there is no dispatch left to make.
+    # Two backends reach here, because two can prove an endpoint gone
+    # (fm_control_endpoint_absence_verdict owns that argument): herdr, whose
+    # every read is scoped to the session the record names, and tmux for the
+    # single case of no server at all on this socket - the reboot, where every
+    # window that server held died with it. Every other tmux answer, and every
+    # secondmate, was already refused above, so those are the only two
+    # dispatches to make.
     #
     # This deliberately uses the FLAT container shape rather than Herdr's
     # presentation projection: projection is a presentation-only layout that is
@@ -3538,6 +3540,16 @@ if [ "$RELAUNCH" -eq 1 ]; then
     # session from a seat that is not in it would silently relocate the task
     # onto another herdr server - an identity change, published as a
     # self-consistent but wrong record.
+    if [ "$BACKEND" = tmux ]; then
+      # The recorded server is gone, so its session went with it: stand the
+      # recorded session back up and re-create the task's own window in it,
+      # exactly as a fresh tmux spawn would, but against the RECORDED worktree
+      # the block above already resolved. Nothing else about the task moves.
+      SES=$(fm_backend_tmux_container_ensure) || exit 1
+      T="$SES:$W"
+      WID=$(fm_backend_tmux_create_task "$SES" "$W" "$WT") || exit 1
+      WT_TARGET="$WID"
+    else
     HERDR_REBIND_SES=${RELAUNCH_TARGET%%:*}
     HERDR_CONTAINER_RAW=$(HERDR_PANE_ID="$RELAUNCH_LAUNCHER_PANE_ID" \
       fm_backend_herdr_container_ensure "$PROJ_ABS" launcher-home "$HERDR_REBIND_SES") || {
@@ -3578,6 +3590,7 @@ EOF
     T="$HERDR_SES:$HERDR_PANE_ID"
     SES=$HERDR_SES
     WT_TARGET=$T
+    fi
   fi
 else
   case "$BACKEND" in

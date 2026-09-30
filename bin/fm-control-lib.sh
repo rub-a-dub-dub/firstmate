@@ -331,23 +331,49 @@ fm_control_backend_state_verified() {  # <backend>
 #     passes `--session <session>`, so the recheck starts and reads the session
 #     the RECORD names, through that session's own socket. The answer is about
 #     the task's endpoint and nothing else.
-#   tmux CANNOT. `list-windows -a` describes only the server the CURRENT
-#     process addresses (its TMUX_TMPDIR/socket), and a task's record does not
-#     carry the endpoint's socket identity - so a different but running server
-#     would answer "not anywhere" about a window it was never able to see.
-#     There is no read available here that closes that gap, so tmux always
-#     returns `unproven` and both verbs refuse. tmux is left exactly as
-#     deadlocked as it was before this change - no worse - but deliberately.
+#   tmux CAN prove exactly one case and no other: no server at all on the
+#     socket this process addresses. Every window that server held died with
+#     it, so the recorded endpoint cannot hold an agent - the reboot case, and
+#     the reason a machine restart recovers its parked tasks instead of
+#     stranding them. Nothing weaker qualifies, because a task's record does
+#     not carry the endpoint's socket identity: against a RUNNING server, a
+#     window missing from the inventory is indistinguishable from a renamed
+#     session, a window moved out of the recorded one, or a window on a server
+#     this process cannot address, and each of those is the duplicate-agent
+#     risk. So a completed scan that does not see the window stays `unproven`,
+#     and so does an inventory that could not be read at all.
 #
 # Both control-plane callers share this one implementation so the proof cannot
 # drift into two answers for the same endpoint.
 fm_control_endpoint_absence_verdict() {  # <backend> <target>
-  local backend=${1-} target=${2-}
+  local backend=${1-} target=${2-} sessions
   fm_backend_source "$backend" \
     || { printf 'unproven\tbackend %s could not be loaded to prove anything about that endpoint' "'$backend'"; return 0; }
   case "$backend" in
     tmux)
-      printf 'unproven\ttmux absence cannot be proven from a task record: the record does not carry the endpoint'"'"'s socket identity, and a server-wide window inventory only describes the tmux server this process addresses, so a window absent from it may still be alive on another'
+      # One tmux answer proves absence and only one: NO SERVER AT ALL on the
+      # socket this process addresses, which is the reboot case - every window
+      # that server held died with it, so the recorded endpoint cannot be
+      # holding an agent. Nothing weaker qualifies. A running server that does
+      # not list the window proves nothing, because a task record carries no
+      # socket identity for its endpoint: a renamed session, a window moved
+      # out of the recorded one, and a window living on a server this process
+      # cannot address all read identically here, and each of them is the
+      # duplicate-agent risk. So a completed scan that simply does not see the
+      # window stays `unproven`, and so does any read that failed for a reason
+      # other than a definitively absent server.
+      if sessions=$(LC_ALL=C tmux list-sessions -F '#{session_name}' 2>&1); then
+        printf 'unproven\tthe tmux server this process addresses is running and does not list that window, which a task record carries no socket identity to tell apart from a window alive on a server this process cannot address'
+        return 0
+      fi
+      case "$sessions" in
+        *"no server running on "*|*"error connecting to "*" (No such file or directory)"|*"error connecting to "*" (Connection refused)")
+          printf 'gone\t'
+          ;;
+        *)
+          printf 'unproven\tthe tmux server inventory could not be read, so no absence was established'
+          ;;
+      esac
       ;;
     herdr)
       # Start the RECORDED session's server (only the server - nothing is

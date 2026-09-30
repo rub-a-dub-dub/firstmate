@@ -1106,12 +1106,11 @@ secondmate_liveness_tick() {
         # again is reported afresh. Every other skip - an ambiguous process, an
         # unreadable probe, an unreachable remote route - is evidence of
         # nothing about the endpoint and stays triage-only exactly as before.
-        if [ "$FM_SM_LIVE_STATE" != missing ]; then
-          triage_log "secondmate $id liveness: $FM_SM_LIVE_REASON"
-        elif [ -e "$skip_marker" ] || [ -L "$skip_marker" ]; then
+        if [ "$FM_SM_LIVE_STATE" != missing ] \
+          || [ -e "$skip_marker" ] || [ -L "$skip_marker" ]; then
           triage_log "secondmate $id liveness: $FM_SM_LIVE_REASON"
         elif printf '%s\t%s\n' "$now" "$FM_SM_LIVE_STATE" > "$skip_marker"; then
-          reason="check: secondmate $id endpoint is missing and cannot be proven gone, so it was not relaunched: $FM_SM_LIVE_REASON"
+          reason="check: secondmate $id endpoint is missing and was not relaunched: $FM_SM_LIVE_REASON"
           notify_key="secondmate-liveness-missing-$id"
         else
           err="liveness skip marker could not be written; missing endpoint left unreported: $FM_SM_LIVE_REASON"
@@ -1124,6 +1123,10 @@ secondmate_liveness_tick() {
         || fm_wake_append check "$notify_key" "$reason"; then
         [ -n "$first_reason" ] || first_reason=$reason
       else
+        # The episode marker only bounds the notification, so an outcome that
+        # never reached the queue must not leave one behind: it would record a
+        # report that was never delivered and suppress every later retry.
+        rm -f "$skip_marker"
         err="check wake row could not be queued: $reason"
       fi
     fi

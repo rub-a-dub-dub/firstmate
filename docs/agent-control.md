@@ -93,7 +93,7 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
 A Herdr pane or workspace can be destroyed out from under a live task by churn or a session restart.
 The task's worktree, branch, commits, and uncommitted changes all survive that; only its terminal does not.
 
-**Reclaim is Herdr-only.** On tmux, both verbs refuse a `missing` endpoint, leaving it exactly as deadlocked as it was before this mechanism existed - deliberately, and with the reason stated rather than guessed past.
+**Reclaim is Herdr-only, with one tmux exception: no server at all.** On tmux, both verbs refuse a `missing` endpoint against a *running* server, deliberately and with the reason stated rather than guessed past; the single case they accept is a definitively absent server on the socket this process addresses, because every window that server held died with it.
 
 Two endpoint verdicts are agent-free, and both license a relaunch:
 
@@ -108,14 +108,14 @@ An unreachable endpoint can still hold the live agent a rebind would duplicate, 
   `dead` means the pane survived the restart and is adopted after all, with no second tab; `alive` means the agent came back and refuses; only a second `missing` proves the pane itself did not survive ([`docs/herdr-backend.md`](herdr-backend.md) "Restart and liveness behavior").
   That server start is a real side effect, and the parenthetical above does not cover it: when the recorded session's server no longer exists at all, the probe stands a fresh empty one up in order to ask, and nothing afterwards uses it.
   So in that state `exit` - which otherwise reads as a read-only inspection - leaves an idle herdr server behind.
-- **tmux cannot.** `list-windows -a` describes only the tmux server the *current process* addresses (its `TMUX_TMPDIR`/socket), and a task record carries no socket identity for its endpoint.
-  A different but running server would answer "not anywhere" about a window it was never able to see, so a server-wide read cannot tell a destroyed window from one on a server this process cannot address.
-  There is no read available that closes that gap, so tmux always refuses - for a renamed session, a moved window, a foreign socket, and a dead server alike.
+- **tmux can prove exactly one case: no server at all.** When `list-sessions` answers definitively that no server is running on the socket this process addresses, every window that server held died with it, so the recorded endpoint cannot be holding an agent. That is the reboot case, and it is why a machine restart recovers its parked tasks instead of stranding them.
+  Nothing weaker qualifies. `list-windows -a` describes only the tmux server the *current process* addresses (its `TMUX_TMPDIR`/socket), and a task record carries no socket identity for its endpoint, so against a **running** server a window missing from the inventory is indistinguishable from a renamed session, a window moved out of the recorded one, or a window alive on a server this process cannot address - each of which is the duplicate-agent risk.
+  So a completed scan that simply does not see the window stays `unproven` and both verbs refuse, and so does an inventory that could not be read at all.
 
 Every transient or self-contradicting read stays `unreadable` or `ambiguous` and still refuses, so a momentary backend failure can never be mistaken for absence.
 
 That proof has one owner for the whole control plane (`fm_control_endpoint_absence_verdict` in `bin/fm-control-lib.sh`), so `exit`, `relaunch`, and the secondmate liveness sweep in `bin/fm-secondmate-liveness-lib.sh` cannot reach two different answers about one endpoint.
-The sweep reads the same verdict before re-creating a missing secondmate's endpoint, so a missing tmux secondmate is reported for reconciliation rather than relaunched, exactly as both verbs refuse it.
+The sweep reads the same verdict before re-creating a missing secondmate's endpoint, so a tmux secondmate missing against a running server is reported for reconciliation rather than relaunched, exactly as both verbs refuse it - while one parked across a reboot, where no server answers at all, is recovered.
 Only a `gone` verdict authorizes the sweep to re-create an endpoint; every other verdict reports instead.
 The session-start sweep reports it on its `SECONDMATE_LIVENESS:` line, and the watcher's mid-session tick queues one `check` wake per mate when the episode opens - bounded by a per-mate episode marker, so a tick that repeats every `FM_SECONDMATE_LIVENESS_SECS` reports once rather than every time, and a mate seen live again (or successfully relaunched) clears the marker so a later loss is reported afresh.
 `exit` reports what the proof established and nothing more - see its row in the verb table above.
