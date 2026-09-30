@@ -162,10 +162,12 @@ SH
 test_herdr_agent_state_preserves_husk_classifier() {
   local pane_state expected out
 
+  # Pin the session server as running so an installed herdr on the host
+  # cannot turn the unknown row into a stopped-server `missing`.
   for row in 'dead missing' 'no-agent dead' 'live alive' 'unknown unreadable'; do
     pane_state=${row%% *}
     expected=${row#* }
-    out=$(FM_TEST_PANE_STATE="$pane_state" bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_pane_agent_state() { printf "%s" "$FM_TEST_PANE_STATE"; }; fm_backend_herdr_agent_state "sess:p1"' "$ROOT")
+    out=$(FM_TEST_PANE_STATE="$pane_state" bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_pane_agent_state() { printf "%s" "$FM_TEST_PANE_STATE"; }; fm_backend_herdr_server_running_state() { printf running; }; fm_backend_herdr_agent_state "sess:p1"' "$ROOT")
     [ "$out" = "$expected" ] || fail "Herdr pane state $pane_state should map to $expected, got '$out'"
   done
 
@@ -207,7 +209,7 @@ make_toolchain() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
   fm_fake_exit0 "$fakebin" node chrome-devtools-axi pi-signed
-  fm_fake_version_tool "$fakebin" lavish-axi FM_FAKE_LAVISH_AXI_VERSION 0.1.46
+  fm_fake_version_tool "$fakebin" lavish-axi FM_FAKE_LAVISH_AXI_VERSION 0.1.77
   cat > "$fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = --version ]; then
@@ -242,7 +244,7 @@ SH
   cat > "$fakebin/tasks-axi" <<'SH'
 #!/usr/bin/env bash
 case "${1:-} ${2:-}" in
-  "--version ") printf '%s\n' '0.2.4' ;;
+  "--version ") printf '%s\n' '0.2.6' ;;
   "update --help") printf '%s\n' 'usage: tasks-axi update <id> [flags]' '  --archive-body' ;;
   "mv --help") printf '%s\n' 'usage: tasks-axi mv <id> [<id>...] --to <path-or-dir>' ;;
 esac
@@ -252,7 +254,7 @@ SH
   cat > "$fakebin/quota-axi" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = --version ]; then
-  printf '%s\n' '0.1.29'
+  printf '%s\n' '0.1.51'
   exit 0
 fi
 exit 0
@@ -308,104 +310,6 @@ SH
   printf '%s\n' "$fakebin"
 }
 
-# make_endpoint_absent_tmux <dir>: a tmux stub whose session/window inventory
-# is driven entirely by files under <dir>/fake-state (the caller computes that
-# path itself as "<dir>/fake-state" - nothing else returns it), so a test can
-# shape exactly what a `tmux rename-session`, a `tmux move-window`, or a
-# genuine reboot leaves behind:
-#   fake-state/no-server       - presence: the whole tmux server is down (a
-#                                 reboot). Every read fails with tmux's own
-#                                 no-server text until new-session boots one.
-#   fake-state/sessions/<name> - one file per EXISTING session, holding that
-#                                 session's window names one per line. A
-#                                 session with no file here does not exist.
-# new-session ensures its named session's file exists (and clears no-server);
-# new-window appends its window name to that session's file. Both append
-# rather than truncate/rewrite, so the sweep's default parallel per-secondmate
-# subshells (bootstrap_parallel_spawn) can never clobber a sibling's write.
-make_endpoint_absent_tmux() {
-  local dir=$1 fakebin
-  fakebin=$(fm_fakebin "$dir")
-  mkdir -p "$dir/fake-state/sessions"
-  cat > "$fakebin/tmux" <<'SH'
-#!/usr/bin/env bash
-set -u
-FS=${FM_TEST_TMUX_STATE:?}
-LOG=${FM_TMUX_CALL_LOG:?}
-no_server_error() {
-  printf 'no server running on /tmp/tmux-test/default\n' >&2
-  exit 1
-}
-target_session() {  # <target> -> session name, stripping a leading = (tmux's
-                     # exact-match prefix) and a trailing :window
-  local t=${1#=}
-  printf '%s' "${t%%:*}"
-}
-case "${1:-}" in
-  list-sessions)
-    [ -e "$FS/no-server" ] && no_server_error
-    for f in "$FS"/sessions/*; do
-      [ -e "$f" ] || continue
-      basename "$f"
-    done
-    exit 0
-    ;;
-  has-session)
-    [ -e "$FS/no-server" ] && exit 1
-    shift
-    t=
-    while [ $# -gt 0 ]; do case "$1" in -t) t=$2; shift 2 ;; *) shift ;; esac; done
-    [ -f "$FS/sessions/$(target_session "$t")" ]
-    exit $?
-    ;;
-  new-session)
-    rm -f "$FS/no-server"
-    shift
-    name=
-    while [ $# -gt 0 ]; do case "$1" in -s) name=$2; shift 2 ;; *) shift ;; esac; done
-    printf '' >> "$FS/sessions/$name"
-    printf 'new-session -s %s\n' "$name" >> "$LOG"
-    exit 0
-    ;;
-  list-windows)
-    [ -e "$FS/no-server" ] && no_server_error
-    shift
-    t=
-    while [ $# -gt 0 ]; do case "$1" in -t) t=$2; shift 2 ;; *) shift ;; esac; done
-    session=$(target_session "$t")
-    if [ ! -f "$FS/sessions/$session" ]; then
-      printf "can't find session: %s\n" "$session" >&2
-      exit 1
-    fi
-    cat "$FS/sessions/$session"
-    exit 0
-    ;;
-  new-window)
-    shift
-    sess= wname=
-    while [ $# -gt 0 ]; do
-      case "$1" in
-        -t) sess=$2; shift 2 ;;
-        -n) wname=$2; shift 2 ;;
-        *) shift ;;
-      esac
-    done
-    session=$(target_session "$sess")
-    printf '%s\n' "$wname" >> "$FS/sessions/$session"
-    printf 'new-window -t %s -n %s\n' "$session" "$wname" >> "$LOG"
-    printf '@1\n'
-    exit 0
-    ;;
-  set-window-option|send-keys|display-message|capture-pane|kill-window)
-    exit 0
-    ;;
-esac
-exit 0
-SH
-  chmod +x "$fakebin/tmux"
-  printf '%s\n' "$fakebin"
-}
-
 # new_world <name>: a scratch firstmate HOME (state/, watcher beacon, pinned
 # harness) with no kind=secondmate meta yet. FM_ROOT is left to resolve
 # naturally to the real checkout under test ($ROOT), exactly as production
@@ -435,6 +339,8 @@ add_sm_home() {
   printf '%s\n' "$id" > "$home/.fm-secondmate-home"
   printf '# Firstmate\n' > "$home/AGENTS.md"
   printf 'charter\n' > "$home/data/charter.md"
+  printf '%s\n' 'projects/' 'state/' 'data/' 'config/' '.no-mistakes/' > "$home/.gitignore"
+  git -C "$home" init -q -b main
   {
     printf 'window=%s\n' "$window"
     printf 'kind=secondmate\n'
@@ -465,7 +371,65 @@ test_sweep_respawns_confirmed_dead_secondmate() {
     "the stale endpoint must be killed before respawn (tmux refuses a same-named window over a live one)"
   assert_contains "$(cat "$log")" "new-window" \
     "a confirmed-dead secondmate should actually be relaunched"
+  assert_grep 'relaunched' "$w/home/state/.secondmate-relaunch-sm1" \
+    "the shared library did not leave the durable per-mate relaunch record"
   pass "sweep: a confirmed-dead secondmate endpoint is killed and respawned"
+}
+
+test_sweep_skips_mate_whose_liveness_lock_is_held() {
+  local w fb tmuxfb log out holder i=0
+  w=$(new_world sweep-lock-held)
+  add_sm_home "$w" sm1 firstmate:fm-sm1
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+
+  # A concurrent liveness episode (the watcher's tick) owns the per-mate lock;
+  # the sweep must skip rather than probe or relaunch a moving target.
+  ( STATE="$w/home/state" bash -c \
+      '. "$1" && fm_lock_acquire_wait "$2" && sleep 30' \
+      _ "$ROOT/bin/fm-wake-lib.sh" "$w/home/state/.secondmate-liveness-sm1.lock" ) &
+  holder=$!
+  while [ ! -d "$w/home/state/.secondmate-liveness-sm1.lock" ] && [ "$i" -lt 100 ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  [ -d "$w/home/state/.secondmate-liveness-sm1.lock" ] || fail "the fixture never acquired the liveness lock"
+
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" zsh "$log")
+
+  assert_contains "$out" "SECONDMATE_LIVENESS: secondmate sm1: skipped: another liveness check is already in progress" \
+    "a mate under an active liveness lock should be skipped, not probed"
+  [ ! -s "$log" ] || fail "a locked mate must never be killed or respawned: $(cat "$log")"
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  pass "sweep: a mate mid-episode under the shared liveness lock is skipped entirely"
+}
+
+test_sweep_refuses_relaunch_on_ledger_errors() {
+  local w fb tmuxfb log out mode ledger word
+  if [ "$(id -u)" -eq 0 ]; then
+    pass "sweep: ledger permission errors skipped (root ignores file modes)"
+    return 0
+  fi
+  for mode in 200 444; do
+    case "$mode" in 200) word=unreadable ;; *) word=unwritable ;; esac
+    w=$(new_world "sweep-ledger-$mode")
+    add_sm_home "$w" sm1 firstmate:fm-sm1
+    fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+    log="$w/calls.log"; : > "$log"
+    ledger="$w/home/state/.secondmate-relaunch-sm1"
+    : > "$ledger"
+    chmod "$mode" "$ledger"
+
+    out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" zsh "$log")
+    chmod 644 "$ledger"
+
+    assert_contains "$out" "SECONDMATE_LIVENESS: secondmate sm1: skipped: relaunch ledger $ledger is $word" \
+      "a mode-$mode relaunch ledger should skip the relaunch with its reason"
+    [ ! -s "$log" ] || fail "a mode-$mode relaunch ledger still killed or spawned: $(cat "$log")"
+    [ ! -s "$ledger" ] || fail "a mode-$mode ledger gained rows: $(cat "$ledger")"
+  done
+  pass "sweep: an unreadable or unwritable relaunch ledger refuses to kill or spawn"
 }
 
 test_sweep_leaves_alive_secondmate_untouched() {
@@ -638,136 +602,104 @@ test_sweep_noop_with_no_secondmate_meta() {
   pass "sweep: a silent no-op with no kind=secondmate meta present (a secondmate home's own natural scoping)"
 }
 
-# --- sweep level: a `missing` tmux verdict is not proof the agent is gone ---
-#
-# bin/fm-bootstrap.sh:821 (pre-fix) treated any `missing` reading as
-# "recorded endpoint confidently missing" and relaunched on that basis alone.
-# For tmux that is not proof: fm_backend_tmux_agent_state returns `missing`
-# both when the recorded SESSION no longer resolves (a `tmux rename-session`)
-# and when the recorded WINDOW is absent from an otherwise-live session's
-# inventory (a `tmux move-window` out of it) - in both cases the agent keeps
-# running, unchanged, under a different address. The window name is pinned at
-# creation (automatic-rename/allow-rename off), but nothing pins the SESSION
-# name, and tmux has no lock against a deliberate rename-session or
-# move-window either way - so the only sound fix is to prove absence by
-# scanning every session's inventory (fm_backend_endpoint_absent), not to try
-# to prevent the rename.
+# --- library level: the watcher's poll-mode remote probe ---------------------
+# bin/fm-secondmate-liveness-lib.sh's `poll` mode is the read-only probe the
+# watcher tick runs per cadence: exactly one remote `state` call, `dead` and
+# `missing` alone authorize relaunch, and transport failure (ssh exit 255) is
+# never evidence of death. Full-mode remote readiness repair and route
+# revalidation remain the startup sweep's own behavior, covered by the sweep
+# tests above and tests/fm-remote-secondmate-lifecycle-e2e.test.sh.
 
-test_sweep_renamed_session_with_window_intact_refuses_relaunch() {
-  local w fb tmuxfb fs log out
-  w=$(new_world sweep-renamed-session)
-  add_sm_home "$w" sm1 firstmate:fm-sm1
-  fb=$(make_toolchain "$w"); tmuxfb=$(make_endpoint_absent_tmux "$w")
-  fs="$w/fake-state"
-  log="$w/calls.log"; : > "$log"
-  # `tmux rename-session -t firstmate work`: the recorded session name is
-  # gone, but the task's own window - and the agent inside it - moved with
-  # it, intact, under the new name.
-  printf '%s\n' fm-sm1 >> "$fs/sessions/work"
-
-  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" missing "$log" FM_TEST_TMUX_STATE="$fs")
-
-  assert_contains "$out" "SECONDMATE_LIVENESS: secondmate sm1: skipped" \
-    "a renamed session whose window survived elsewhere should be reported as skipped, not silently ignored"
-  assert_contains "$out" "may be alive there" \
-    "the skip reason should name why a missing address is not proof of absence"
-  [ ! -s "$log" ] || fail "a renamed session with its window intact must never trigger a relaunch: $(cat "$log")"
-  pass "sweep: a renamed tmux session whose window survives elsewhere refuses to relaunch"
+# make_remote_probe_world <name>: a parent home carrying one remote-route
+# secondmate meta plus a fake ssh that logs every call and answers with
+# FM_FAKE_REMOTE_REPLY on FM_FAKE_REMOTE_RC.
+make_remote_probe_world() {
+  local name=$1 w fakebin
+  w="$TMP_ROOT/$name"
+  fakebin=$(fm_fakebin "$w")
+  mkdir -p "$w/home/state" "$w/home/data" "$w/home/config"
+  cat > "$w/home/state/rsm1.meta" <<EOF
+window=remote:rsm1
+kind=secondmate
+harness=claude
+remote_host=lab-host
+remote_backend=herdr
+remote_herdr_session=fm-remote
+remote_target=fm-remote:w1:p1
+home=/remote/rsm1-home
+EOF
+  cat > "$w/home/data/secondmates.md" <<EOF
+- rsm1 - Remote mate (host: lab-host; root: /remote/root; home: /remote/rsm1-home; scope: remote work; projects: alpha; added 2026-01-01)
+EOF
+  cat > "$fakebin/ssh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FM_FAKE_SSH_LOG:?}"
+[ -z "${FM_FAKE_REMOTE_REPLY:-}" ] || printf '%s\n' "$FM_FAKE_REMOTE_REPLY"
+exit "${FM_FAKE_REMOTE_RC:-0}"
+SH
+  chmod +x "$fakebin/ssh"
+  printf '%s\n' "$w"
 }
 
-test_sweep_moved_window_found_in_another_session_refuses_relaunch() {
-  local w fb tmuxfb fs log out
-  w=$(new_world sweep-moved-window)
-  add_sm_home "$w" sm1 firstmate:fm-sm1
-  fb=$(make_toolchain "$w"); tmuxfb=$(make_endpoint_absent_tmux "$w")
-  fs="$w/fake-state"
-  log="$w/calls.log"; : > "$log"
-  # `tmux move-window -s firstmate:fm-sm1 -t work`: the recorded session is
-  # still there but no longer holds the window, which - and its agent - is
-  # alive under a different session instead.
-  printf '%s\n' main >> "$fs/sessions/firstmate"
-  printf '%s\n' fm-sm1 >> "$fs/sessions/work"
-
-  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" missing "$log" FM_TEST_TMUX_STATE="$fs")
-
-  assert_contains "$out" "SECONDMATE_LIVENESS: secondmate sm1: skipped" \
-    "a window moved into a live session should be reported as skipped, not silently ignored"
-  [ ! -s "$log" ] || fail "a window found alive under another session must never trigger a relaunch: $(cat "$log")"
-  pass "sweep: a tmux window moved into another live session refuses to relaunch"
+# probe_remote <w> <mode> [env...] -> "<status>|<state>|<kill>|<cause>|<where>|<reason>"
+probe_remote() {
+  local w=$1 mode=$2; shift 2
+  # shellcheck disable=SC2016 # positional params expand in the child shell.
+  env STATE="$w/home/state" FM_HOME="$w/home" FM_DATA_OVERRIDE="$w/home/data" \
+    FM_SSH_BIN="$w/fakebin/ssh" FM_FAKE_SSH_LOG="$w/ssh.log" "$@" \
+    bash -c '
+      . "$0/bin/fm-secondmate-liveness-lib.sh"
+      fm_secondmate_liveness_probe "$1" rsm1 "$2"
+      printf "%s|%s|%s|%s|%s|%s\n" \
+        "$FM_SM_LIVE_STATUS" "$FM_SM_LIVE_STATE" "$FM_SM_LIVE_KILL" \
+        "$FM_SM_LIVE_CAUSE" "$FM_SM_LIVE_WHERE" "$FM_SM_LIVE_REASON"
+    ' "$ROOT" "$w/home/state/rsm1.meta" "$mode"
 }
 
-test_sweep_reboot_with_no_server_recreates_endpoint() {
-  local w fb tmuxfb fs log out
-  w=$(new_world sweep-reboot-single)
-  add_sm_home "$w" sm1 firstmate:fm-sm1
-  fb=$(make_toolchain "$w"); tmuxfb=$(make_endpoint_absent_tmux "$w")
-  fs="$w/fake-state"
-  log="$w/calls.log"; : > "$log"
-  # A genuine reboot: no tmux server at all, so the window cannot exist
-  # anywhere on the backend. Absence of a server is what makes this the safe
-  # case - unlike the rename/move cases above, there is nowhere left an agent
-  # could still be running.
-  : > "$fs/no-server"
+test_remote_poll_probe_maps_states() {
+  local w out
+  w=$(make_remote_probe_world probe-states)
 
-  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" missing "$log" FM_TEST_TMUX_STATE="$fs")
+  out=$(probe_remote "$w" poll FM_FAKE_REMOTE_REPLY=dead)
+  [ "$out" = 'relaunchable|dead|0|remote endpoint dead on its configured host|host=lab-host|' ] \
+    || fail "a dead remote reply should authorize relaunch on its own host, got: $out"
 
-  assert_not_contains "$out" "SECONDMATE_LIVENESS:" \
-    "a successful reboot recovery should stay silent by default"
-  assert_contains "$(cat "$log")" "new-window -t firstmate -n fm-sm1" \
-    "a genuinely rebooted secondmate should be recreated"
-  pass "sweep: a genuine reboot with no tmux server still recreates the endpoint"
+  out=$(probe_remote "$w" poll FM_FAKE_REMOTE_REPLY=missing)
+  [ "$out" = 'relaunchable|missing|0|remote endpoint missing on its configured host|host=lab-host|' ] \
+    || fail "a missing remote reply should authorize relaunch on its own host, got: $out"
+
+  out=$(probe_remote "$w" poll FM_FAKE_REMOTE_REPLY=alive)
+  [ "$out" = 'alive|alive|0|||' ] || fail "an alive remote reply should be a quiet no-op, got: $out"
+
+  out=$(probe_remote "$w" poll FM_FAKE_REMOTE_REPLY=ambiguous)
+  [ "$out" = 'skipped|ambiguous|0|||remote endpoint state is ambiguous on lab-host' ] \
+    || fail "an ambiguous remote reply must preserve the endpoint, got: $out"
+
+  out=$(probe_remote "$w" poll FM_FAKE_REMOTE_REPLY=unverified)
+  [ "$out" = 'skipped|unverified|0|||remote endpoint state is unverified on lab-host' ] \
+    || fail "an unverified remote reply must preserve the endpoint, got: $out"
+
+  out=$(probe_remote "$w" poll FM_FAKE_REMOTE_REPLY=bogus)
+  [ "$out" = 'skipped|bogus|0|||remote endpoint returned an invalid state' ] \
+    || fail "an invalid remote reply must preserve the endpoint, got: $out"
+
+  [ "$(wc -l < "$w/ssh.log" | tr -d ' ')" -eq 6 ] \
+    || fail "each poll-mode probe should spend exactly one remote state call: $(cat "$w/ssh.log")"
+  pass "poll probe: remote states map to the same contract as local, one call each"
 }
 
-# The brief's own scenario: several secondmates parked across a reboot.
-# Relaunching the first one necessarily starts the tmux server (and its
-# session), so a check that read only "is a server/session running" would
-# restore exactly one secondmate and then refuse the rest - this is the exact
-# shape of regression the sibling recreate-arm fix caught. Because
-# fm_backend_endpoint_absent proves absence per WINDOW NAME rather than per
-# server/session presence, a session that now exists (from an earlier
-# secondmate's own relaunch) does not disqualify a later one whose own window
-# is still nowhere in it.
-#
-# Each secondmate here gets its OWN home and its own sequential
-# bin/fm-bootstrap.sh invocation - the same single-item shape every other
-# sweep test in this file already exercises - while all three share ONE
-# simulated tmux backend (a fixed fake-state directory, independent of which
-# home is checking it). That isolates the exact question this regression is
-# about - does a later secondmate's absence check get fooled by an earlier
-# secondmate's relaunch having already started the shared session? - from a
-# separate, pre-existing concurrency limit in how bin/fm-bootstrap.sh's own
-# sweep parallelizes several respawns registered in one primary's state/ (its
-# per-home task-set lock is a single non-blocking `fm_lock_try_acquire`, so
-# concurrent fresh spawns already race there today regardless of this fix -
-# confirmed independent of fm_backend_endpoint_absent by reproducing the same
-# lock refusal with two plain `dead` secondmates on unmodified fm-spawn.sh).
-# That is a distinct defect outside this task's scope (AGENTS.md: an accepted
-# risk is not authority to widen a task); it belongs in its own follow-up.
-test_sweep_reboot_relaunches_every_parked_secondmate_not_just_the_first() {
-  local base fb tmuxfb fs log out id w
-  base="$TMP_ROOT/sweep-reboot-fleet"
-  mkdir -p "$base"
-  tmuxfb=$(make_endpoint_absent_tmux "$base")
-  fs="$base/fake-state"
-  fb=$(make_toolchain "$base")
-  : > "$fs/no-server"
-  log="$base/calls.log"; : > "$log"
+test_remote_poll_probe_unreachable_preserves_route() {
+  local w out
+  w=$(make_remote_probe_world probe-unreachable)
 
-  for id in sm1 sm2 sm3; do
-    w=$(new_world "sweep-reboot-fleet-$id")
-    add_sm_home "$w" "$id" "firstmate:fm-$id"
-    out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" missing "$log" FM_TEST_TMUX_STATE="$fs")
-    assert_not_contains "$out" "SECONDMATE_LIVENESS:" \
-      "secondmate $id parked across the reboot should recover silently, whether or not the shared server was already started by an earlier one"
-  done
+  out=$(probe_remote "$w" poll FM_FAKE_REMOTE_RC=255)
+  [ "$out" = 'skipped|unknown|0|||remote host unavailable or endpoint state unknown; route preserved on lab-host' ] \
+    || fail "ssh exit 255 must never read as a dead endpoint, got: $out"
 
-  for id in sm1 sm2 sm3; do
-    assert_contains "$(cat "$log")" "new-window -t firstmate -n fm-$id" \
-      "secondmate $id parked across the reboot should have been relaunched too, not just the one that restarts the server"
-  done
-  [ -s "$fs/sessions/firstmate" ] \
-    || fail "recreating the first parked secondmate should have started the server the rest then share"
-  pass "sweep: every secondmate parked across a reboot relaunches, not just the one whose relaunch restarts the server"
+  out=$(probe_remote "$w" poll FM_FAKE_REMOTE_RC=1)
+  [ "$out" = 'skipped|unknown|0|||remote endpoint probe unreadable on lab-host' ] \
+    || fail "a non-transport remote probe failure must stay inconclusive, got: $out"
+  pass "poll probe: unreachable or inconclusive remote reads preserve the route"
 }
 
 test_tmux_agent_state_classifies
@@ -785,9 +717,9 @@ test_sweep_never_acts_on_unverified_harness_dead_reading
 test_sweep_converges_no_retouch_once_alive
 test_sweep_skipped_under_detect_only
 test_sweep_noop_with_no_secondmate_meta
-test_sweep_renamed_session_with_window_intact_refuses_relaunch
-test_sweep_moved_window_found_in_another_session_refuses_relaunch
-test_sweep_reboot_with_no_server_recreates_endpoint
-test_sweep_reboot_relaunches_every_parked_secondmate_not_just_the_first
+test_sweep_skips_mate_whose_liveness_lock_is_held
+test_sweep_refuses_relaunch_on_ledger_errors
+test_remote_poll_probe_maps_states
+test_remote_poll_probe_unreachable_preserves_route
 
 echo "# all fm-secondmate-liveness tests passed"

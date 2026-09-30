@@ -35,8 +35,8 @@
 # the home row on secondmates[] keeps the decision and gate classification.
 # Captain-hold classification and placement follow the canonical snapshot's
 # hold_bucket and nothing else; the wrapper reads a hold's reason and body prose
-# only to retain a gate that hold points at (see Charted Next below), never to
-# bucket or place the hold itself. The
+# only to retain a gate that hold points at, never to bucket or place the hold.
+# The
 # buckets are total and mutually exclusive, so every captain hold appears in
 # exactly one decision bucket and none can fall through both. An actively worked
 # held task may also appear in Underway. A "live" hold is a default Captain's Call
@@ -52,25 +52,10 @@
 # before the FM_BEARINGS_GATES bound is applied. Gates without a comparable filed
 # date keep their input order after dated gates. The synthetic (return-catchup)
 # posture row is reserved ahead of that ordering and bound so it always surfaces.
-# A same-day filing cluster leaves that ordering unable to discriminate among its
-# rows, so a gate that a captain hold IN ITS OWN HOME points at is retained past
-# the bound rather than silently dropped behind an honest count: textually when a
-# live hold's title, hold reason, or body text names it, structurally when a
-# deferred hold's unresolved blocked-by names it. hold_bucket is exclusive, so only
-# live holds carry pinning text and only deferred holds carry unresolved blockers;
-# retentions are capped at FM_BEARINGS_GATES_PINNED with the live-hold ones
-# claiming that cap first, because the live hold is the one the captain is
-# mid-way through and the deferred hold's own gate row already names its blockers.
-# gates_retained lists every gate kept this way for a consumer that must keep them
-# all; omitted[] carries the bounded human-readable note plus any retention the cap
-# dropped.
-# The textual half is a heuristic, so it only considers gate ids carrying a - or _:
-# an ordinary prose word can never pin a gate, at the accepted cost that a
-# single-word gate id is retained only when a hold names it structurally.
-# A registered secondmate ledger publishes no hold body, so its holds pin on the
-# title and reason its decisions_open carries plus the blocker ids on its queued
-# rows. A hold never pins a gate owned by another home, and pinning never changes
-# hold_bucket.
+# A gate that a captain hold in its own home points at is retained past the
+# bound rather than silently dropped: textually when a live hold names it, or
+# structurally when a deferred hold's unresolved blocker names it. Retentions
+# are separately capped, scoped to the hold's home, and named in gates_retained.
 #
 # Main-home inventory validity comes from the canonical snapshot's main_inventory
 # object (orphan structured in-flight without meta, unstructured current rows).
@@ -124,7 +109,7 @@ FLEET="$SCRIPT_DIR/fm-fleet-snapshot.sh"
 . "$SCRIPT_DIR/fm-landed-lib.sh"  # FM_LANDED_JQ_DEFS: the shared landed selector
 # shellcheck source=bin/fm-check-rollup-lib.sh
 # shellcheck disable=SC1091
-. "$SCRIPT_DIR/fm-check-rollup-lib.sh"  # FM_CHECK_ROLLUP_JQ_DEFS: the shared check verdict
+. "$SCRIPT_DIR/fm-check-rollup-lib.sh"  # FM_CHECK_ROLLUP_JQ_DEFS: shared current check verdicts
 
 # Bounds (overridable for tests / large fleets).
 FM_BEARINGS_LANDED=${FM_BEARINGS_LANDED:-6}
@@ -180,12 +165,8 @@ Default fields: schema, home, generated, prs, in_flight{id,kind,state,repo,name,
   reports{id,path}, recorded_prs{id,url},
   unhealthy_endpoints{...} (only when non-empty), omitted{surface,reveal}.
 Default gates are selected newest filed first before their bound; undated gates
-  retain input order after dated gates. A gate that a captain hold in its own home
-  names - textually in a live hold's title, hold reason, or body text, or
-  structurally by a deferred hold's unresolved blocked-by id - is kept past that
-  bound, capped by FM_BEARINGS_GATES_PINNED with the live-hold retentions first.
-  gates_retained names each of those rows in full for a consumer that must carry
-  every one of them; omitted[] reports the same retention as a bounded note.
+  retain input order after dated gates. A gate referenced by a captain hold in
+  its own home survives that bound, capped by FM_BEARINGS_GATES_PINNED.
 landed merges this home's Done with registered secondmate homes' Done, bounded by
   a per-home cap (FM_BEARINGS_LANDED_PER_HOME) and an overall cap (FM_BEARINGS_LANDED),
   with omitted[] disclosure. Default selection is balanced across deterministic home
@@ -320,12 +301,14 @@ $(printf '%s' "$SNAP" | jq -r '.tasks[] | select(.kind != "secondmate") | .paths
 EOF
 
     for repo in $repos; do PR_REPOS_TOTAL=$((PR_REPOS_TOTAL + 1)); done
-    # checks below reads bin/fm-check-rollup-lib.sh's check_rollup_verdicts, so
-    # a check name with a stale superseded run alongside a passing current one
-    # reads "passing" here exactly as bin/fm-pr-merge.sh's merge gate does,
-    # rather than "failing" on a run nothing still holds against the head.
     nrepos=0; npr=0; nwarn=0; ncapped=0; rows='[]'
     pr_fetch_limit=$((FM_BEARINGS_PR_LIMIT + 1))
+    # The task side of the mapping rides a temp file, not an argv element: a
+    # fleet snapshot exceeds the ~128KB per-argument exec cap on large fleets,
+    # and an E2BIG there would drop the repo's PR rows into the warning count.
+    tasks_file=$(mktemp "${TMPDIR:-/tmp}/fm-bearings-tasks.XXXXXX") \
+      || { echo "fm-bearings-snapshot: cannot create a temporary tasks file" >&2; exit 1; }
+    printf '%s' "$SNAP" | jq '.tasks // []' > "$tasks_file"
     for repo in $repos; do
       if [ "$ALL_PR_REPOS" != 1 ] && [ "$nrepos" -ge "$FM_BEARINGS_PR_REPOS" ]; then break; fi
       nrepos=$((nrepos + 1))
@@ -333,11 +316,15 @@ EOF
         --json number,title,url,headRefName,reviewDecision,mergeable,statusCheckRollup 2>/dev/null) \
         || { nwarn=$((nwarn + 1)); continue; }
       [ -n "$out" ] || out='[]'
-      repo_result=$(printf '%s' "$out" | jq --arg repo "$repo" --argjson limit "$FM_BEARINGS_PR_LIMIT" "$FM_CHECK_ROLLUP_JQ_DEFS"'
+      repo_result=$(printf '%s' "$out" | jq --arg repo "$repo" --argjson limit "$FM_BEARINGS_PR_LIMIT" --slurpfile tasks "$tasks_file" "$FM_CHECK_ROLLUP_JQ_DEFS"'
+        ($tasks[0] // []) as $all_tasks
+        | def task_for_branch($ref):
+            ( [ $all_tasks[] | select((.branch // ("fm/" + .id)) == $ref) | .id ] | .[0] )
+            // (if ($ref | startswith("fm/")) then ($ref | ltrimstr("fm/")) else "-" end);
         [ .[] | {
           num:(.number|tostring),
           repo:$repo,
-          task:(if (.headRefName // "" | startswith("fm/")) then (.headRefName | ltrimstr("fm/")) else "-" end),
+          task:task_for_branch(.headRefName // ""),
           url:(.url // "-"),
           review:(.reviewDecision // "none"),
           mergeable:(.mergeable // "UNKNOWN"),
@@ -355,6 +342,7 @@ EOF
       npr=$((npr + cnt))
       rows=$(jq -n --argjson a "$rows" --argjson b "$repo_rows" '$a + $b')
     done
+    rm -f "$tasks_file"
     PR_REPOS_SHOWN=$nrepos
     PR_ROWS_CAPPED=$ncapped
     PR_ROWS_MIN_TOTAL=$((npr + ncapped))
@@ -504,11 +492,17 @@ MODEL=$(printf '%s' "$SNAP" | jq \
        | ([.decisions_open[]? | select(.source == "backlog" and .verb == "captain-hold"
             and live_captain_call)]) as $captain_holds
        | ([.holds[]? | select(.source == "backlog")]) as $backlog_holds
+       | ([.queued[]? | select(.blocked_reason != null)]) as $external_holds
        | . + {
            bearings_captain_holds:$captain_holds,
-           bearings_holds:(if .current.state == "captain_decision" then $backlog_holds else .holds end),
+           bearings_holds:(if .current.state == "no_active_work" and ($external_holds | length) > 0
+                           then $external_holds
+                           elif .current.state == "captain_decision" then $backlog_holds
+                           else .holds end),
            bearings_state:(
-             if .current.state == "captain_decision" then
+             if .current.state == "no_active_work" and ($external_holds | length) > 0 then
+               "externally_held"
+             elif .current.state == "captain_decision" then
                if ($captain_holds | length) > 0 then "captain_decision"
                elif (.active_children | length) > 0 then "active_child_work"
                elif ($backlog_holds | length) > 0 then "externally_held"
@@ -720,9 +714,6 @@ MODEL=$(printf '%s' "$SNAP" | jq \
       reports: (if $all_reports == 1 then $reports_all else $reports_all[:$reports_n] end),
       recorded_prs: (if $all_recorded_prs == 1 then $recorded_prs_all else $recorded_prs_all[:$recorded_prs_n] end)
     }
-  # gates_retained is bounded by FM_BEARINGS_GATES_PINNED, which is the whole point
-  # of it: a consumer that must keep every retained row needs the complete list, so
-  # never trunc() this array or drop rows from it.
   | . + (if $all_queued == 0 and ($gates_pinned | length) > 0 then
            {gates_retained:($gates_pinned | map({id, owner}))}
          else {} end)

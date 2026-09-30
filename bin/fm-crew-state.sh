@@ -10,6 +10,8 @@
 # current state from a tail of the log: it reads the authoritative source (a
 # no-mistakes run-step attributed under bin/fm-nm-run-lib.sh's contract, else
 # the pane busy-signature) and reconciles the possibly-stale log against it.
+# A ship `done:` is current-state done only when bin/fm-dod-lib.sh accepts the
+# named head as reachable outside the worker's disposable copy; otherwise blocked.
 #
 # The determinism lives entirely here - run-step / pane / log reads, fixed
 # mapping logic, and terminal passed-run PR detail from bounded evidence only,
@@ -23,17 +25,6 @@
 # heartbeat:
 #
 #   state: <working|parked|done|blocked|paused|failed|unknown> · source: <run-step|pane|status-log|remote-endpoint|none> · <detail>
-#
-# For a full (non-coarse) run-step read whose active status is running/fixing
-# AND whose own active_steps[] table reports fresh logging, <detail> also
-# carries the pipeline's `activity: recent` verdict (nm_run_activity_is_recent)
-# - the single fact bin/fm-classify-lib.sh's crew_run_activity_recent consults
-# so the watcher's wedge timer can judge a long-quiet pane by the run's own
-# recency instead of pane idle time alone. It is a POSITIVE fact only: it is
-# absent for every other case (no run, a coarse ledger-only read, a
-# non-running/fixing status, a run sampled between two steps, or a step that
-# has genuinely gone quiet), and callers must read that absence as no recency
-# evidence rather than as a claim that the run has stopped logging.
 #
 # Logic, in order:
 #   1. Resolve worktree + backend target + kind from state/<id>.meta. A meta
@@ -105,23 +96,31 @@
 #      The run-step is AUTHORITATIVE: running/fixing -> working, ci -> working
 #      (the id-addressed detail read carries step words the overview does not),
 #      awaiting_approval/fix_review -> parked (with gate findings), terminal
-#      passed/checks-passed/passed-with-override -> done, failed/cancelled ->
-#      failed. The outcome NAME is not proof of a merge: passed and
-#      passed-with-override read their PR detail off a live forge check
-#      (passed_pr_detail) rather than asserting merged/closed from the
-#      outcome alone (2026-09-20 firstmate-lint-debt-blocking-prs
-#      incident). An unmapped terminal outcome still reads unknown rather than
-#      a guessed done/failed. EXCEPT: while the active step is ci, `axi
-#      status` alone cannot tell "still waiting on checks" from "checks green,
-#      waiting on merge" (see nm_ci_checks_state) -
-#      a ci-step log-tail check overrides working -> done once checks read
+#      passed/checks-passed/passed-with-override/passed-with-skips -> done,
+#      failed -> failed, cancelled -> unknown (no verdict unless the green
+#      delivery safeguard below applies). A cancelled outcome takes precedence
+#      over an interrupted step's failed status or outstanding gate findings;
+#      it does not rewrite historical events or backlog records.
+#      passed-with-override is a passing outcome
+#      carrying an explicitly approved Test or CI exception (no-mistakes' own
+#      vocabulary), read identically to a clean passed. passed-with-skips is
+#      also a passing outcome (publication or CI verification was
+#      automatically skipped, no-mistakes' own vocabulary), read as done but
+#      with that skip kept visible in the detail, unlike a clean passed.
+#      EXCEPT: while
+#      the active step is ci, `axi status` alone cannot tell "still waiting on
+#      checks" from "checks green, waiting on merge" (see nm_ci_checks_state) -
+#      a check of the full ci-step log overrides working -> done once checks read
 #      green, so a green PR is never silently read as still-validating. And a
-#      terminal FAILED run whose only failure is the ci monitor step, after
-#      every substantive step completed and the ci log's last marker reads
-#      checks green, also reads done (held-for-merge), never failed: a monitor
-#      whose only remaining job is to observe a human merge decision must not
+#      terminal failed or cancelled run whose only unfinished step is the ci
+#      monitor, after every substantive step completed (an explicitly skipped
+#      rebase is allowed) and the ci log's last marker reads checks green,
+#      also reads done only when the bounded forge read confirms the PR is
+#      open (held-for-merge) or merged. Closed, missing, unreadable, or skipped
+#      forge evidence leaves the original failed or unknown classification.
+#      A monitor whose only remaining job is to observe a merge decision must not
 #      convert the absence of that decision into a failure verdict
-#      (nm_failed_run_is_green_held_ci; 2026-09-05 jr-voice incident). In the
+#      (nm_reclassify_failed_run_as_held_green). In the
 #      coarse runs-ledger fallback (no steps table, no ci log), a terminal
 #      FAILED record whose daemon an explicit probe proves down reads unknown,
 #      never failed: an instrument failure must not read as work failure
@@ -146,13 +145,9 @@
 #      to reattach, not by escalating.
 #   4. No current run for this crew (pre-validation, uninitialized repository,
 #      proven historical head, or kind=scout): fall back to the recorded
-#      backend's pane busy state, then the status log's own current declared
-#      state (fm-classify-lib.sh's status_current_state_line): the newest line
-#      whose verb is a real state (working/done/failed/paused/captain-held, or
-#      a still-open needs-decision/blocked). A trailing resolved:/note:/other
-#      non-state line - or a needs-decision/blocked entry one of them already
-#      closed - is skipped rather than read as, or allowed to blank out, the
-#      crew's current state.
+#      backend's pane busy state, then the resolved status declaration
+#      when its verb maps to a recognized run-state. Decision-only events such as
+#      `resolved` never become current state or detail.
 #   5. Missing meta or torn-down worktree: report unknown · none. If no run is
 #      attributed to this crew, a dead endpoint also reports unknown · none rather
 #      than trusting a stale status log. On tmux and herdr, which own a
@@ -186,6 +181,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
+# shellcheck source=bin/fm-dod-lib.sh
+. "$SCRIPT_DIR/fm-dod-lib.sh"
 
 ID=${1:-}
 [ -n "$ID" ] || { echo "usage: fm-crew-state.sh <id>" >&2; exit 2; }
@@ -241,14 +238,20 @@ fi
 # the deliberate-external-wait verb (fm-classify-lib.sh's FM_CLASSIFY_PAUSED_VERB):
 # a crew with no active run and an idle pane that declared a known external wait
 # reports `paused` distinctly, so a supervisor reading this sees a declared pause
-# and its reason rather than a wedge-suspect idle. A verified captain-held
-# transfer is the other declared wait - fm-classify-lib.sh's shared
-# status_is_paused_or_captain_held already gives the two one cadence - so it maps
-# to the same `paused` state rather than a seventh one no consumer parses; the
-# detail carried alongside is the hold's own line, so the reason a reader sees
-# names the hold instead of an external dependency.
+# and its reason rather than a wedge-suspect idle.
+# A ship `done:` is not current-state done while bin/fm-dod-lib.sh refuses the
+# named-head reachability gate: that claim is blocked so a disposable copy is
+# not treated as finished-and-safe.
+emit_ship_status_done() {  # [extra-detail]
+  local extra=${1:-} reason
+  if reason=$(fm_dod_accept_ship_done "$KIND" "$(meta_value mode)" "$WT" "$(meta_value project)" "$LOG_LINE" "$STATE" "$ID" "$META"); then
+    emit "done" status-log "$(status_line_note "$LOG_LINE")${extra:+${SEP}$extra}"
+  fi
+  emit blocked status-log "$reason"
+}
+
 map_log_state() {  # <line>
-  if status_is_paused_or_captain_held "$1"; then
+  if status_is_paused "$1"; then
     echo paused
     return
   fi
@@ -264,22 +267,6 @@ map_log_state() {  # <line>
 
 LOG_LINE=$(status_current_line "$LOG" "$KIND")
 LOG_VERB=$(status_line_verb "$LOG_LINE")
-# status_current_line answers in the library's own three-tier order. A declared
-# wait (paused:/captain-held:) wins FIRST and unconditionally, even over a
-# keyed decision the fold still holds open earlier in the log: a crew that
-# moved from an unresolved escalation to a declared pause is doing the pause
-# now. Only then does its open-decision fold (fm-classify-lib.sh's
-# status_open_decisions) win: a still-open keyed blocked/needs-decision
-# survives an unrelated later working:/done:/failed: declaration, so a crew
-# moving on to other work never buries a decision it never closed. Only with
-# no declared wait and nothing open does it report status_current_state_line's
-# own read: the newest line whose verb is a real state, skipping any
-# resolved:/note:/other non-state line, and keeping a bare done:/failed: only
-# when it is ALSO the log's literal newest recognized event. The fallback
-# source below and the remote secondmate branch both reuse this SAME
-# already-computed LOG_LINE rather than re-deriving it, never the bare last
-# line, so a decision- or note-closing append can never blank out or
-# masquerade as current state.
 
 # --- remote secondmate: the true source is the remote endpoint ---------------
 # A remote mate's recorded worktree and backend target live on its own host, so
@@ -301,7 +288,10 @@ if [ -n "$REMOTE_HOST" ]; then
   case "$REMOTE_STATE" in
     alive)
       if [ -n "$LOG_VERB" ]; then
-        emit "$(map_log_state "$LOG_LINE")" status-log "$(status_line_note "$LOG_LINE")${SEP}remote endpoint alive on $REMOTE_HOST"
+        LOG_STATE=$(map_log_state "$LOG_LINE")
+        if [ "$LOG_STATE" != unknown ]; then
+          emit "$LOG_STATE" status-log "$(status_line_note "$LOG_LINE")${SEP}remote endpoint alive on $REMOTE_HOST"
+        fi
       fi
       emit unknown remote-endpoint "alive on $REMOTE_HOST (an idle secondmate is healthy)"
       ;;
@@ -403,12 +393,25 @@ mr_read_record_bounded() {  # <host> <path> <number>
   FM_PR_RECORD_MERGED=$merged
 }
 
-# <label> lets a passed-with-override caller keep its own waiver-noting prefix
-# (e.g. "run passed (approved past a waived check)") instead of this
-# function's plain-passed default, while sharing one live-forge PR-state read
-# for both outcomes.
+change_read_record_bounded() {  # <host> <number>
+  local record state merged
+  # shellcheck disable=SC2016  # The inner script expands after bash -c receives positional args.
+  if ! record=$(fm_run_timed 5 bash -c '
+    . "$1"
+    fm_pr_gerrit_read_record "$2" "$3" || exit 1
+    printf "state=%s\nmerged=%s\n" "$FM_PR_RECORD_STATE" "$FM_PR_RECORD_MERGED"
+  ' _ "$SCRIPT_DIR/fm-pr-lib.sh" "$1" "$2" 2>/dev/null); then
+    return 1
+  fi
+  state=$(printf '%s\n' "$record" | sed -n 's/^state=//p' | head -1)
+  merged=$(printf '%s\n' "$record" | sed -n 's/^merged=//p' | head -1)
+  [ -n "$state" ] || return 1
+  [ "$merged" = true ] || [ "$merged" = false ] || return 1
+  FM_PR_RECORD_STATE=$state
+  FM_PR_RECORD_MERGED=$merged
+}
+
 passed_pr_detail() {
-  local label=${1:-run passed}
   local provider url host path number owner repo raw_pr state_lc
   raw_pr=$(strip_quotes "$(nm_field pr)")
   if fm_pr_url_parse "$raw_pr"; then
@@ -424,7 +427,7 @@ passed_pr_detail() {
     path=$FM_PR_META_PATH
     number=$FM_PR_META_NUMBER
   else
-    printf '%s: PR state unknown (no PR identity)' "$label"
+    printf 'run passed: PR state unknown (no PR identity)'
     return
   fi
   if fm_pr_poll_retirement_receipt_valid "$STATE" "$ID" \
@@ -433,11 +436,11 @@ passed_pr_detail() {
     && [ "$FM_PR_RETIRE_HOST" = "$host" ] \
     && [ "$FM_PR_RETIRE_PATH" = "$path" ] \
     && [ "$FM_PR_RETIRE_NUMBER" = "$number" ]; then
-    printf '%s: PR merged' "$label"
+    printf 'run passed: PR merged'
     return
   fi
   if [ "${FM_CREW_STATE_NO_FORGE:-0}" = 1 ]; then
-    printf '%s: PR state unknown (forge read skipped)' "$label"
+    printf 'run passed: PR state unknown (forge read skipped)'
     return
   fi
 
@@ -446,38 +449,55 @@ passed_pr_detail() {
       owner=${path%%/*}
       repo=${path#*/}
       if ! pr_read_record_bounded "$owner" "$repo" "$number"; then
-        printf '%s: PR state unknown (unreadable)' "$label"
+        printf 'run passed: PR state unknown (unreadable)'
         return
       fi
       if [ "$FM_PR_RECORD_MERGED" = true ]; then
-        printf '%s: PR merged' "$label"
+        printf 'run passed: PR merged'
         return
       fi
       state_lc=$(printf '%s' "$FM_PR_RECORD_STATE" | tr '[:upper:]' '[:lower:]')
       case "$state_lc" in
-        open)   printf '%s: PR open' "$label" ;;
-        closed) printf '%s: PR closed' "$label" ;;
-        *)      printf '%s: PR state %s' "$label" "$state_lc" ;;
+        open)   printf 'run passed: PR open' ;;
+        closed) printf 'run passed: PR closed' ;;
+        *)      printf 'run passed: PR state %s' "$state_lc" ;;
       esac
       ;;
     gitlab)
       if ! mr_read_record_bounded "$host" "$path" "$number"; then
-        printf '%s: PR state unknown (unreadable)' "$label"
+        printf 'run passed: PR state unknown (unreadable)'
         return
       fi
       if [ "$FM_PR_RECORD_MERGED" = true ]; then
-        printf '%s: PR merged' "$label"
+        printf 'run passed: PR merged'
         return
       fi
       state_lc=$(printf '%s' "$FM_PR_RECORD_STATE" | tr '[:upper:]' '[:lower:]')
       case "$state_lc" in
-        open|opened) printf '%s: PR open' "$label" ;;
-        closed)      printf '%s: PR closed' "$label" ;;
-        *)           printf '%s: PR state %s' "$label" "$state_lc" ;;
+        open|opened) printf 'run passed: PR open' ;;
+        closed)      printf 'run passed: PR closed' ;;
+        *)           printf 'run passed: PR state %s' "$state_lc" ;;
+      esac
+      ;;
+    gerrit)
+      if ! change_read_record_bounded "$host" "$number"; then
+        printf 'run passed: PR state unknown (unreadable)'
+        return
+      fi
+      if [ "$FM_PR_RECORD_MERGED" = true ]; then
+        printf 'run passed: PR merged'
+        return
+      fi
+      # Gerrit spells an open change NEW and a closed one ABANDONED.
+      state_lc=$(printf '%s' "$FM_PR_RECORD_STATE" | tr '[:upper:]' '[:lower:]')
+      case "$state_lc" in
+        new)       printf 'run passed: PR open' ;;
+        abandoned) printf 'run passed: PR closed' ;;
+        *)         printf 'run passed: PR state %s' "$state_lc" ;;
       esac
       ;;
     *)
-      printf '%s: PR state unknown (unreadable: %s)' "$label" "$url"
+      printf 'run passed: PR state unknown (unreadable: %s)' "$url"
       ;;
   esac
 }
@@ -618,10 +638,7 @@ EOF
 }
 log_reports_ci_ready() {
   [ "$LOG_VERB" = "done" ] || return 1
-  case "$(status_line_note "$LOG_LINE")" in
-    *PR*"checks green"*|*"checks green"*PR*) return 0 ;;
-    *) return 1 ;;
-  esac
+  fm_dod_note_reports_ci_ready "$(status_line_note "$LOG_LINE")"
 }
 
 # 0 when a status-log line reports positive daemon socket failure rather than a
@@ -697,12 +714,12 @@ nm_run_activity_is_recent() {
   ! printf '%s\n' "$rows" | grep -q 'quiet'
 }
 
-# 0 when a terminal FAILED run's only failure is the ci monitor step and the
+# 0 when a terminal failed or cancelled run ended at the ci monitor and the
 # ci log's last recognized marker reads checks green. Requires the exact
 # shape, all on positive evidence: a steps[] table where every step completed
-# except exactly `ci` failed (any other non-completed status, or a second
-# failed step, disqualifies), plus nm_ci_checks_state=green (a genuinely red
-# check, or an unreadable ci log, keeps the failure a failure). This is the
+# except `ci` failed/cancelled and an optional skipped rebase (any other
+# non-completed step disqualifies), plus nm_ci_checks_state=green (a genuinely red
+# check, or an unreadable ci log, cannot prove delivery). This is the
 # orphaned-CI-monitor gap (2026-09-05 jr-voice): a run held for a captain
 # merge decision polls until the shared daemon restarts under it and marks
 # the run failed, although GitHub's own check state - the actual shippability
@@ -719,7 +736,11 @@ nm_failed_run_is_green_held_ci() {
     status=$(strip_quotes "$(trim "${rest%%,*}")")
     case "$status" in
       completed) continue ;;
-      failed)
+      skipped)
+        [ "$step" = rebase ] || return 1
+        continue
+        ;;
+      failed|cancelled)
         [ "$step" = ci ] || return 1
         saw_ci_failed=1
         continue
@@ -733,14 +754,18 @@ EOF
   [ "$(nm_ci_checks_state)" = green ]
 }
 
-# Reclassify a terminal failed run as done (held-for-merge) when
-# nm_failed_run_is_green_held_ci matches, surfacing the run's PR URL so the
-# supervisor reads the concrete review-ready outcome instead of a failure.
+# Apply the header's terminal-delivery safeguard. The earlier green log cannot
+# prove current PR disposition: a subsequent close can itself end the monitor.
 nm_reclassify_failed_run_as_held_green() {
   nm_failed_run_is_green_held_ci || return 1
+  local disposition pr_url
+  disposition=$(passed_pr_detail)
+  case "$disposition" in
+    "run passed: PR open") RUN_DETAIL="checks green: PR held for merge (ci monitor ended)" ;;
+    "run passed: PR merged") RUN_DETAIL="checks green: PR merged (ci monitor ended)" ;;
+    *) return 1 ;;
+  esac
   RUN_STATE="done"
-  RUN_DETAIL="checks green: PR held for merge (ci monitor ended)"
-  local pr_url
   pr_url=$(strip_quotes "$(nm_field pr)")
   [ -n "$pr_url" ] && RUN_DETAIL="$RUN_DETAIL: $pr_url"
   return 0
@@ -815,54 +840,39 @@ nm_effective_ci_step_status() {
 }
 
 # Root cause of the PR #252 incident (2026-07): for a repo where merge is left
-# to the captain, no-mistakes' ci step (and therefore top-level status) can
-# stay "running" for the ENTIRE CI-monitor phase, including long after GitHub
-# reports every check green. Do not read outcome=passed itself as proof the PR
-# was merged: the 2026-09-20 firstmate-lint-debt-blocking-prs incident
-# observed outcome=passed reported alongside pr_state=open, so a passed
-# terminal outcome can still be holding for the captain's merge word
-# (passed_pr_detail is the one owner of deriving an honest reading from a
-# live forge check for that case). `axi status`'s steps[] table
+# to the captain, no-mistakes' ci step (and therefore top-level status/outcome)
+# stays "running" for the ENTIRE CI-monitor phase, including long after GitHub
+# reports every check green - it only reaches outcome=passed once the PR is
+# actually merged (or failed/cancelled if closed). `axi status`'s steps[] table
 # never distinguishes "still waiting on checks" from "checks green, waiting on
 # merge": both read as plain `ci,running,...`. The only place that transition is
 # recorded is the ci step's own log text, e.g. "all CI checks passed - still
-# monitoring until merged or closed", "no CI checks reported - still monitoring
-# until merged or closed", or the explicit no_ci:true declaration (verified
-# against 360+ real run logs under ~/.no-mistakes/logs/*/ci.log on the installed
-# v1.32.2 binary, including the actual PR #252 run). Reads the ci step's log tail
-# via `axi logs` and scans it for the MOST RECENT recognized readiness marker
-# (the log is append-only/chronological, so the last match is current): green
-# with nothing red after it means CI is green right now, still only waiting on
-# merge/close. A no_ci:true declaration remains green across a base-advance
-# rearm because that repository has no checks to re-run; a later real pending,
-# failure, or issue marker still wins.
+# monitoring until merged or closed", "no CI checks reported - still
+# monitoring until merged or closed", or the explicit no_ci:true declaration
+# (verified against 360+ real run logs under
+# ~/.no-mistakes/logs/*/ci.log on the installed v1.32.2 binary, including the
+# actual PR #252 run). Reads the ci step's log via `axi logs --full` and scans
+# it for the MOST RECENT recognized marker (the log is append-only/chronological,
+# so the last match is current): green with nothing red after it means CI is
+# green right now, still only waiting on merge/close.
+# "base branch advanced (..), re-arming CI monitor timeout" is deliberately NOT
+# a marker: the monitor logs a checks state only when that state changes, and a
+# base advance re-arms only its idle timeout without clearing readiness, so the
+# green marker before it is still current (no-mistakes' own ci-log parser
+# ignores the line the same way, v1.32.2 through v1.79.0). Reading it as
+# not-ready held a green PR at working for as long as main kept advancing.
 nm_ci_checks_state() {
-  local run_id log_tail marker line declared_no_ci
+  local run_id ci_log marker
   run_id=$(strip_quotes "$(nm_field id)")
   [ -n "$run_id" ] || { printf 'unknown'; return; }
-  log_tail=$(nm_run axi logs --step ci --run "$run_id") || true
-  [ -n "$log_tail" ] || { printf 'unknown'; return; }
-  marker=''
-  declared_no_ci=0
-  while IFS= read -r line; do
-    case "$line" in
-      *"repository declares no CI (no_ci: true) - treating as all checks passed - still monitoring until merged or closed"*)
-        marker=$line
-        declared_no_ci=1
-        ;;
-      *"base branch advanced"*"re-arming CI monitor timeout"*)
-        [ "$declared_no_ci" = 1 ] || marker=$line
-        ;;
-      *"CI checks passed"*|*"no CI checks reported - still monitoring"*|*"no CI checks reported yet"*|*"checks failed"*|*"issues detected"*|*"CI checks running"*)
-        marker=$line
-        ;;
-    esac
-  done <<EOF
-$log_tail
-EOF
+  ci_log=$(nm_run axi logs --step ci --run "$run_id" --full) || true
+  [ -n "$ci_log" ] || { printf 'unknown'; return; }
+  marker=$(printf '%s\n' "$ci_log" \
+    | grep -E 'CI checks passed|repository declares no CI \(no_ci: true\).*checks passed|no CI checks reported - still monitoring|no CI checks reported yet|checks failed|issues detected|CI checks running' \
+    | tail -1)
   case "$marker" in
-    *"checks passed"*|*"no CI checks reported - still monitoring"*) printf 'green' ;;
-    *"no CI checks reported yet"*|*"checks failed"*|*"issues detected"*|*"CI checks running"*|*"base branch advanced"*"re-arming CI monitor timeout"*) printf 'not-ready' ;;
+    *"checks passed"*|*"declares no CI (no_ci: true)"*|*"no CI checks reported - still monitoring"*) printf 'green' ;;
+    *"no CI checks reported yet"*|*"checks failed"*|*"issues detected"*|*"CI checks running"*) printf 'not-ready' ;;
     *) printf 'unknown' ;;
   esac
 }
@@ -1064,7 +1074,7 @@ if [ "$HAVE_RUN" = 1 ]; then
         else
           RUN_STATE=failed; RUN_DETAIL="run failed"
         fi ;;
-      cancelled) RUN_STATE=failed;  RUN_DETAIL="run cancelled" ;;
+      cancelled) RUN_STATE=unknown; RUN_DETAIL="run cancelled: no verdict" ;;
       *)         RUN_STATE=unknown; RUN_DETAIL="runs list status: $COARSE_STATUS" ;;
     esac
   else
@@ -1076,25 +1086,19 @@ if [ "$HAVE_RUN" = 1 ]; then
     has_gate=0
     nm_has_gate && has_gate=1
 
-    # 2026-09-20 audit of every arm below: checks-passed's "PR ready for
-    # review" and the failed/cancelled arms never assert a landing, so they
-    # stay as they were; only passed and passed-with-override previously
-    # overclaimed a merge from the outcome name alone. The coarse
-    # ledger-fallback case above and the no-outcome status fallback below
-    # were audited the same way and likewise left unchanged: "run
-    # completed"/"ci running"/"validating (...)" assert nothing about a merge.
     if [ -n "$outcome" ]; then
       case "$outcome" in
-        passed)        RUN_STATE="done"; RUN_DETAIL=$(passed_pr_detail) ;;
+        passed|passed-with-override) RUN_STATE="done"; RUN_DETAIL=$(passed_pr_detail) ;;
+        passed-with-skips) RUN_STATE="done"; RUN_DETAIL="$(passed_pr_detail) (publication/CI verification skipped)" ;;
         checks-passed) RUN_STATE="done"; RUN_DETAIL="checks green: PR ready for review" ;;
-        passed-with-override)
-          RUN_STATE="done"
-          RUN_DETAIL=$(passed_pr_detail "run passed (approved past a waived check)") ;;
         failed)
           if nm_reclassify_failed_run_as_held_green; then :; else
             RUN_STATE=failed; RUN_DETAIL="run failed"
           fi ;;
-        cancelled)     RUN_STATE=failed; RUN_DETAIL="run cancelled" ;;
+        cancelled)
+          if nm_reclassify_failed_run_as_held_green; then :; else
+            RUN_STATE=unknown; RUN_DETAIL="run cancelled: no verdict"
+          fi ;;
         *)             RUN_STATE=unknown; RUN_DETAIL="outcome: $outcome" ;;
       esac
     elif [ -n "$awaiting" ] || [ "$status" = awaiting_approval ] || [ "$status" = fix_review ] || [ -n "$gate_status" ] || [ "$has_gate" = 1 ]; then
@@ -1119,13 +1123,8 @@ if [ "$HAVE_RUN" = 1 ]; then
       case "$status" in
         ci)             RUN_STATE=working; RUN_DETAIL="ci running" ;;
         running|fixing)
-          RUN_STATE=working; RUN_DETAIL="validating ($status)"
-          # Surface the pipeline's own recency verdict for the wedge timer
-          # (bin/fm-watch.sh's crew_run_activity_recent, bin/fm-classify-lib.sh):
-          # a quiet pane is not a wedge while the run itself is still logging,
-          # but a run that stopped logging must not vouch for it forever. Only
-          # the positive fact is emitted; saying nothing is the honest reading
-          # of "no active_steps[] table to judge by".
+          RUN_STATE=working
+          RUN_DETAIL="validating ($status)"
           if nm_run_activity_is_recent; then
             RUN_DETAIL="$RUN_DETAIL${SEP}activity: recent"
           fi
@@ -1135,7 +1134,10 @@ if [ "$HAVE_RUN" = 1 ]; then
           if nm_reclassify_failed_run_as_held_green; then :; else
             RUN_STATE=failed; RUN_DETAIL="run failed"
           fi ;;
-        cancelled)      RUN_STATE=failed;  RUN_DETAIL="run cancelled" ;;
+        cancelled)
+          if nm_reclassify_failed_run_as_held_green; then :; else
+            RUN_STATE=unknown; RUN_DETAIL="run cancelled: no verdict"
+          fi ;;
         "")             RUN_STATE=working; RUN_DETAIL="run active" ;;
         *)              RUN_STATE=working; RUN_DETAIL="run active ($status)" ;;
       esac
@@ -1147,6 +1149,10 @@ if [ "$HAVE_RUN" = 1 ]; then
             if [ "$CI_LOG_STATE" = green ]; then
               RUN_STATE="done"
               RUN_DETAIL="checks green: PR ready for review (still monitoring for merge/close)"
+              # The run's own PR URL makes this reading actionable even when
+              # the worker never reported it and no pr= was recorded.
+              ci_pr_url=$(strip_quotes "$(nm_field pr)")
+              [ -z "$ci_pr_url" ] || RUN_DETAIL="$RUN_DETAIL: $ci_pr_url"
             fi
             ;;
           fixing)
@@ -1159,7 +1165,7 @@ if [ "$HAVE_RUN" = 1 ]; then
 
   if [ "$RUN_STATE" = working ] && log_reports_ci_ready; then
     if [ "$RUN_SOURCE" = coarse ]; then
-      emit "done" status-log "$(status_line_note "$LOG_LINE")${SEP}run still monitoring PR"
+      emit_ship_status_done "run still monitoring PR"
     fi
     [ -n "$CI_STEP_STATUS" ] || CI_STEP_STATUS=$(nm_effective_ci_step_status)
     if [ "$RUN_STATUS" = fixing ]; then
@@ -1170,7 +1176,7 @@ if [ "$HAVE_RUN" = 1 ]; then
       CI_LOG_STATE=not-ready
     fi
     if [ "$CI_LOG_STATE" != not-ready ]; then
-      emit "done" status-log "$(status_line_note "$LOG_LINE")${SEP}run still monitoring PR"
+      emit_ship_status_done "run still monitoring PR"
     fi
   fi
 
@@ -1298,39 +1304,24 @@ if [ "$KIND" != secondmate ]; then
   esac
 fi
 
-# Fall back to the status log's genuine CURRENT declared state, never its bare
-# last line: the SAME already-computed LOG_LINE the run-step reconciliation
-# above read, not a fresh re-derivation. Reusing it (rather than calling
-# status_current_state_line directly here) keeps this fallback's verdict
-# consistent with status_current_line's own three-tier priority: a declared
-# paused:/captain-held: wait wins first, ahead of the fold; then a still-open
-# keyed needs-decision/blocked survives an unrelated LATER
-# working:/done:/failed: declaration elsewhere in the log, which a bare
-# status_current_state_line read would not preserve - it stops at the first
-# state-bearing line walking backward, with no awareness of a different,
-# still-open key underneath it. Only with no declared wait and nothing open
-# does LOG_LINE report status_current_state_line's own read: the newest line
-# whose verb is a real state (working/done/failed/paused/captain-held, or a
-# needs-decision/blocked the fold could not track by key - a malformed slug or
-# a reserved key whose transition the fold rejects, which is precisely why it
-# is not already open above), skipping any trailing resolved:, informational
-# note:, or other unrecognized verb - never read as, and never allowed to
-# blank out, the current state. A bare done:/failed: is dropped there unless
-# it is ALSO the log's literal newest recognized event, which is what actually
-# leaves LOG_LINE empty in the common done: + trailing resolved: case. That
-# lets a just-resolved idle crew (typically a secondmate, which has no busy
-# check above) fall through to the idle default instead of rendering `unknown`
-# with stale resolution prose as `doing`, and lets a still-declared paused:
-# survive a later informational note: instead of reading as a fresh wedge.
-# map_log_state is still the single owner of the verb->state mapping
-# (including the configurable paused verb). A decision-closing event such as
-# resolved: is NOT a state, and status_current_line reports no such line at
-# all: LOG_LINE is therefore either EMPTY - falling through to the
-# recovery-grade `unknown/none` default below rather than surfacing resolution
-# prose as if it were the crew's `doing` - or a line whose verb map_log_state
-# already maps to a real state, which the emptiness test alone distinguishes.
+# Fall back to the resolved status declaration, but ONLY when its verb maps to a real
+# run-state. A decision-closing event - resolved: (fm-classify-lib.sh's
+# FM_CLASSIFY_RESOLVE_VERB), and any future decision-only sibling - is NOT a state:
+# it exists solely to CLOSE a keyed decision in the durable fold, so a trailing
+# resolved: must never become the current state or leak its resolution prose as the
+# detail. Skipping it lets a just-resolved idle crew (typically a secondmate, which
+# has no busy check above) fall through to the idle default instead of rendering
+# `unknown` with the resolution note as `doing`. map_log_state is the single owner of
+# the verb->state mapping (including the configurable paused verb), so reusing its
+# `unknown` verdict as the "not a state" test needs no second verb list here.
 if [ -n "$LOG_VERB" ]; then
-  emit "$(map_log_state "$LOG_LINE")" status-log "$(status_line_note "$LOG_LINE")"
+  if [ "$LOG_VERB" = "done" ]; then
+    emit_ship_status_done
+  fi
+  LOG_STATE=$(map_log_state "$LOG_LINE")
+  if [ "$LOG_STATE" != unknown ]; then
+    emit "$LOG_STATE" status-log "$(status_line_note "$LOG_LINE")"
+  fi
 fi
 
 emit unknown none "no current-state source available"

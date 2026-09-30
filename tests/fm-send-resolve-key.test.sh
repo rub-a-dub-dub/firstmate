@@ -156,37 +156,6 @@ test_answer_send_closes_open_decision() {
 # session that wrote it, while any other writer's later line on the same task
 # still must. Both directions are read through the production seen-signature
 # gate the watcher's signal scan consumes (bin/fm-wake-lib.sh).
-# The OPEN DECISIONS footer names "bin/fm-send.sh <task> --resolve-key <key>
-# <answer>" as the one documented way to close a listed row. An unkeyed
-# blocked/needs-decision line folds under the shared "default" bucket, and the
-# drain now prints that key on the row (fm-wake-drain.sh) instead of hiding
-# it, so the footer's own command is literally fillable and, end to end
-# through the real send, actually closes the row - proving the footer
-# describes an action that applies to every row it shows, not just keyed ones.
-test_default_key_is_answerable_and_row_shows_its_key() {
-  local dir fb log home rc out
-  dir="$TMP_ROOT/default-key"; mkdir -p "$dir"
-  fb=$(make_stubs "$dir"); log="$dir/send.log"
-  home=$(setup_home default-key)
-  fm_write_meta "$home/state/t1.meta" "window=sess:fm-t1" "kind=ship"
-  printf 'blocked: waiting on credentials\n' > "$home/state/t1.status"
-
-  out=$(drain_out "$home")
-  printf '%s' "$out" | grep -F 't1 [key=default] blocked: waiting on credentials' >/dev/null \
-    || fail "precondition: the unkeyed row should print its key as default: $out"
-
-  run_send "$fb" "$home" "$log" t1 --resolve-key default "credentials rotated"; rc=$?
-  expect_code 0 "$rc" "an answer send with --resolve-key default should succeed"
-  grep -E '^resolved \[key=default\] \[at=[0-9]+\]: answered: credentials rotated$' "$home/state/t1.status" >/dev/null \
-    || fail "fm-send did not append the closing resolved line:"$'\n'"$(cat "$home/state/t1.status")"
-
-  out=$(drain_out "$home")
-  if printf '%s' "$out" | grep -F 'OPEN DECISIONS' >/dev/null; then
-    fail "the answered default-key decision still lists as open: $out"
-  fi
-  pass "fm-send --resolve-key default: the unkeyed row shows its key and the footer's own command closes it"
-}
-
 test_answer_close_is_self_announced() {
   local dir fb log home rc
   dir="$TMP_ROOT/self-announced"; mkdir -p "$dir"
@@ -216,6 +185,63 @@ test_answer_close_is_self_announced() {
     fail "a later worker line after the self-announced close was swallowed"
   fi
   pass "fm-send --resolve-key: the close never re-wakes its own home, later lines still do"
+}
+
+# Two distinct --resolve-key answers must each stay quiet even when the seen
+# marker does NOT cover them. An in-flight watcher classification that lands
+# after the first answer regresses the classified offset behind that answer's
+# bytes, so the marker no longer vouches for them; only the home-appends ledger
+# does. Without the ledger the second scan re-wakes this home over its own
+# close. A later worker line on the same task still wakes.
+test_separate_resolve_key_answers_do_not_rewake() {
+  local dir fb log home rc status pre_answer ident
+  dir="$TMP_ROOT/separate-answers"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"
+  home=$(setup_home separate-answers)
+  status="$home/state/t7.status"
+  fm_write_meta "$home/state/t7.meta" "window=sess:fm-t7" "kind=ship"
+  {
+    printf 'needs-decision [key=budget]: approve spend?\n'
+    printf 'needs-decision [key=vendor]: pick a vendor\n'
+  } > "$status"
+  FM_STATE_OVERRIDE="$home/state" bash -c '
+    . "$1"; fm_wake_status_mark_current "$2" "$3"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$home/state" "$status" \
+    || fail "could not prime the announced baseline"
+  pre_answer=$(wc -c < "$status" | tr -d '[:space:]')
+
+  run_send "$fb" "$home" "$log" t7 --resolve-key budget "approved"; rc=$?
+  expect_code 0 "$rc" "the first answer should succeed"
+
+  # A watcher classification captured before the answer commits afterwards and
+  # rewinds the classified offset behind the answer's bytes.
+  ident=$(FM_STATE_OVERRIDE="$home/state" bash -c '
+    . "$1"; _fm_open_decisions_file_ident "$2"
+  ' _ "$ROOT/bin/fm-classify-lib.sh" "$status") \
+    || fail "could not read the status identity"
+  FM_STATE_OVERRIDE="$home/state" bash -c '
+    . "$1"; fm_wake_status_seen_commit "$2" "$3" "$4" "$5"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$home/state" "$status" "$pre_answer" "$ident" \
+    || fail "could not replay the stale watcher classification"
+  FM_STATE_OVERRIDE="$home/state" bash -c '
+    . "$1"; fm_wake_signal_seen_current "$2" "$3"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$home/state" "$status" \
+    || fail "the first --resolve-key answer was left to re-wake this home"
+
+  run_send "$fb" "$home" "$log" t7 --resolve-key vendor "acme"; rc=$?
+  expect_code 0 "$rc" "the second answer should succeed"
+  FM_STATE_OVERRIDE="$home/state" bash -c '
+    . "$1"; fm_wake_signal_seen_current "$2" "$3"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$home/state" "$status" \
+    || fail "the second --resolve-key answer was left to re-wake this home"
+
+  printf 'blocked: need staging credentials\n' >> "$status"
+  if FM_STATE_OVERRIDE="$home/state" bash -c '
+    . "$1"; fm_wake_signal_seen_current "$2" "$3"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$home/state" "$status"; then
+    fail "a later worker line after two answers was swallowed"
+  fi
+  pass "fm-send --resolve-key: separate answers do not each re-wake; later lines still do"
 }
 
 # The reported failure behind issue #2109: a worker that put the colon first
@@ -855,8 +881,7 @@ test_decision_answer_partition_relocates_under_the_record() {
     || fail "the branch's blocker answer did not reach the worker's inbox"
 
   # Under the record: the same decision answer is sent and closes the key.
-  FM_HOME="$home" "$ROOT/bin/fm-afk-contract.sh" propose >/dev/null || fail "away propose failed"
-  FM_HOME="$home" "$ROOT/bin/fm-afk-contract.sh" confirm >/dev/null || fail "away confirm failed"
+  FM_HOME="$home" "$ROOT/bin/fm-afk-contract.sh" enter >/dev/null || fail "away entry failed"
   out=$(env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
     FM_SUPERVISION_ACTOR=branch "$SEND" t1 --resolve-key api-shape "go with REST" 2>&1); rc=$?
   expect_code 0 "$rc" "under the away-posture record the branch's decision answer must be sent: $out"
@@ -881,8 +906,8 @@ test_decision_answer_partition_relocates_under_the_record() {
 }
 
 test_answer_send_closes_open_decision
-test_default_key_is_answerable_and_row_shows_its_key
 test_answer_close_is_self_announced
+test_separate_resolve_key_answers_do_not_rewake
 test_colon_first_key_position_is_answerable
 test_answer_starts_work_never_orphans
 test_routine_steer_never_closes

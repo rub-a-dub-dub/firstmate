@@ -46,9 +46,8 @@
 # because a resend-inviting status there would duplicate a delivered
 # instruction. There is no delivered-unconfirmed
 # outcome on this plane: "did the doorbell land" is no longer the question -
-# "did the message reach the worker" is, and that is answered asynchronously
-# for an ordinary record by the worker's acknowledgement move into handled/,
-# which confirms receipt and never waits on the work the record asks for. The
+# "was the message acted on" is, and that is answered asynchronously for an
+# ordinary record by the worker's acknowledgement move into handled/. The
 # watcher re-rings an unacknowledged message while its endpoint remains
 # available, escalates after the bounded ladder, and instead routes a positively
 # dead or missing endpoint directly to recovery without typing. An explicit
@@ -153,16 +152,14 @@
 # change ordinary sends.
 #
 # Decision closure (answerer-closes): pass --resolve-key <key> (repeatable,
-# before the message) when this send answers an open needs-decision: or
-# blocked: record in the target task's state/<id>.status - the record's own
-# [key=<slug>] when it has one, or "default" for an unkeyed record, which
-# folds under that shared bucket and which the OPEN DECISIONS row prints like
-# any other key. fm-send itself appends the closing resolved line to that
-# status file, so the captain-facing OPEN DECISIONS record closes at answer
-# time and never depends on the busy worker writing a matching resolved line.
-# Ordinary keys close with "resolved [key=<key>]: answered: <capped excerpt>".
-# A reserved key (pending-reply-* today; bin/fm-classify-lib.sh's
-# reserved-key guard) is
+# before the message) when this send answers an open keyed needs-decision: or
+# blocked: record in the target task's state/<id>.status. fm-send itself
+# appends the closing resolved line to that status file, so the captain-facing
+# OPEN DECISIONS record closes at answer time and never depends on the busy
+# worker writing a matching resolved line. For ordinary keys the payload is
+# "resolved [key=<key>]: answered: <capped excerpt>" before the emission-time
+# handling owned by bin/fm-classify-lib.sh. A reserved key
+# (pending-reply-* today; bin/fm-classify-lib.sh's reserved-key guard) is
 # closed with the owning library's vocabulary note
 # (fm_pending_reply_close_note_for_key / fm_pending_reply_resolved_note), so
 # the fold actually drops it; a bare answered: note is not a reserved-key
@@ -695,11 +692,12 @@ fi
 # command; the decision then stays open and re-surfaces, never silently lost.
 # All of one answer's closes are this home's own bookkeeping, written by the
 # very turn that answered the decisions, so they go through ONE guarded
-# self-announced append (bin/fm-wake-lib.sh) and do not wake this same session
-# again, including when this home already folded those bytes through OPEN
-# DECISIONS without a matching watcher seen marker; any concurrent foreign
-# status bytes, or a worker line the fold read but never listed, leave the
-# watcher's wake path untouched.
+# self-announced append (bin/fm-wake-lib.sh). That records the appended byte
+# range so separate --resolve-key answers do not each wake this same session,
+# including when this home already folded those bytes through OPEN DECISIONS
+# without a matching watcher seen marker; any concurrent foreign status bytes,
+# or a worker line the fold read but never listed, leave the watcher's wake
+# path untouched.
 fm_send_close_resolved_keys() { # <answer-text>
   local note=$1 k close_note append_rc still manual_close_cmd close_lines=() i=0
   note=$(printf '%s' "$note" | tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\037\177')
