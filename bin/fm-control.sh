@@ -46,24 +46,26 @@
 #              `already-stopped`, because the endpoint this verb normally
 #              preserves did not survive; a pane that turns out to be there and
 #              idle is the ordinary `already-stopped`; one whose agent is back
-#              takes the ordinary interrupt-then-exit path. A tmux `missing`
-#              always REFUSES: a task record carries no socket identity for its
-#              endpoint, so this verb cannot tell a destroyed window from one on
-#              a tmux server it cannot address, and it will not claim a stop it
+#              takes the ordinary interrupt-then-exit path. On tmux the proof is
+#              the task's pinned window NAME: no server at all on the addressed
+#              socket, or a complete scan of every session on it that never saw
+#              the name, reports `endpoint-gone`. A name found in any session,
+#              and any scan that could not complete, REFUSE - the endpoint may
+#              still hold a live agent, and this verb will not claim a stop it
 #              cannot see.
 #   relaunch   Transactionally replace the running agent with a new one, in the
 #              SAME worktree - and the same endpoint whenever that endpoint
 #              still exists - on the same or a newly chosen
 #              harness/model/effort - so switching harness is one ordinary use
 #              of this verb. When the recorded endpoint is instead proven gone -
-#              a Herdr pane or workspace destroyed in churn - the launch owner
-#              re-creates one in that worktree, in the herdr session the record
-#              names, and the task's record rebinds to it; that is how a task
-#              whose terminal was destroyed is reclaimed by the home that owns
-#              it, rather than being stranded with a parked approval nobody can
-#              answer. Reclaim is HERDR-ONLY for the reason `exit` gives above:
-#              a tmux `missing` cannot be proven absent from a task record, so
-#              it refuses.
+#              a Herdr pane or workspace destroyed in churn, or a tmux window
+#              the absence proof could not find on the addressed server - the
+#              launch owner re-creates one in that worktree, under the session
+#              the record names, and the task's record rebinds to it; that is
+#              how a task whose terminal was destroyed is reclaimed by the home
+#              that owns it, rather than being stranded with a parked approval
+#              nobody can answer. A `missing` endpoint the proof cannot call
+#              gone refuses for the reason `exit` gives above.
 #              An explicit `default` model or effort clears that
 #              axis for the replacement. With no explicit axis, a secondmate
 #              re-resolves its durable config/secondmate-harness pin (harness

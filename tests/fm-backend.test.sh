@@ -1222,11 +1222,12 @@ test_spawn_refuses_unknown_backend_flag
 
 # fm_control_endpoint_absence_verdict is the ONE owner of "may this endpoint be
 # re-created", shared by fm-control.sh's exit/relaunch verbs and the secondmate
-# liveness sweep. On tmux it may answer `gone` for exactly one read - a
-# definitively absent server, which is the reboot case - and must answer
-# `unproven` for every other read, because a task record carries no socket
-# identity and a window missing from a RUNNING server's inventory is
-# indistinguishable from one renamed, moved, or alive on another socket.
+# liveness sweep. On tmux it proves absence from the task's window NAME, which
+# is pinned at creation, and from two readings only: no server at all on the
+# addressed socket, or a COMPLETE scan of every session on it that never saw
+# the name. Finding the name in any session refuses - that is the renamed,
+# moved, or still-in-place window - and so does a scan that could not complete,
+# since a task record carries no socket identity to settle it by.
 make_absence_verdict_tmux() {  # <dir> <mode> -> echoes fakebin
   local dir=$1 mode=$2 fakebin
   fakebin="$dir/$mode-bin"

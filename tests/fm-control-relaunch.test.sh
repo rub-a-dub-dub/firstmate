@@ -1938,13 +1938,13 @@ test_tmux_refuses_a_session_that_cannot_be_found() {
   pass "tmux: an unfindable session refuses both verbs, so a live agent is never duplicated"
 }
 
-# The one tmux read that proves absence: no server at all on the socket this
-# process addresses. Every window that server held died with it, so the
+# The second tmux reading that proves absence: no server at all on the socket
+# this process addresses. Every window that server held died with it, so the
 # recorded endpoint cannot be holding an agent - the reboot case, and the
 # reason a machine restart recovers a parked task instead of stranding it.
-# Its siblings above stay refusals precisely because they are answers from a
-# RUNNING server, which cannot tell a destroyed window from a live one on a
-# socket this process cannot address.
+# The sibling directly above proves it the other way, from a complete scan of
+# a running server; the refusals below are the readings that settle nothing -
+# the pinned name found in some session, or a scan that could not complete.
 test_tmux_recovers_a_task_whose_server_is_gone() {
   local dir out rc
   dir=$(new_case tmux-noserver rl62)

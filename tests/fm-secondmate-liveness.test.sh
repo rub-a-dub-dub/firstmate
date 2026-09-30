@@ -823,8 +823,12 @@ probe_local_with_verdict() {  # <w> <verdict-line> -> "<status>|<state>|<kill>|<
     ' "$ROOT" "$w/home/state/sm1.meta"
 }
 
-test_missing_endpoint_relaunches_only_on_a_gone_verdict() {
-  local w out
+# Each of the absence owner's four answers maps to exactly one outcome here,
+# and all three of its callers must agree on them: `gone` re-creates the
+# endpoint, `dead` adopts the one that is still there with a pre-kill, `alive`
+# is a healthy mate, and anything else settles nothing and is reported.
+test_missing_endpoint_maps_every_absence_verdict_to_its_outcome() {
+  local w out verdict
   w=$(new_world probe-absence-verdict)
   add_sm_home "$w" sm1 firstmate:fm-sm1
 
@@ -850,15 +854,16 @@ test_missing_endpoint_relaunches_only_on_a_gone_verdict() {
   [ "$out" = 'relaunchable|dead|1|confirmed agent absence on existing endpoint|backend=tmux|' ] \
     || fail "a dead endpoint should be adopted with a pre-kill, got: $out"
 
-  # Only a verdict that established nothing is reported, and because the owner
+  # A verdict that established nothing is reported, and because the owner
   # carries a reason only with `unproven` the report must name the verdict
-  # itself rather than interpolating an empty clause.
-  for verdict in bogus; do
-    out=$(probe_local_with_verdict "$w" "$(printf '%s\t' "$verdict")")
-    [ "$out" = "skipped|missing|0|||recorded endpoint 'firstmate:fm-sm1' did not resolve on the first read, and the endpoint absence proof answered '$verdict', which does not authorize re-creating it" ] \
-      || fail "a '$verdict' verdict must report itself and relaunch nothing, got: $out"
-  done
-  pass "poll probe: a missing endpoint is re-created only when the absence owner proves it gone"
+  # itself rather than interpolating an empty clause. An unrecognized word is
+  # the shape a future owner answer would arrive as, so it must land here
+  # rather than in any of the acting arms above.
+  verdict=bogus
+  out=$(probe_local_with_verdict "$w" "$(printf '%s\t' "$verdict")")
+  [ "$out" = "skipped|missing|0|||recorded endpoint 'firstmate:fm-sm1' did not resolve on the first read, and the endpoint absence proof answered '$verdict', which does not authorize re-creating it" ] \
+    || fail "a '$verdict' verdict must report itself and relaunch nothing, got: $out"
+  pass "poll probe: gone re-creates, dead adopts with a pre-kill, alive is healthy, anything else reports"
 }
 
 test_sweep_reboot_with_no_server_recreates_endpoint() {
@@ -976,7 +981,7 @@ test_sweep_moved_window_found_in_another_session_refuses_relaunch() {
   [ ! -s "$log" ] || fail "a window found alive under another session must never trigger a relaunch: $(cat "$log")"
   pass "sweep: a tmux window moved into another live session refuses to relaunch"
 }
-test_missing_endpoint_relaunches_only_on_a_gone_verdict
+test_missing_endpoint_maps_every_absence_verdict_to_its_outcome
 test_tmux_agent_state_classifies
 test_tmux_agent_state_rejects_malformed_targets_before_probe
 test_herdr_agent_state_preserves_husk_classifier
