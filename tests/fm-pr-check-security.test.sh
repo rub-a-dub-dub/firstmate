@@ -3127,16 +3127,6 @@ SH
 # and byte stays put, as APFS does across a reboot. This rewrites a published
 # registration's recorded device the way that leaves it, changing no other
 # byte. <which> is both, data, or check.
-rewrite_registration_identity() {  # <registration> <drifted-data-identity> <drifted-check-identity>
-  local registration=$1 drifted_data_identity=$2 drifted_check_identity=$3
-  fm_pr_poll_registration_parse "$registration" || fail "could not parse the armed registration"
-  printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
-    fm-pr-poll-registration-v2 "$FM_PR_REG_ID" "$FM_PR_REG_PROVIDER" "$FM_PR_REG_URL" \
-    "$FM_PR_REG_HOST" "$FM_PR_REG_PATH" "$FM_PR_REG_NUMBER" \
-    "$FM_PR_REG_DATA_HASH" "$FM_PR_REG_TEMPLATE_HASH" \
-    "$drifted_data_identity" "$drifted_check_identity" > "$registration"
-}
-
 shift_registration_device() {  # <state> <id> [both|data|check]
   local state=$1 id=$2 which=${3:-both} registration device shifted tmp
   registration="$state/$id.pr-poll-registration"
@@ -3678,10 +3668,10 @@ test_retirement_check_identity_refuses_content_change() {
   pass "a content change on a retiring poll's check still refuses and names the content mismatch"
 }
 test_retirement_recovery_tolerates_device_only_drift() {
-  local dir state registration receipt data check
-  local data_identity check_identity data_inode check_inode
+  local dir state registration receipt data check shifted_device
+  local data_identity check_identity
   local drifted_data_identity drifted_check_identity
-  local rewritten_reg_hash rewritten_reg_identity rewritten_reg_inode drifted_reg_identity
+  local rewritten_reg_hash rewritten_reg_identity drifted_reg_identity
   dir=$(make_case retirement-device-only-drift)
   state="$dir/home/state"
   write_poll_meta "$state" task-a https://github.com/o/r/pull/9
@@ -3698,23 +3688,21 @@ test_retirement_recovery_tolerates_device_only_drift() {
 
   data_identity=$(fm_pr_file_identity "$data") || fail "could not read the sidecar identity"
   check_identity=$(fm_pr_file_identity "$check") || fail "could not read the check identity"
-  data_inode=${data_identity#*:}
-  check_inode=${check_identity#*:}
-  drifted_data_identity="999999:$data_inode"
-  drifted_check_identity="999999:$check_inode"
+  shifted_device=$(( $(fm_pr_file_device "$state") + 1 ))
+  drifted_data_identity="$shifted_device:${data_identity#*:}"
+  drifted_check_identity="$shifted_device:${check_identity#*:}"
 
   # Simulate a reboot between the receipt's publication and the fixed-path
   # removal that finishes it: every durable record still carries the device
   # number from before the reboot, while a fresh stat of any live file now
-  # reports the new one. Rewriting the registration changes its own bytes
-  # (it embeds the data and check identities), so its hash and identity are
-  # re-read afterward - a real reboot never touches the registration's bytes
-  # at all, only what a fresh stat of it reports.
-  rewrite_registration_identity "$registration" "$drifted_data_identity" "$drifted_check_identity"
+  # reports the new one. Shifting the registration's recorded device rewrites
+  # the registration itself, so its hash and identity are re-read afterward -
+  # a real reboot never touches the registration's bytes at all, only what a
+  # fresh stat of it reports.
+  shift_registration_device "$state" task-a
   rewritten_reg_hash=$(fm_pr_sha256 "$registration") || fail "could not hash the rewritten registration"
   rewritten_reg_identity=$(fm_pr_file_identity "$registration") || fail "could not read the rewritten registration identity"
-  rewritten_reg_inode=${rewritten_reg_identity#*:}
-  drifted_reg_identity="999999:$rewritten_reg_inode"
+  drifted_reg_identity="$shifted_device:${rewritten_reg_identity#*:}"
 
   fm_pr_poll_retirement_parse "$receipt" || fail "could not parse the published receipt"
   printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
