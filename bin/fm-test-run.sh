@@ -1572,8 +1572,13 @@ families_for_changed_path() {
       printf '%s\n' pr-forge
       ;;
     bin/fm-control-lib.sh)
+      # fm_control_endpoint_absence_verdict is the one owner of the per-backend
+      # endpoint-absence proof, and the secondmate liveness probe consults it
+      # before re-creating a missing mate's endpoint, so the secondmate family
+      # has to run for a change to this file.
       printf '%s\n' backend-dispatch
       printf '%s\n' session-bootstrap
+      printf '%s\n' secondmate
       printf '%s\n' "__script__:fm-quota-choose.test.sh"
       ;;
     bin/fm-composer-lib.sh)

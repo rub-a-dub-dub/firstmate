@@ -403,6 +403,8 @@ test_changed_dependency_selection_and_unmapped_failure() {
     "control library keeps session coverage"
   assert_contains "$listed" "tests/fm-quota-choose.test.sh" \
     "control library selects chooser coverage"
+  assert_contains "$listed" "tests/fm-secondmate-safety.test.sh" \
+    "control library selects the secondmate family that consumes its endpoint-absence proof"
   git -C "$repo" add bin/fm-control-lib.sh
   git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm control-lib-change
 

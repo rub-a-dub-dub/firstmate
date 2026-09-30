@@ -478,7 +478,7 @@ test_sweep_reports_a_missing_tmux_secondmate_instead_of_relaunching_it() {
   pass "sweep: a missing tmux secondmate is reported for reconciliation, not relaunched"
 }
 
-test_sweep_respawns_authoritatively_missing_pi_signed_secondmate() {
+test_sweep_reports_a_missing_pi_signed_tmux_secondmate_instead_of_relaunching_it() {
   local w fb tmuxfb log out
   w=$(new_world sweep-missing-pi-signed)
   printf '%s\n' pi-signed > "$w/home/config/secondmate-harness"
@@ -715,6 +715,50 @@ test_remote_poll_probe_unreachable_preserves_route() {
   pass "poll probe: unreachable or inconclusive remote reads preserve the route"
 }
 
+# The `missing` arm delegates to the control plane's one absence owner, and
+# only a positively `gone` verdict may re-create an endpoint. The verdict
+# itself is stubbed here because its per-backend reads are that function's own
+# contract (fm-control-lib.sh owns them, exercised in tests/fm-backend.test.sh);
+# what this pins is the probe's use of the answer, which is the decision that
+# can duplicate a live agent onto its own worktree.
+probe_local_with_verdict() {  # <w> <verdict-line> -> "<status>|<state>|<kill>|<cause>|<where>|<reason>"
+  local w=$1 verdict=$2
+  env STATE="$w/home/state" FM_HOME="$w/home" FM_DATA_OVERRIDE="$w/home/data" \
+    FM_TEST_VERDICT="$verdict" \
+    bash -c '
+      . "$0/bin/fm-secondmate-liveness-lib.sh"
+      fm_backend_agent_state() { printf missing; }
+      fm_control_endpoint_absence_verdict() { printf "%s" "$FM_TEST_VERDICT"; }
+      fm_secondmate_liveness_probe "$1" sm1 poll
+      printf "%s|%s|%s|%s|%s|%s\n" \
+        "$FM_SM_LIVE_STATUS" "$FM_SM_LIVE_STATE" "$FM_SM_LIVE_KILL" \
+        "$FM_SM_LIVE_CAUSE" "$FM_SM_LIVE_WHERE" "$FM_SM_LIVE_REASON"
+    ' "$ROOT" "$w/home/state/sm1.meta"
+}
+
+test_missing_endpoint_relaunches_only_on_a_gone_verdict() {
+  local w out
+  w=$(new_world probe-absence-verdict)
+  add_sm_home "$w" sm1 firstmate:fm-sm1
+
+  out=$(probe_local_with_verdict "$w" "$(printf 'gone\t')")
+  [ "$out" = 'relaunchable|missing|0|recorded endpoint confidently missing|backend=tmux|' ] \
+    || fail "a proven-gone endpoint should authorize relaunch with no pre-kill, got: $out"
+
+  out=$(probe_local_with_verdict "$w" "$(printf 'unproven\tno socket identity to prove it by')")
+  [ "$out" = 'skipped|missing|0|||recorded endpoint '"'"'firstmate:fm-sm1'"'"' does not resolve, and no socket identity to prove it by; its agent may still be alive there, so reconcile the endpoint before any relaunch' ] \
+    || fail "an unproven absence must report the verdict's own reason and relaunch nothing, got: $out"
+
+  for verdict in alive dead bogus; do
+    out=$(probe_local_with_verdict "$w" "$(printf '%s\t' "$verdict")")
+    case "$out" in
+      skipped\|missing\|0\|\|\|*) ;;
+      *) fail "a '$verdict' verdict must not authorize relaunch or a kill, got: $out" ;;
+    esac
+  done
+  pass "poll probe: a missing endpoint is re-created only when the absence owner proves it gone"
+}
+test_missing_endpoint_relaunches_only_on_a_gone_verdict
 test_tmux_agent_state_classifies
 test_tmux_agent_state_rejects_malformed_targets_before_probe
 test_herdr_agent_state_preserves_husk_classifier
@@ -722,7 +766,7 @@ test_agent_state_dispatcher_and_compatibility
 test_sweep_respawns_confirmed_dead_secondmate
 test_sweep_leaves_alive_secondmate_untouched
 test_sweep_reports_a_missing_tmux_secondmate_instead_of_relaunching_it
-test_sweep_respawns_authoritatively_missing_pi_signed_secondmate
+test_sweep_reports_a_missing_pi_signed_tmux_secondmate_instead_of_relaunching_it
 test_sweep_never_acts_on_ambiguous_existing_process
 test_sweep_never_acts_on_transient_unreadability
 test_sweep_reports_dead_endpoint_relaunch_failure

@@ -115,7 +115,9 @@ An unreachable endpoint can still hold the live agent a rebind would duplicate, 
 Every transient or self-contradicting read stays `unreadable` or `ambiguous` and still refuses, so a momentary backend failure can never be mistaken for absence.
 
 That proof has one owner for the whole control plane (`fm_control_endpoint_absence_verdict` in `bin/fm-control-lib.sh`), so `exit`, `relaunch`, and the secondmate liveness sweep in `bin/fm-secondmate-liveness-lib.sh` cannot reach two different answers about one endpoint.
-The sweep reads the same verdict before re-creating a missing secondmate's endpoint, so a missing tmux secondmate is reported for reconciliation on its `SECONDMATE_LIVENESS:` line rather than relaunched, exactly as both verbs refuse it.
+The sweep reads the same verdict before re-creating a missing secondmate's endpoint, so a missing tmux secondmate is reported for reconciliation rather than relaunched, exactly as both verbs refuse it.
+Only a `gone` verdict authorizes the sweep to re-create an endpoint; every other verdict reports instead.
+The session-start sweep reports it on its `SECONDMATE_LIVENESS:` line, and the watcher's mid-session tick queues one `check` wake per mate when the episode opens - bounded by a per-mate episode marker, so a tick that repeats every `FM_SECONDMATE_LIVENESS_SECS` reports once rather than every time, and a mate seen live again (or successfully relaunched) clears the marker so a later loss is reported afresh.
 `exit` reports what the proof established and nothing more - see its row in the verb table above.
 
 What a reclaim is not:

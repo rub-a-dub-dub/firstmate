@@ -2905,10 +2905,30 @@ make_secondmate_liveness_case() {
 set -u
 log=${FM_TMUX_CALL_LOG:-/dev/null}
 probe=${FM_TMUX_CALL_LOG:-/dev/null}.probe
-cmd=${FM_FAKE_TMUX_CURRENT_COMMAND:-zsh}
-[ ! -f "$probe.spawned" ] || cmd=claude
+# Every marker is keyed by WINDOW name: one tick recovers each registered mate
+# in turn, so a shared marker would let the first mate's respawn make every
+# later mate read alive and silently narrow a multi-mate case to one.
+# <flag> names which argument carries the window: a probe and kill address it
+# through -t <session>:<window>, while new-window takes -t <session>: for the
+# session and names the window in -n, so reading the wrong one keys every
+# marker to an empty string.
+fake_window_of() {
+  local want=$1 prev='' a
+  shift
+  for a in "$@"; do
+    if [ "$prev" = "$want" ]; then
+      printf '%s\n' "${a##*:}" | tr -d '='
+      return 0
+    fi
+    prev=$a
+  done
+  printf '\n'
+}
 case "${1:-}" in
   display-message)
+    win=$(fake_window_of -t "$@")
+    cmd=${FM_FAKE_TMUX_CURRENT_COMMAND:-zsh}
+    [ ! -f "$probe.spawned.$win" ] || cmd=claude
     for a in "$@"; do
       case "$a" in
         *pane_current_command*) printf '%s\n' "$cmd"; exit 0 ;;
@@ -2917,22 +2937,25 @@ case "${1:-}" in
     done
     exit 0 ;;
   list-windows)
-    if [ "${FM_FAKE_WINDOW_GONE:-0}" = 1 ] || { [ -f "$probe.killed" ] && [ ! -f "$probe.spawned" ]; }; then
-      printf 'main\n'
-    else
-      printf 'main\nfm-sm1\n'
-    fi
+    printf 'main\n'
+    [ "${FM_FAKE_WINDOW_GONE:-0}" = 1 ] && exit 0
+    for win in fm-sm1 fm-sm2; do
+      if [ -f "$probe.killed.$win" ] && [ ! -f "$probe.spawned.$win" ]; then
+        continue
+      fi
+      printf '%s\n' "$win"
+    done
     exit 0 ;;
   capture-pane) [ -z "${FM_FAKE_TMUX_CAPTURE:-}" ] || cat "$FM_FAKE_TMUX_CAPTURE"; exit 0 ;;
   new-window)
     printf '%s\n' "$*" >> "$log"
     [ "${FM_TEST_FAIL_NEW_WINDOW:-0}" = 1 ] && exit 1
-    : > "$probe.spawned"
+    : > "$probe.spawned.$(fake_window_of -n "$@")"
     printf '@1\n'
     exit 0 ;;
   kill-window)
     printf '%s\n' "$*" >> "$log"
-    : > "$probe.killed"
+    : > "$probe.killed.$(fake_window_of -t "$@")"
     exit 0 ;;
 esac
 exit 0
@@ -3021,21 +3044,63 @@ test_secondmate_liveness_tick_relaunches_dead_endpoint_once() {
   pass "watch liveness: a dead secondmate is relaunched once, ledgered, and quiet afterwards"
 }
 
-test_secondmate_liveness_tick_relaunches_missing_endpoint() {
+# A missing tmux endpoint is never provably gone - the record carries no socket
+# identity - so the tick must not re-create it, and the captain has to learn
+# that a registered mate is unrecoverable. The report is bounded: one check wake
+# when the episode opens, triage-only on every later tick, and the episode
+# clears when the mate is seen live again so a second loss reports afresh.
+test_secondmate_liveness_tick_reports_an_unprovable_missing_endpoint_once() {
   local dir state pid out
   dir=$(make_secondmate_liveness_case liveness-missing)
   state="$dir/state"
 
   run_liveness_leg "$dir" missing FM_FAKE_WINDOW_GONE=1; pid=$LIVENESS_PID
-  wait_for_exit "$pid" 300 || fail "the watcher did not exit on its auto-relaunch wake"
+  wait_for_exit "$pid" 300 || fail "the watcher did not exit on its missing-endpoint wake"
   out="$dir/watch-missing.out"
-  grep -F 'check: secondmate sm1 auto-relaunched after recorded endpoint confidently missing (backend=tmux)' "$out" >/dev/null \
-    || fail "a missing secondmate endpoint was not auto-relaunched: $(cat "$out" "$dir/watch-missing.err")"
-  assert_contains "$(cat "$dir/tmux.log")" "new-window" \
-    "the missing secondmate endpoint was not relaunched"
+  grep -F 'check: secondmate sm1 endpoint is missing and cannot be proven gone, so it was not relaunched' "$out" >/dev/null \
+    || fail "an unprovable missing endpoint was not reported: $(cat "$out" "$dir/watch-missing.err")"
+  assert_not_contains "$(cat "$dir/tmux.log")" "new-window" \
+    "an endpoint that cannot be proven gone must not be relaunched"
   assert_not_contains "$(cat "$dir/tmux.log")" "kill-window" \
-    "an absent window must not take the destructive pre-kill path"
-  pass "watch liveness: a missing secondmate endpoint is relaunched without a pre-kill"
+    "an endpoint that cannot be proven gone must not be destroyed either"
+  [ ! -e "$state/.secondmate-relaunch-sm1" ] \
+    || fail "a reported-only episode ledgered a relaunch attempt: $(cat "$state/.secondmate-relaunch-sm1")"
+  [ "$(grep -c 'secondmate-liveness-missing-sm1' "$state/.wake-queue")" -eq 1 ] \
+    || fail "the missing-endpoint row was not queued exactly once: $(cat "$state/.wake-queue")"
+  [ -e "$state/.secondmate-liveness-skipped-sm1" ] \
+    || fail "the episode marker that bounds the report was not written"
+
+  # While the episode stands, later ticks are triage-only: no second wake.
+  drain_liveness_wakes "$dir"
+  rm -f "$state/.secondmate-liveness-tick"
+  run_liveness_leg "$dir" missing-again FM_FAKE_WINDOW_GONE=1; pid=$LIVENESS_PID
+  sleep 4
+  is_live_non_zombie "$pid" \
+    || fail "a standing missing episode re-woke the watcher: $(cat "$dir/watch-missing-again.out" "$dir/watch-missing-again.err")"
+  kill_liveness_leg "$pid"
+  [ "$(grep -c 'secondmate-liveness-missing-sm1' "$state/.wake-queue" 2>/dev/null || true)" -eq 0 ] \
+    || fail "a standing episode queued a second wake: $(cat "$state/.wake-queue")"
+  grep -F 'secondmate sm1 liveness:' "$state/.watch-triage.log" >/dev/null \
+    || fail "later ticks did not triage-log the standing episode: $(cat "$state/.watch-triage.log" 2>/dev/null)"
+
+  # Seeing the mate live again closes the episode, so a later loss reports.
+  drain_liveness_wakes "$dir"
+  rm -f "$state/.secondmate-liveness-tick"
+  run_liveness_leg "$dir" back FM_FAKE_TMUX_CURRENT_COMMAND=claude; pid=$LIVENESS_PID
+  sleep 4
+  is_live_non_zombie "$pid" \
+    || fail "the watcher exited against a mate that came back: $(cat "$dir/watch-back.out" "$dir/watch-back.err")"
+  kill_liveness_leg "$pid"
+  [ ! -e "$state/.secondmate-liveness-skipped-sm1" ] \
+    || fail "a mate seen live again did not clear its episode marker"
+
+  drain_liveness_wakes "$dir"
+  rm -f "$state/.secondmate-liveness-tick"
+  run_liveness_leg "$dir" missing-twice FM_FAKE_WINDOW_GONE=1; pid=$LIVENESS_PID
+  wait_for_exit "$pid" 300 || fail "a fresh loss after a recovery did not report"
+  grep -F 'check: secondmate sm1 endpoint is missing and cannot be proven gone' "$dir/watch-missing-twice.out" >/dev/null \
+    || fail "a second episode was not reported: $(cat "$dir/watch-missing-twice.out" "$dir/watch-missing-twice.err")"
+  pass "watch liveness: an unprovable missing endpoint is reported once per episode, never relaunched"
 }
 
 test_secondmate_liveness_tick_relaunches_every_dead_mate_before_waking() {
@@ -3051,7 +3116,7 @@ test_secondmate_liveness_tick_relaunches_every_dead_mate_before_waking() {
   printf 'window=firstmate:fm-sm2\nkind=secondmate\nharness=claude\nbackend=tmux\nhome=%s\n' \
     "$home" > "$state/sm2.meta"
 
-  run_liveness_leg "$dir" several FM_FAKE_WINDOW_GONE=1; pid=$LIVENESS_PID
+  run_liveness_leg "$dir" several FM_FAKE_TMUX_CURRENT_COMMAND=zsh; pid=$LIVENESS_PID
   wait_for_exit "$pid" 300 || fail "the watcher did not exit on its auto-relaunch wake"
   out="$dir/watch-several.out"
   [ "$(grep -c 'check: secondmate sm[12] auto-relaunched' "$out")" -eq 1 ] \
@@ -3176,7 +3241,7 @@ test_secondmate_liveness_tick_attempt_bound_parks_then_rearm_on_alive() {
   rm -f "$state/.secondmate-liveness-tick"
   # The three seeded attempts still sit inside the window, yet the rearm
   # restores the full default budget: the next death relaunches, not re-parks.
-  run_liveness_leg "$dir" rearmed-dead FM_FAKE_TMUX_CURRENT_COMMAND=zsh FM_FAKE_WINDOW_GONE=1; pid=$LIVENESS_PID
+  run_liveness_leg "$dir" rearmed-dead FM_FAKE_TMUX_CURRENT_COMMAND=zsh; pid=$LIVENESS_PID
   wait_for_exit "$pid" 300 || fail "a rearmed mate was not auto-relaunched on its next death"
   grep -F 'check: secondmate sm1 auto-relaunched' "$dir/watch-rearmed-dead.out" >/dev/null \
     || fail "the rearmed mate's relaunch did not wake: $(cat "$dir/watch-rearmed-dead.out" "$dir/watch-rearmed-dead.err")"
@@ -3255,7 +3320,7 @@ test_secondmate_liveness_tick_error_keeps_scanning_and_wakes() {
   chmod 000 "$state/.secondmate-relaunch-sm1"
 
   # sm1 errors first; the tick must still recover sm2 and surface its wake.
-  run_liveness_leg "$dir" mid-error FM_FAKE_WINDOW_GONE=1; pid=$LIVENESS_PID
+  run_liveness_leg "$dir" mid-error FM_FAKE_TMUX_CURRENT_COMMAND=zsh; pid=$LIVENESS_PID
   rc=0
   wait_for_exit "$pid" 300 || rc=$?
   chmod 644 "$state/.secondmate-relaunch-sm1"
@@ -3284,7 +3349,7 @@ test_secondmate_liveness_tick_unqueued_outcome_is_an_error_not_a_wake() {
   state="$dir/state"
   : > "$state/.wake-queue"
   chmod 444 "$state/.wake-queue"
-  run_liveness_leg "$dir" unqueued FM_FAKE_WINDOW_GONE=1; pid=$LIVENESS_PID
+  run_liveness_leg "$dir" unqueued FM_FAKE_TMUX_CURRENT_COMMAND=zsh; pid=$LIVENESS_PID
   rc=0
   wait_for_exit "$pid" 300 || rc=$?
   chmod 644 "$state/.wake-queue"
@@ -3370,6 +3435,326 @@ SH
   pass "watch liveness: an unreachable remote secondmate is probed, preserved, and never failed over"
 }
 
+# The annotation pass and fleet-wide sections share the presentation cursor,
+# but the former used to treat a cursor-read failure as "skip this live row".
+# Fail exactly the annotation's first cursor read, then let every later read
+# recover. One rule governs what the drain owes: it says ONCE that it computed
+# nothing and marked nothing as seen, and no presentation cursor moves - not the
+# failing task's, and not an untouched bystander's - so every unread line,
+# including the `working:` line whose only surface is that annotation, is still
+# owed on the next drain.
+test_annotation_cursor_failure_is_reported_on_stdout() {
+  local dir state out err fakebin real_cat manifest status bystander notices
+  dir=$(make_case annotation-cursor-failure)
+  state="$dir/state"
+  out="$dir/drain.out"
+  err="$dir/drain.err"
+  fakebin="$dir/fakebin"
+  manifest="$state/.status-presentation-cursor"
+  status="$state/task.status"
+  bystander="$state/bystander.status"
+  real_cat=$(command -v cat)
+
+  printf 'note: prime the presentation cursor\n' > "$status"
+  printf 'note: prime the bystander cursor\n' > "$bystander"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "could not prime the annotation cursor fixture"
+  [ -s "$manifest" ] || fail "the annotation cursor fixture wrote no presentation manifest"
+
+  printf 'working: live row must not disappear silently\n' >> "$status"
+  printf 'note: the captain is still owed this one\n' >> "$status"
+  printf 'note: an untouched task keeps its unread line too\n' >> "$bystander"
+  append_wake "$state" signal task.status "signal: $status" \
+    || fail "could not seed the annotation cursor wake"
+  cat > "$fakebin/cat" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ "$#" -eq 1 ] && [ "$1" = "$FM_TEST_CURSOR_MANIFEST" ] \
+  && [ ! -e "$FM_TEST_CURSOR_FAILURE_USED" ]; then
+  : > "$FM_TEST_CURSOR_FAILURE_USED"
+  exit 1
+fi
+exec "$FM_TEST_REAL_CAT" "$@"
+SH
+  chmod +x "$fakebin/cat"
+
+  PATH="$fakebin:$PATH" FM_TEST_REAL_CAT="$real_cat" \
+    FM_TEST_CURSOR_MANIFEST="$manifest" \
+    FM_TEST_CURSOR_FAILURE_USED="$dir/cursor-failure-used" \
+    FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" \
+    || fail "drain failed after the injected annotation cursor failure"
+  grep "$(printf '\tsignal\t')" "$out" >/dev/null \
+    || fail "the annotation cursor failure dropped the durable wake row"
+  if grep -F 'wake annotation:' "$out" >/dev/null; then
+    fail "the failed annotation cursor read still printed an authoritative annotation"
+  fi
+  notices=$(grep -c 'STATUS PRESENTATION INCOMPLETE' "$out")
+  [ "$notices" -eq 1 ] \
+    || fail "the annotation cursor failure owed exactly one notice, got $notices: $(command cat "$out")"
+  grep -F 'nothing was marked as seen and no presentation cursor advanced' "$out" >/dev/null \
+    || fail "the annotation cursor failure did not state that nothing was marked as seen: $(command cat "$out")"
+  if grep -F 'UNREAD STATUS' "$out" >/dev/null; then
+    fail "a drain that marked nothing as seen still printed the one-shot unread section: $(command cat "$out")"
+  fi
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" \
+    || fail "the drain after the injected annotation cursor failure cleared failed"
+  grep -F 'wake annotation:' "$out" | grep -F 'working: live row must not disappear silently' >/dev/null \
+    || fail "the unannotated line was acknowledged instead of retried: $(command cat "$out")"
+  grep -F 'note: the captain is still owed this one' "$out" >/dev/null \
+    || fail "the failing task's unread line never came back: $(command cat "$out")"
+  grep -F 'note: an untouched task keeps its unread line too' "$out" >/dev/null \
+    || fail "an untouched task's cursor advanced on a drain that computed nothing: $(command cat "$out")"
+
+  pass "a live row's annotation cursor failure is explicit on stdout and moves no cursor"
+}
+
+# A per-task hold used to still let the drain claim every other direct row was
+# fully presented, so a sibling task's cursor advanced on the strength of a pass
+# that had already failed. Fail one task's annotation cursor read with two direct
+# rows queued and prove the drain names no task at all and BOTH `working:` spans -
+# the failing one and its sibling's, whose only surface is that annotation -
+# survive to the next drain.
+test_annotation_failure_holds_sibling_cursors_too() {
+  local dir state out err fakebin real_cat manifest first second notices
+  dir=$(make_case annotation-sibling-hold)
+  state="$dir/state"
+  out="$dir/drain.out"
+  err="$dir/drain.err"
+  fakebin="$dir/fakebin"
+  manifest="$state/.status-presentation-cursor"
+  first="$state/alpha.status"
+  second="$state/bravo.status"
+  real_cat=$(command -v cat)
+
+  printf 'note: prime alpha\n' > "$first"
+  printf 'note: prime bravo\n' > "$second"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "could not prime the sibling annotation fixture"
+  [ -s "$manifest" ] || fail "the sibling annotation fixture wrote no presentation manifest"
+
+  # Neither `working:` line has a fleet-wide surface: the annotation is the only
+  # presentation either one gets.
+  printf 'working: alpha needs its annotation\n' >> "$first"
+  printf 'working: bravo needs its annotation\n' >> "$second"
+  append_wake "$state" signal alpha.status "signal: $first" \
+    || fail "could not seed the alpha wake"
+  append_wake "$state" signal bravo.status "signal: $second" \
+    || fail "could not seed the bravo wake"
+  cat > "$fakebin/cat" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ "$#" -eq 1 ] && [ "$1" = "$FM_TEST_CURSOR_MANIFEST" ] \
+  && [ ! -e "$FM_TEST_CURSOR_FAILURE_USED" ]; then
+  : > "$FM_TEST_CURSOR_FAILURE_USED"
+  exit 1
+fi
+exec "$FM_TEST_REAL_CAT" "$@"
+SH
+  chmod +x "$fakebin/cat"
+
+  PATH="$fakebin:$PATH" FM_TEST_REAL_CAT="$real_cat" \
+    FM_TEST_CURSOR_MANIFEST="$manifest" \
+    FM_TEST_CURSOR_FAILURE_USED="$dir/cursor-failure-used" \
+    FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" \
+    || fail "drain failed after the injected sibling cursor failure"
+  [ -e "$dir/cursor-failure-used" ] \
+    || fail "the injected sibling cursor failure never fired"
+  notices=$(grep -c 'STATUS PRESENTATION INCOMPLETE' "$out")
+  [ "$notices" -eq 1 ] \
+    || fail "the sibling cursor failure owed exactly one notice, got $notices: $(command cat "$out")"
+  if grep 'STATUS PRESENTATION INCOMPLETE' "$out" | grep -F "$state/" >/dev/null; then
+    fail "the one notice named a per-task status log instead of staying generic: $(command cat "$out")"
+  fi
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" \
+    || fail "the drain after the injected sibling cursor failure cleared failed"
+  grep -F 'wake annotation:' "$out" | grep -F 'working: alpha needs its annotation' >/dev/null \
+    || fail "alpha's unannotated span was acknowledged instead of retried: $(command cat "$out")"
+  grep -F 'wake annotation:' "$out" | grep -F 'working: bravo needs its annotation' >/dev/null \
+    || fail "bravo's unannotated span was acknowledged instead of retried: $(command cat "$out")"
+
+  pass "an annotation failure holds the sibling cursors it never proved it presented"
+}
+
+# A span read that FAILS and a span with nothing unread in it used to be the same
+# return, so a transient read failure dropped a live task's annotation with no
+# notice at all and the presentation cursor still advanced past the bytes the
+# drain never printed. Fail exactly the annotation's first span read.
+test_annotation_span_read_failure_is_reported_and_retried() {
+  local dir state out err fakebin real_perl status
+  dir=$(make_case annotation-span-read-failure)
+  state="$dir/state"
+  out="$dir/drain.out"
+  err="$dir/drain.err"
+  fakebin="$dir/fakebin"
+  status="$state/task.status"
+  real_perl=$(command -v perl)
+
+  printf 'note: prime the presentation cursor\n' > "$status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "could not prime the annotation span fixture"
+
+  printf 'working: span read must not vanish silently\n' >> "$status"
+  printf 'note: an unread surface the fleet-wide section acknowledges\n' >> "$status"
+  append_wake "$state" signal task.status "signal: $status" \
+    || fail "could not seed the annotation span wake"
+  cat > "$fakebin/perl" <<'SH'
+#!/usr/bin/env bash
+set -u
+for arg in "$@"; do
+  if [ "$arg" = "$FM_TEST_SPAN_PATH" ] && [ ! -e "$FM_TEST_SPAN_FAILURE_USED" ]; then
+    : > "$FM_TEST_SPAN_FAILURE_USED"
+    exit 1
+  fi
+done
+exec "$FM_TEST_REAL_PERL" "$@"
+SH
+  chmod +x "$fakebin/perl"
+
+  PATH="$fakebin:$PATH" FM_TEST_REAL_PERL="$real_perl" \
+    FM_TEST_SPAN_PATH="$status" \
+    FM_TEST_SPAN_FAILURE_USED="$dir/span-failure-used" \
+    FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" \
+    || fail "drain failed after the injected annotation span read failure"
+  if grep -F 'wake annotation:' "$out" >/dev/null; then
+    fail "the failed span read still printed an authoritative annotation"
+  fi
+  if grep -F 'STATUS PRESENTATION INCOMPLETE: unread status, outcome backstop, OPEN DECISIONS' "$out" >/dev/null; then
+    fail "the injected read failure reached the fleet-wide sections instead of the annotation span"
+  fi
+  grep -F 'STATUS PRESENTATION INCOMPLETE: a supplemental status annotation could not be computed' "$out" >/dev/null \
+    || fail "the failed annotation span read remained silent on stdout: $(command cat "$out")"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" \
+    || fail "the drain after the injected annotation span failure cleared failed"
+  grep -F 'wake annotation:' "$out" | grep -F 'working: span read must not vanish silently' >/dev/null \
+    || fail "the span nobody read was acknowledged instead of retried: $(command cat "$out")"
+  grep -F 'note: an unread surface the fleet-wide section acknowledges' "$out" >/dev/null \
+    || fail "the unread surface beside the failed span was marked as seen anyway: $(command cat "$out")"
+
+  pass "a failed annotation span read is reported and its unread bytes stay unread"
+}
+
+# The fleet snapshot is the first step of the same pass. Its failure used to
+# print a notice about the sections alone and skip the annotation pass in
+# silence, so a live row's unread `working:` line - whose only surface is that
+# annotation - read as nothing unread. Fail the snapshot's identity read with a
+# direct row queued: the same one notice is owed, and nothing may be marked as
+# seen.
+test_snapshot_failure_reports_the_uncomputed_annotations() {
+  local dir state out err ident status notices
+  dir=$(make_case snapshot-failure-annotations)
+  state="$dir/state"
+  out="$dir/drain.out"
+  err="$dir/drain.err"
+  ident="$dir/ident-reader"
+  status="$state/task.status"
+
+  cat > "$ident" <<IDENT
+#!/usr/bin/env bash
+[ ! -f "$dir/fail-ident" ] || exit 1
+printf 'test-ident:%s' "\$(basename "\${1:-}")"
+IDENT
+  chmod +x "$ident"
+
+  printf 'note: prime the presentation cursor\n' > "$status"
+  FM_STATE_OVERRIDE="$state" FM_STATUS_IDENTITY_READER="$ident" "$DRAIN" > "$out" \
+    || fail "could not prime the snapshot-failure fixture"
+
+  printf 'working: only the annotation can carry this one\n' >> "$status"
+  append_wake "$state" signal task.status "signal: $status" \
+    || fail "could not seed the snapshot-failure wake"
+
+  : > "$dir/fail-ident"
+  FM_STATE_OVERRIDE="$state" FM_STATUS_IDENTITY_READER="$ident" "$DRAIN" > "$out" 2> "$err" \
+    || fail "drain failed instead of reporting an unreadable snapshot"
+  grep "$(printf '\tsignal\t')" "$out" >/dev/null \
+    || fail "the snapshot failure dropped the durable wake row"
+  notices=$(grep -c 'STATUS PRESENTATION INCOMPLETE' "$out")
+  [ "$notices" -eq 1 ] \
+    || fail "the snapshot failure owed exactly one notice, got $notices: $(command cat "$out")"
+  if grep -F 'wake annotation:' "$out" >/dev/null; then
+    fail "an unreadable snapshot still printed an authoritative annotation: $(command cat "$out")"
+  fi
+  grep -F 'nothing was marked as seen and no presentation cursor advanced' "$out" >/dev/null \
+    || fail "the snapshot failure said nothing about the annotations it skipped: $(command cat "$out")"
+
+  rm -f "$dir/fail-ident"
+  FM_STATE_OVERRIDE="$state" FM_STATUS_IDENTITY_READER="$ident" "$DRAIN" > "$out" 2> "$err" \
+    || fail "the drain after the snapshot failure cleared failed"
+  grep -F 'wake annotation:' "$out" | grep -F 'working: only the annotation can carry this one' >/dev/null \
+    || fail "the span the snapshot failure never annotated was acknowledged anyway: $(command cat "$out")"
+
+  pass "an unreadable fleet snapshot reports its uncomputed annotations and moves no cursor"
+}
+
+# An annotation failure that names no task still let the acknowledge pass advance
+# cursors past bytes the annotation never printed. Fail the annotation pass's own
+# manifest build - the one failure path that can name nothing - over a MIXED
+# span: the trailing `note:` is an unread surface, so the fleet rule alone would
+# acknowledge the whole span and drop the `working:` line whose only surface is
+# the annotation that never ran.
+test_unattributed_annotation_failure_holds_every_cursor() {
+  local dir state out err fakebin real_awk status
+  dir=$(make_case unattributed-annotation-failure)
+  state="$dir/state"
+  out="$dir/drain.out"
+  err="$dir/drain.err"
+  fakebin="$dir/fakebin"
+  status="$state/task.status"
+  real_awk=$(command -v awk)
+
+  printf 'note: prime the presentation cursor\n' > "$status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "could not prime the unattributed annotation fixture"
+
+  # A `working:` line has no fleet-wide surface: the annotation is its only
+  # presentation, so acknowledging it after an uncomputed annotation loses it.
+  printf 'working: only the annotation can carry this one\n' >> "$status"
+  printf 'note: an unread surface follows it in the same span\n' >> "$status"
+  append_wake "$state" signal task.status "signal: $status" \
+    || fail "could not seed the unattributed annotation wake"
+  cat > "$fakebin/awk" <<'SH'
+#!/usr/bin/env bash
+set -u
+for arg in "$@"; do
+  case "$arg" in
+    *"if (!(key in seen))"*)
+      if [ ! -e "$FM_TEST_AWK_FAILURE_USED" ]; then
+        : > "$FM_TEST_AWK_FAILURE_USED"
+        exit 1
+      fi
+      ;;
+  esac
+done
+exec "$FM_TEST_REAL_AWK" "$@"
+SH
+  chmod +x "$fakebin/awk"
+
+  PATH="$fakebin:$PATH" FM_TEST_REAL_AWK="$real_awk" \
+    FM_TEST_AWK_FAILURE_USED="$dir/awk-failure-used" \
+    FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" \
+    || fail "drain failed after the injected annotation manifest failure"
+  [ -e "$dir/awk-failure-used" ] \
+    || fail "the injected annotation manifest failure never fired"
+  grep -F 'STATUS PRESENTATION INCOMPLETE: a supplemental status annotation could not be computed' "$out" >/dev/null \
+    || fail "the unattributed annotation failure remained silent on stdout: $(command cat "$out")"
+  if grep -F 'wake annotation:' "$out" >/dev/null; then
+    fail "the uncomputed annotation manifest still printed an annotation"
+  fi
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" \
+    || fail "the drain after the injected annotation manifest failure cleared failed"
+  grep -F 'wake annotation:' "$out" | grep -F 'working: only the annotation can carry this one' >/dev/null \
+    || fail "an annotation failure that named no task acknowledged the span anyway: $(command cat "$out")"
+  grep -F 'note: an unread surface follows it in the same span' "$out" >/dev/null \
+    || fail "the unread surface in the same span was marked as seen by a drain that computed nothing: $(command cat "$out")"
+
+  pass "an annotation failure that names no task holds every presentation cursor"
+}
+
+
 test_self_held_lock_reclaims_instead_of_deadlocking
 test_subshell_lock_ownership_without_bashpid
 test_bounded_lock_handoff_after_contention
@@ -3425,7 +3810,7 @@ test_interruption_before_and_after_raw_commit
 test_wake_queue_prune_task
 test_drain_rotates_orphaned_scratch
 test_secondmate_liveness_tick_relaunches_dead_endpoint_once
-test_secondmate_liveness_tick_relaunches_missing_endpoint
+test_secondmate_liveness_tick_reports_an_unprovable_missing_endpoint_once
 test_secondmate_liveness_tick_relaunches_every_dead_mate_before_waking
 test_secondmate_liveness_tick_leaves_alive_and_inconclusive_untouched
 test_secondmate_liveness_tick_cadence_gates_the_probe
@@ -3436,3 +3821,8 @@ test_secondmate_liveness_tick_error_keeps_scanning_and_wakes
 test_secondmate_liveness_tick_unqueued_outcome_is_an_error_not_a_wake
 test_secondmate_liveness_tick_skips_mate_whose_lock_is_held
 test_secondmate_liveness_tick_preserves_unreachable_remote
+test_annotation_cursor_failure_is_reported_on_stdout
+test_annotation_failure_holds_sibling_cursors_too
+test_annotation_span_read_failure_is_reported_and_retried
+test_snapshot_failure_reports_the_uncomputed_annotations
+test_unattributed_annotation_failure_holds_every_cursor

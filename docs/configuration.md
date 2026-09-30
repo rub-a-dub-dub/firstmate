@@ -1300,6 +1300,7 @@ Local routes use direct guarded filesystem operations, while remote routes deleg
 - When a running home advances and its loaded instruction surface (`AGENTS.md`, `bin/`, or `.agents/skills/`) changed, bootstrap sends the re-read nudge itself through the stable `fm-<id>` selector and reports the exact completed send as `BOOTSTRAP_INFO:`.
 - If that send fails, bootstrap keeps an idempotent retry marker and emits `NUDGE_SECONDMATES:` with the failure reason.
 - The same bootstrap run emits `SECONDMATE_LIVENESS:` only when a registered secondmate is skipped or its relaunch fails; already-live and successfully relaunched secondmates are handled silently.
+- Mid-session the watcher's liveness tick queues one `check` wake per mate when a skip episode opens (a missing tmux endpoint, whose absence is unprovable, is the standing case) and only triage-logs on later ticks; seeing the mate live again, or relaunching it, clears the episode so a later loss is reported afresh.
 
 **Push inherited configuration during a session**
 

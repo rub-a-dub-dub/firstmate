@@ -115,7 +115,12 @@ fm_secondmate_liveness_recent_attempts() {  # <id> <window-secs>
 
 # fm_secondmate_liveness_probe <meta> <id> <full|poll>
 #
-# Read-only probe of one registered secondmate's recorded endpoint. Populates:
+# Probe of one registered secondmate's recorded endpoint. Read-only except on
+# the herdr `missing` path, where the control plane's absence proof
+# (fm_control_endpoint_absence_verdict) ensures the RECORDED session's server
+# so the recorded pane can be re-read: that starts a server and nothing else -
+# no workspace, tab, or pane is created - and is bounded by
+# fm_backend_herdr_server_ensure's own poll. Populates:
 #
 #   FM_SM_LIVE_STATUS  silent | alive | relaunchable | skipped
 #   FM_SM_LIVE_STATE   the raw classifier/state word
@@ -249,15 +254,6 @@ fm_secondmate_liveness_probe() {  # <meta> <id> <full|poll>
         absence=$(fm_control_endpoint_absence_verdict "$backend" "$target")
         case "${absence%%$'\t'*}" in
           gone) FM_SM_LIVE_CAUSE="recorded endpoint confidently missing" ;;
-          dead)
-            FM_SM_LIVE_KILL=1
-            FM_SM_LIVE_CAUSE="confirmed agent absence on existing endpoint"
-            ;;
-          alive)
-            FM_SM_LIVE_STATUS=skipped
-            FM_SM_LIVE_REASON="recorded endpoint '$target' did not resolve on the first read, but its agent answered on the recheck, so there is nothing to relaunch"
-            return 0
-            ;;
           *)
             FM_SM_LIVE_STATUS=skipped
             FM_SM_LIVE_REASON="recorded endpoint '$target' does not resolve, and ${absence#*$'\t'}; its agent may still be alive there, so reconcile the endpoint before any relaunch"
