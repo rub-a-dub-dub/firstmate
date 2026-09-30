@@ -3301,15 +3301,23 @@ SH
       # Both recorded identities carry the renumbered device here, so any
       # mutation that survives the content proofs is caught by the first
       # identity compared, the sidecar's.
-      swapped-check|swapped-sidecar) expected_reason="(data file inode)" ;;
+      swapped-check|swapped-sidecar|split-device) expected_reason="(data file inode)" ;;
       altered-check|altered-template-hash) expected_reason="(check file content)" ;;
       altered-sidecar) expected_reason="(data file content)" ;;
-      *) expected_reason= ;;
+      # A private-file rule refused these, not a content or identity
+      # comparison, so no class describes them and the path stands alone.
+      wrong-mode|hardlinked-check|foreign-device) expected_reason= ;;
+      *) fail "$mutation has no expected rejection reason" ;;
     esac
     if [ -n "$expected_reason" ]; then
       case "$out" in
         *"task-a.check.sh $expected_reason"*) ;;
         *) fail "$mutation should name its mismatch class $expected_reason in the rejection: $out" ;;
+      esac
+    else
+      case "$out" in
+        *"task-a.check.sh ("*)
+          fail "$mutation was not one of the named classes and must print a bare path: $out" ;;
       esac
     fi
     [ "$(fm_pr_sha256 "$state/task-a.pr-poll-registration")" = "$registration_sha" ] \

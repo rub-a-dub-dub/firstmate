@@ -19,8 +19,13 @@
 #   unverified  - the endpoint is recorded under a session this home does not
 #                 own, so probing is not authorized
 #
-# Only `dead` and `missing` are recovery-authorizing states: they prove the
-# agent is not running, so relaunching cannot produce a duplicate endpoint.
+# `dead` authorizes recovery on its own: the endpoint is still there and holds
+# no agent, so relaunching cannot produce a duplicate. `missing` proves only
+# that the recorded address stopped resolving, so it must first pass the
+# control plane's single absence proof (fm_control_endpoint_absence_verdict),
+# which re-creates the endpoint on `gone`, adopts it with a pre-kill on `dead`,
+# reports `alive` as a healthy mate, and reports every other answer for the
+# captain to reconcile rather than relaunching on it.
 # `ambiguous`, `unreadable`, and `unverified` leave the endpoint untouched -
 # relaunching on inconclusive evidence could create a second endpoint beside a
 # live one - and an unreachable remote host is never evidence of death, so a

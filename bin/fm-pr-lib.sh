@@ -97,7 +97,9 @@ FM_PR_RECORD_MERGED=
 FM_PR_POLL_RETIREMENT_REJECTED=
 # Which class of mismatch refused the last poll-artifact validation - content,
 # inode, or an unreadable file - so the captain-facing rejection names it
-# rather than only the path.
+# rather than only the path. Empty whenever the refusal was not one of those
+# three, including every refusal of a check that has no poll artifacts at all,
+# so no rejection is labelled a poll-artifact failure it was not.
 # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
 FM_PR_POLL_REJECT_REASON=
 
@@ -687,7 +689,7 @@ fm_pr_poll_artifacts_valid() {
 # hold the parsed records.
 fm_pr_poll_artifacts_content_valid() {
   local state=$1 id=$2 template=$3 state_device check data registration meta data_hash template_hash
-  FM_PR_POLL_REJECT_REASON="poll artifacts failed validation"
+  FM_PR_POLL_REJECT_REASON=
   fm_pr_task_id_valid "$id" || return 1
   [ -d "$state" ] && [ ! -L "$state" ] || return 1
   state_device=$(fm_pr_file_device "$state") || return 1
@@ -716,7 +718,7 @@ fm_pr_poll_artifacts_content_valid() {
   [ "$FM_PR_REG_HOST" = "$FM_PR_DATA_HOST" ] || return 1
   [ "$FM_PR_REG_PATH" = "$FM_PR_DATA_PATH" ] || return 1
   [ "$FM_PR_REG_NUMBER" = "$FM_PR_DATA_NUMBER" ] || return 1
-  FM_PR_POLL_REJECT_REASON="poll artifacts failed validation"
+  FM_PR_POLL_REJECT_REASON=
   [ "$FM_PR_REG_DATA_HASH" = "$data_hash" ] || {
     FM_PR_POLL_REJECT_REASON="data file content"; return 1; }
   [ "$FM_PR_REG_TEMPLATE_HASH" = "$template_hash" ] || {

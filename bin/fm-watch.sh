@@ -2855,7 +2855,7 @@ while :; do
           FM_HOME="$FM_HOME" run_check_capture "$FM_ROOT/bin/fm-x-poll.sh" || exit 1
           out=$FM_CHECK_RESULT
         else
-          rejected_checks="$rejected_checks $c (x-poll shim or binary invalid)"
+          rejected_checks="$rejected_checks $c"
           continue
         fi
       else
