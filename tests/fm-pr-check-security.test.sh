@@ -3218,7 +3218,7 @@ SH
 }
 
 test_device_rerecord_refuses_tampered_artifacts() {
-  local mutation dir state out rc registration_sha shifted_device replacement exercised=
+  local mutation dir state out rc registration_sha shifted_device replacement expected_reason exercised=
   for mutation in swapped-check altered-check swapped-sidecar altered-sidecar altered-template-hash \
     wrong-mode hardlinked-check split-device foreign-device; do
     # A regular file cannot sit on another device than its own directory without
@@ -3294,6 +3294,24 @@ SH
       "check: rejected unauthenticated state checks:"*"task-a.check.sh"*) ;;
       *) fail "$mutation on a renumbered registration was not refused: $out" ;;
     esac
+    # The rejection names WHICH artifact failed and HOW, so a captain reading
+    # the wake can tell a tampered file from one merely re-created at a new
+    # inode without opening either.
+    case "$mutation" in
+      # Both recorded identities carry the renumbered device here, so any
+      # mutation that survives the content proofs is caught by the first
+      # identity compared, the sidecar's.
+      swapped-check|swapped-sidecar) expected_reason="(data file inode)" ;;
+      altered-check|altered-template-hash) expected_reason="(check file content)" ;;
+      altered-sidecar) expected_reason="(data file content)" ;;
+      *) expected_reason= ;;
+    esac
+    if [ -n "$expected_reason" ]; then
+      case "$out" in
+        *"task-a.check.sh $expected_reason"*) ;;
+        *) fail "$mutation should name its mismatch class $expected_reason in the rejection: $out" ;;
+      esac
+    fi
     [ "$(fm_pr_sha256 "$state/task-a.pr-poll-registration")" = "$registration_sha" ] \
       || fail "$mutation let the watcher re-record the registration"
     ! grep -F -- '--json state' "$dir/gh.log" >/dev/null 2>&1 \
@@ -3480,6 +3498,34 @@ test_device_rerecord_refuses_tampered_artifacts
 test_device_rerecord_serializes_direct_rearm
 test_device_rerecord_serializes_rerecord
 test_postrename_poll_validation_revokes_and_retries
+
+# fm_pr_sha256 is read through a pipeline, where the exit status belongs to
+# awk, so a hasher that could not read the file would otherwise hand back an
+# empty string with SUCCESS. Every authenticating caller compares that result
+# against a recorded hash, so the failure has to be reported rather than left
+# for each caller to re-derive from an empty string.
+test_sha256_reports_failure_for_an_unreadable_file() {
+  local dir out rc
+  dir=$(make_case sha256-unreadable)
+  printf 'contents\n' > "$dir/readable"
+
+  out=$(fm_pr_sha256 "$dir/readable"); rc=$?
+  [ "$rc" -eq 0 ] || fail "hashing a readable file should succeed, got rc=$rc"
+  case "$out" in
+    [0-9a-f]*) ;;
+    *) fail "a readable file should hash to a hex digest, got '$out'" ;;
+  esac
+
+  set +e
+  out=$(fm_pr_sha256 "$dir/definitely-absent"); rc=$?
+  set -e
+  [ "$rc" -ne 0 ] \
+    || fail "an unreadable file must report failure, not an empty hash with success (got '$out')"
+  [ -z "$out" ] || fail "a failed hash must print nothing, got '$out'"
+  pass "fm_pr_sha256: an unreadable file reports failure instead of an empty hash"
+}
+
+test_sha256_reports_failure_for_an_unreadable_file
 test_bootstrap_leaves_unauthenticated_checks
 test_custom_snapshot_cleanup_on_signal
 test_returned_custom_check_descendants_are_drained

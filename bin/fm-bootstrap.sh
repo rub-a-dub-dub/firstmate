@@ -693,8 +693,11 @@ secondmate_liveness_sweep() {
   # secondmate_liveness_tick owns the same guarantee mid-session. The detailed
   # state machine and its only recovery-authorizing states are owned by
   # fm_backend_agent_state. A missing pane is not enough on its own: the
-  # control plane's one absence owner must prove the endpoint gone, which tmux
-  # can never do, so a missing tmux mate is reported rather than relaunched.
+  # control plane's one absence owner must first prove the endpoint gone (or
+  # find it agent-free), which on tmux means no server at all on the addressed
+  # socket or a complete scan of every session that never saw the task's
+  # pinned window name. A name still found somewhere, and a scan that could
+  # not complete, are reported rather than relaunched.
   # This preserves duplicate prevention for
   # existing ambiguous processes and every transiently unreadable target while
   # adding the missing-session path the original bare-shell and Herdr-husk sweep

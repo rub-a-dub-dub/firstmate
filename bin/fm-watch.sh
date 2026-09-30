@@ -58,6 +58,24 @@
 #                          on that cadence forever (wedge_dead_record); only the
 #                          two recovery-grade verdicts license it, and every other
 #                          verdict escalates unchanged.
+#                          A task whose crew state reconciles to `done` with no
+#                          active run ENDS the ladder rather than deferring it:
+#                          the idle timer, the escalation count, and every
+#                          deferral chain are cleared, because there is no live
+#                          run left to be wedged and the captain never authorized
+#                          a merge decision for work that is already finished.
+#                          A task whose own no-mistakes run reports `recent`
+#                          activity is deferred on its own bounded chain
+#                          (state/.run-active-since-<key>, re-surfaced through
+#                          state/.run-active-resurfaced-<key>), because the pane
+#                          is quiet only because the pipeline's fix agent is
+#                          working in a separate process. That absorb is
+#                          deliberately withheld from the busy-turn bound, which
+#                          passes run-activity-outranks 0: a busy pane already
+#                          proves liveness, and that bound exists for the
+#                          opposite problem - a hung foreground call hiding
+#                          behind a busy footer - which another process's log
+#                          activity cannot rule out.
 #                          A genuinely busy pane
 #                          (window_is_busy true) is exempt from the above, but
 #                          only up to BUSY_TURN_MAX_SECS with no completed turn
@@ -106,7 +124,11 @@
 #                          payload names what to check. These three kinds are
 #                          joined with `;` when more than one surfaces in a cycle
 #   check: rejected unauthenticated state checks: <paths>
-#                          unsafe state checks were refused without execution
+#                          unsafe state checks were refused without execution;
+#                          each path carries a parenthesised mismatch reason
+#                          when the refusal identified one - which artifact
+#                          (data or check file) and whether its content, its
+#                          inode identity, or its readability is what failed
 #   check: rejected unauthenticated PR poll retirement receipts: <paths>
 #                          invalid pending retirements were preserved without
 #                          running a check or removing poll artifacts
@@ -134,8 +156,10 @@
 #                          parent notification covers each no-progress episode
 #   check: secondmate <id> auto-relaunched after <cause> (<where>)
 #                          the liveness tick probed a registered secondmate's
-#                          recorded endpoint, got the recovery-grade `dead` or
-#                          `missing` verdict, and relaunched it through the
+#                          recorded endpoint, got a relaunchable verdict - a
+#                          recovery-grade `dead`, or a `missing` the absence
+#                          proof settled as gone or agent-free - and relaunched
+#                          it through the
 #                          same guarded fm-spawn.sh --secondmate path the
 #                          session-start sweep uses; one wake per relaunch, and
 #                          state/.secondmate-relaunch-<id> keeps the durable
@@ -149,6 +173,21 @@
 #                          budget and is parked until a probe reads it live
 #                          again (FM_SECONDMATE_LIVENESS_MAX_ATTEMPTS and
 #                          FM_SECONDMATE_LIVENESS_WINDOW_SECS)
+#   check: secondmate <id> endpoint is missing and was not relaunched: <reason>
+#                          the recorded endpoint stopped resolving and the
+#                          absence proof could not settle it - its window was
+#                          still found somewhere, or the scan could not
+#                          complete - so nothing was re-created and the mate is
+#                          the captain's to reconcile. This tick repeats every
+#                          FM_SECONDMATE_LIVENESS_SECS, so the report is bounded
+#                          by a per-mate episode marker
+#                          (state/.secondmate-liveness-skipped-<id>): one wake
+#                          when the episode opens, triage-only on every later
+#                          tick. Reading the mate `alive`, or relaunching it,
+#                          clears the marker, so a later loss is reported
+#                          afresh. Every other skip - an ambiguous process, an
+#                          unreadable probe, an unreachable remote route - stays
+#                          triage-only and never wakes
 # For normal supervision, resume the session-start primary-harness protocol
 # after each printed reason. Direct duplicate invocations of this script still
 # no-op through the watcher singleton lock. A live holder whose beacon is stale
@@ -353,7 +392,7 @@ case "$SECONDMATE_WAKE_STALL_SECS" in ''|*[!0-9]*|0) SECONDMATE_WAKE_STALL_SECS=
 # Secondmate ENDPOINT liveness (distinct from the wake-loop stall observation
 # above): on this cadence the watcher probes each registered mate's recorded
 # endpoint through fm-secondmate-liveness-lib.sh and relaunches only on the
-# same recovery-grade `dead` or `missing` verdicts the session-start sweep
+# same relaunchable verdicts the session-start sweep
 # uses. The cadence survives watcher restarts via a state marker's mtime, so a
 # relaunch wake cannot restart the probe into a tight loop.
 SECONDMATE_LIVENESS_SECS=${FM_SECONDMATE_LIVENESS_SECS:-}
@@ -1028,7 +1067,8 @@ EOF
 # bin/fm-secondmate-liveness-lib.sh (which owns the state contract, the remote
 # probe rules, the kill ordering, and the guarded relaunch). On a bounded
 # cadence each registered mate's recorded endpoint is probed once; only a
-# recovery-grade `dead` or `missing` verdict relaunches, every relaunch
+# relaunchable verdict relaunches - `dead`, or a `missing` the absence proof
+# settled as gone or agent-free - every relaunch
 # (success or failure) becomes exactly one durable `check` wake row, and every
 # other verdict lands only in the triage log. The tick finishes every mate
 # before it wakes once on the first outcome, so one dead mate never delays
@@ -1585,7 +1625,7 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
         # checked first and unconditionally: the captain never authorized a
         # merge decision for a task with no live run left to wedge, and a task
         # with no active run can never report recent activity anyway.
-        if [ "$reconciled" = done ]; then
+        if [ "$reconciled" = "done" ]; then
           rm -f "$since_file" "$escalation_file"
           clear_deferral_tracking "$(window_key "$win")"
           triage_log "absorbed $label (reconciled state is done with no active run - awaiting merge, not a wedge): $win"
@@ -2815,13 +2855,20 @@ while :; do
           FM_HOME="$FM_HOME" run_check_capture "$FM_ROOT/bin/fm-x-poll.sh" || exit 1
           out=$FM_CHECK_RESULT
         else
-          rejected_checks="$rejected_checks $c"
+          rejected_checks="$rejected_checks $c (x-poll shim or binary invalid)"
           continue
         fi
       else
         id=$(basename "$c" .check.sh)
+        FM_PR_POLL_REJECT_REASON=
+        poll_reject_reason=
+        # The first validation owns the account of why this poll failed. The
+        # device-shift probe re-runs the same validators to ask its own
+        # narrower question, so its leftover reason describes that question
+        # rather than the refusal, and the reported one is captured first.
         if fm_pr_poll_snapshot_capture "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" \
-          || { rerecord_device_shifted_pr_poll "$id" \
+          || { poll_reject_reason=$FM_PR_POLL_REJECT_REASON
+            rerecord_device_shifted_pr_poll "$id" \
             && fm_pr_poll_snapshot_capture "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh"; }; then
           is_pr_poll=1
           provider=$FM_PR_POLL_SNAPSHOT_PROVIDER
@@ -2846,7 +2893,14 @@ while :; do
           fm_custom_check_snapshot_cleanup
         else
           fm_custom_check_snapshot_cleanup
-          rejected_checks="$rejected_checks $c"
+          # The validator names which artifact failed and how, so a content
+          # mismatch, a re-created file at a new inode, and an unreadable one
+          # are distinguishable in the captain-facing rejection.
+          if [ -n "$poll_reject_reason" ]; then
+            rejected_checks="$rejected_checks $c ($poll_reject_reason)"
+          else
+            rejected_checks="$rejected_checks $c"
+          fi
           continue
         fi
       fi

@@ -95,6 +95,11 @@ FM_PR_RETIRE_RECEIPT_IDENTITY=
 FM_PR_RECORD_STATE=
 FM_PR_RECORD_MERGED=
 FM_PR_POLL_RETIREMENT_REJECTED=
+# Which class of mismatch refused the last poll-artifact validation - content,
+# inode, or an unreadable file - so the captain-facing rejection names it
+# rather than only the path.
+# shellcheck disable=SC2034 # Output global, read by the sourcing caller.
+FM_PR_POLL_REJECT_REASON=
 
 fm_task_id_path_safe() {
   local id=${1-}
@@ -321,14 +326,21 @@ fm_pr_file_identity() {
   printf '%s:%s\n' "$device" "$inode"
 }
 
+# A file that could not be read must REPORT that, never hand back an empty
+# hash with a success status: in a pipeline the exit code is awk's, so an
+# unreadable file would otherwise look like a successful hash of nothing and
+# every caller would have to re-derive the failure from the empty string.
 fm_pr_sha256() {
+  local hash
   if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+    hash=$(shasum -a 256 "$1" 2>/dev/null | awk '{print $1}')
   elif command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" 2>/dev/null | awk '{print $1}'
+    hash=$(sha256sum "$1" 2>/dev/null | awk '{print $1}')
   else
     return 1
   fi
+  [ -n "$hash" ] || return 1
+  printf '%s\n' "$hash"
 }
 
 # Callers pass the containing directory's device read in the same invocation,
@@ -655,14 +667,18 @@ fm_pr_poll_publish_prepared() {
 fm_pr_poll_artifacts_valid() {
   local state=$1 id=$2 template=$3 data_identity check_identity
   fm_pr_poll_artifacts_content_valid "$state" "$id" "$template" || return 1
-  data_identity=$(fm_pr_file_identity "$state/$id.pr-poll") || return 1
-  check_identity=$(fm_pr_file_identity "$state/$id.check.sh") || return 1
+  data_identity=$(fm_pr_file_identity "$state/$id.pr-poll") || {
+    FM_PR_POLL_REJECT_REASON="data file unreadable"; return 1; }
+  check_identity=$(fm_pr_file_identity "$state/$id.check.sh") || {
+    FM_PR_POLL_REJECT_REASON="check file unreadable"; return 1; }
   # The recorded identities bind the registration to the exact sidecar and
   # check file objects published in its own transaction, so a byte-identical
   # replacement or a torn re-arm pairing one generation's check with another's
   # registration is refused.
-  [ "$FM_PR_REG_DATA_IDENTITY" = "$data_identity" ] || return 1
-  [ "$FM_PR_REG_CHECK_IDENTITY" = "$check_identity" ]
+  [ "$FM_PR_REG_DATA_IDENTITY" = "$data_identity" ] || {
+    FM_PR_POLL_REJECT_REASON="data file inode"; return 1; }
+  [ "$FM_PR_REG_CHECK_IDENTITY" = "$check_identity" ] || {
+    FM_PR_POLL_REJECT_REASON="check file inode"; return 1; }
 }
 
 # Everything fm_pr_poll_artifacts_valid proves except that the registration's
@@ -671,6 +687,7 @@ fm_pr_poll_artifacts_valid() {
 # hold the parsed records.
 fm_pr_poll_artifacts_content_valid() {
   local state=$1 id=$2 template=$3 state_device check data registration meta data_hash template_hash
+  FM_PR_POLL_REJECT_REASON="poll artifacts failed validation"
   fm_pr_task_id_valid "$id" || return 1
   [ -d "$state" ] && [ ! -L "$state" ] || return 1
   state_device=$(fm_pr_file_device "$state") || return 1
@@ -683,19 +700,28 @@ fm_pr_poll_artifacts_content_valid() {
   fm_pr_private_file_valid "$registration" 600 "$state_device" || return 1
   [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
   [ "$(fm_pr_file_link_count "$meta")" = 1 ] || return 1
-  cmp -s "$template" "$check" || return 1
-  fm_pr_poll_data_parse "$data" || return 1
-  data_hash=$(fm_pr_sha256 "$data") || return 1
-  template_hash=$(fm_pr_sha256 "$check") || return 1
+  cmp -s "$template" "$check" || {
+    FM_PR_POLL_REJECT_REASON="check file content"; return 1; }
+  fm_pr_poll_data_parse "$data" || {
+    FM_PR_POLL_REJECT_REASON="data file unreadable"; return 1; }
+  data_hash=$(fm_pr_sha256 "$data") || {
+    FM_PR_POLL_REJECT_REASON="data file unreadable"; return 1; }
+  template_hash=$(fm_pr_sha256 "$check") || {
+    FM_PR_POLL_REJECT_REASON="check file unreadable"; return 1; }
   fm_pr_poll_registration_parse "$registration" || return 1
   [ "$FM_PR_REG_ID" = "$id" ] || return 1
+  FM_PR_POLL_REJECT_REASON="data file content"
   [ "$FM_PR_REG_PROVIDER" = "$FM_PR_DATA_PROVIDER" ] || return 1
   [ "$FM_PR_REG_URL" = "$FM_PR_DATA_URL" ] || return 1
   [ "$FM_PR_REG_HOST" = "$FM_PR_DATA_HOST" ] || return 1
   [ "$FM_PR_REG_PATH" = "$FM_PR_DATA_PATH" ] || return 1
   [ "$FM_PR_REG_NUMBER" = "$FM_PR_DATA_NUMBER" ] || return 1
-  [ "$FM_PR_REG_DATA_HASH" = "$data_hash" ] || return 1
-  [ "$FM_PR_REG_TEMPLATE_HASH" = "$template_hash" ] || return 1
+  FM_PR_POLL_REJECT_REASON="poll artifacts failed validation"
+  [ "$FM_PR_REG_DATA_HASH" = "$data_hash" ] || {
+    FM_PR_POLL_REJECT_REASON="data file content"; return 1; }
+  [ "$FM_PR_REG_TEMPLATE_HASH" = "$template_hash" ] || {
+    # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
+    FM_PR_POLL_REJECT_REASON="check file content"; return 1; }
   fm_pr_metadata_identity_parse "$meta" || return 1
   [ "$FM_PR_META_PROVIDER" = "$FM_PR_DATA_PROVIDER" ] || return 1
   [ "$FM_PR_META_URL" = "$FM_PR_DATA_URL" ] || return 1
