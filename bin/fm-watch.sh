@@ -157,9 +157,10 @@
 #   check: secondmate <id> auto-relaunched after <cause> (<where>)
 #                          the liveness tick probed a registered secondmate's
 #                          recorded endpoint, got a relaunchable verdict - a
-#                          recovery-grade `dead`, or a `missing` the absence
-#                          proof settled as gone or agent-free - and relaunched
-#                          it through the
+#                          recovery-grade `dead`, a local `missing` the absence
+#                          proof settled as gone or agent-free, or a remote
+#                          `missing` read host-locally on its own host - and
+#                          relaunched it through the
 #                          same guarded fm-spawn.sh --secondmate path the
 #                          session-start sweep uses; one wake per relaunch, and
 #                          state/.secondmate-relaunch-<id> keeps the durable
@@ -1067,8 +1068,9 @@ EOF
 # bin/fm-secondmate-liveness-lib.sh (which owns the state contract, the remote
 # probe rules, the kill ordering, and the guarded relaunch). On a bounded
 # cadence each registered mate's recorded endpoint is probed once; only a
-# relaunchable verdict relaunches - `dead`, or a `missing` the absence proof
-# settled as gone or agent-free - every relaunch
+# relaunchable verdict relaunches - `dead`, a local `missing` the absence proof
+# settled as gone or agent-free, or a remote `missing` read host-locally on its
+# own host - every relaunch
 # (success or failure) becomes exactly one durable `check` wake row, and every
 # other verdict lands only in the triage log. The tick finishes every mate
 # before it wakes once on the first outcome, so one dead mate never delays
