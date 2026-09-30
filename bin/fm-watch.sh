@@ -1169,6 +1169,8 @@ resurface_absorbed() {  # <window> <throttle-marker> <age> <reason> [scope] [min
 wedge_defer_writing() {  # <window> <since-file> <triage-label> <idle-age>
   local win=$1 since_file=$2 label=$3 age=$4 key wsf wage
   key=$(window_key "$win")
+  clear_run_activity_tracking "$key"
+  clear_wait_tracking "$key"
   wsf="$STATE/.writing-since-$key"
   [ -e "$wsf" ] || date +%s > "$wsf"
   wage=$(age_of "$wsf")
@@ -1185,6 +1187,8 @@ wedge_defer_writing() {  # <window> <since-file> <triage-label> <idle-age>
 wedge_defer_run_activity() {  # <window> <since-file> <triage-label> <idle-age>
   local win=$1 since_file=$2 label=$3 age=$4 key marker run_age
   key=$(window_key "$win")
+  clear_write_tracking "$key"
+  clear_wait_tracking "$key"
   marker="$STATE/.run-active-since-$key"
   [ -e "$marker" ] || date +%s > "$marker"
   run_age=$(age_of "$marker")
@@ -1409,7 +1413,11 @@ EOF
       min_age=$PAUSE_RESURFACE_SECS; waited=", waiting ${wage}s"
       ;;
   esac
+  # Retire the competing deferral chains without erasing this wait's own
+  # re-surface throttle. Clearing .waiting-resurfaced here would make every
+  # threshold inside the long cadence publish another recheck.
   clear_write_tracking "$key"
+  clear_run_activity_tracking "$key"
   date +%s > "$since_file"
   resurface_absorbed "$win" "$STATE/.waiting-resurfaced-$key" "$wage" \
     "stale: $win (idle ${age}s${waited} - $kind, $subject, rechecked on a long cadence not a wedge; $action)" \
@@ -1418,13 +1426,31 @@ EOF
   return 0
 }
 
-# Drop a window's write-deferral chain wherever its stale bookkeeping resets, so
-# the bounded re-surface cadence is measured from the CURRENT quiet stretch and a
-# long-finished one cannot make the next deferral resurface immediately.
+# Drop each deferral chain independently so one active deferral can retire the
+# other chains without erasing its own re-surface throttle.
 clear_write_tracking() {  # <window-key>
   local key=$1
-  rm -f "$STATE/.writing-since-$key" "$STATE/.writing-resurfaced-$key" \
-    "$STATE/.run-active-since-$key" "$STATE/.run-active-resurfaced-$key"
+  rm -f "$STATE/.writing-since-$key" "$STATE/.writing-resurfaced-$key"
+}
+
+clear_run_activity_tracking() {  # <window-key>
+  local key=$1
+  rm -f "$STATE/.run-active-since-$key" "$STATE/.run-active-resurfaced-$key"
+}
+
+clear_wait_tracking() {  # <window-key>
+  local key=$1
+  rm -f "$STATE/.waiting-resurfaced-$key"
+}
+
+# Drop EVERY deferral chain a window can hold wherever its stale bookkeeping
+# resets, so each bounded re-surface cadence is measured from the CURRENT quiet
+# stretch and a long-finished one cannot make the next deferral resurface
+# immediately.
+clear_deferral_tracking() {  # <window-key>
+  clear_write_tracking "$1"
+  clear_run_activity_tracking "$1"
+  clear_wait_tracking "$1"
 }
 
 # The question the wedge timer never asked before it alarmed: is there still an
@@ -1490,7 +1516,7 @@ wedge_dead_record() {  # <window> <since-file> <triage-label> <idle-age> <pane-h
   # rather than deliver it once.
   fm_wake_append stale "$win" "$reason" || exit 1
   printf '%s %s' "$agent_state" "$id" > "$marker"
-  clear_write_tracking "$key"
+  clear_deferral_tracking "$key"
   wake "$reason"
 }
 
@@ -1519,7 +1545,7 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
     ''|*[!0-9]*)
       # Publish the repaired timer only after its old write-deferral chain is
       # gone, so observers cannot mistake a new idle window for the old chain.
-      clear_write_tracking "$(window_key "$win")"
+      clear_deferral_tracking "$(window_key "$win")"
       date +%s > "$since_file"
       triage_log "absorbed $label timer reset: $win"
       ;;
@@ -1531,7 +1557,7 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
         case "$reconciled" in
           done)
             rm -f "$since_file" "$escalation_file"
-            clear_write_tracking "$(window_key "$win")"
+            clear_deferral_tracking "$(window_key "$win")"
             triage_log "absorbed $label (reconciled state is done with no active run - awaiting merge, not a wedge): $win"
             return 0
             ;;
@@ -1559,7 +1585,7 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
         fi
         fm_wake_append stale "$win" "$reason" || exit 1
         rm -f "$since_file"
-        clear_write_tracking "$(window_key "$win")"
+        clear_deferral_tracking "$(window_key "$win")"
         wake "$reason"
       fi
       ;;
@@ -1602,7 +1628,7 @@ handle_paused_stale() {  # <window> <task> <hash>
   printf '%s' "$h" > "$STATE/.stale-$key"
   : > "$STATE/.paused-$key"
   rm -f "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key"
-  clear_write_tracking "$key"
+  clear_deferral_tracking "$key"
   statusf="$STATE/$task.status"
   mtime=$(stat_mtime "$statusf")
   case "$mtime" in ''|*[!0-9]*) mtime=$(date +%s) ;; esac
@@ -1689,7 +1715,7 @@ busy_turn_bound_check() {  # <window> <task> <hash> <since-file> <escalation-fil
       # leaves it, because the daemon owns that bookkeeping.
       key=$(window_key "$win")
       rm -f "$since_file" "$escalation_file"
-      clear_write_tracking "$key"
+      clear_deferral_tracking "$key"
       declared="declared:$(fm_wake_signal_sig "$statusf" || true)"
       if captain_held_silenced "$(status_declared_wait_line "$statusf")"; then
         printf '%s' "$declared" > "$STATE/.stale-$key"
@@ -1722,9 +1748,8 @@ clear_pause_state() {  # <window-key>
 # recheck, and re-surface throttle - can still reset the per-hash half alone.
 clear_stale_hash_tracking() {  # <window-key>
   local key=$1
-  clear_write_tracking "$key"
-  rm -f "$STATE/.stale-$key" "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key" \
-    "$STATE/.waiting-resurfaced-$key"
+  clear_deferral_tracking "$key"
+  rm -f "$STATE/.stale-$key" "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key"
 }
 
 clear_pause_tracking() {  # <window-key>
@@ -1951,7 +1976,7 @@ surface_nonterminal_stale() {  # <window> <hash>
   fi
   printf '%s' "$h" > "$STATE/.stale-$key"
   rm -f "$STATE/.stale-since-$key"
-  clear_write_tracking "$key"
+  clear_deferral_tracking "$key"
   if [ "$declared" -eq 0 ]; then
     : > "$STATE/.paused-$key"
     date +%s > "$STATE/.paused-rechecked-$key"
@@ -3075,7 +3100,7 @@ EOF
             if crew_is_provably_working "$(window_to_task "$w" "$STATE")"; then
               printf '%s' "$h" > "$sf"
               date +%s > "$ssf"
-              clear_write_tracking "$key"
+              clear_deferral_tracking "$key"
               triage_log "absorbed stale (provably working, overriding a stale captain-relevant status): $w"
             elif captain_call_stale_bound "$key" "$task"; then
               # The line is captain-relevant and stays so, but the backlog says
@@ -3087,14 +3112,14 @@ EOF
               # here as it already was after a first terminal alarm.
               printf '%s' "$h" > "$sf"
               rm -f "$ssf"
-              clear_write_tracking "$key"
+              clear_deferral_tracking "$key"
               triage_log "absorbed stale (open captain call already surfaced for this status): $w"
             else
               fm_wake_append stale "$w" "stale: $w" || exit 1
               stale_wait_record "$key"
               printf '%s' "$h" > "$sf"
               rm -f "$ssf"
-              clear_write_tracking "$key"
+              clear_deferral_tracking "$key"
               stale_status="$STATE/$(window_to_task "$w" "$STATE").status"
               stale_record=$(status_span_first_actionable_record "$stale_status" 0)
               case $? in
@@ -3171,7 +3196,7 @@ EOF
           busy_turn_bound_check "$w" "$task" "$h" "$ssf" "$ewf" && paused_bound=0
         else
           rm -f "$ssf" "$ewf"
-          clear_write_tracking "$key"
+          clear_deferral_tracking "$key"
         fi
         # A busy pane normally means real work resumed, so stale pause bookkeeping
         # is cleared - but not in the same poll the declared-pause cadence just
@@ -3189,7 +3214,7 @@ EOF
         busy_turn_bound_check "$w" "$task" "$h" "$ssf" "$ewf" && paused_bound=0
       else
         rm -f "$ssf" "$ewf"
-        clear_write_tracking "$key"
+        clear_deferral_tracking "$key"
       fi
       task=$(window_to_task "$w" "$STATE")
       if ! afk_present && status_is_paused_or_captain_held "$(status_declared_wait_line "$STATE/$task.status")" && [ "$busy_now" -ne 0 ]; then

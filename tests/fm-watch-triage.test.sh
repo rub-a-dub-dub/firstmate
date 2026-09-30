@@ -5624,6 +5624,97 @@ test_write_deferral_resurfaces_on_the_bounded_cadence() {
   pass "a write deferral re-surfaces once on the bounded pause cadence, so a churning worktree cannot stay invisible"
 }
 
+# The three deferral chains are alternatives, not layers: whichever one a
+# threshold takes describes the CURRENT quiet stretch, so it must retire the
+# other two. A chain left behind keeps aging, and the next episode that takes it
+# reads that stale marker as its own start - publishing a duration measured from
+# an episode that already ended, and firing the bounded re-surface on its first
+# crossing instead of after the cadence.
+test_write_deferral_retires_a_stale_run_activity_chain() {
+  local dir state fakebin out capture_file window key pane_hash sig pid wt back
+  dir=$(make_case wedge-write-retires-run-chain); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"
+  window="test:fm-chainswap"; wt="$dir/wt"
+  mkdir -p "$wt/src"
+  printf 'idle building output' > "$capture_file"
+  printf 'window=%s\nkind=ship\nworktree=%s\n' "$window" "$wt" > "$state/chainswap.meta"
+  printf 'working: implementing\n' > "$state/chainswap.status"
+  sig=$(seen_sig "$state/chainswap.status"); printf '%s' "$sig" > "$state/.seen-chainswap_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle building output")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  printf '%s' "$pane_hash" > "$state/.stale-$key"
+  back=$(( $(date +%s) - 500 ))
+  echo "$back" > "$state/.stale-since-$key"
+  set_mtime "$back" "$state/.stale-since-$key"
+  # An earlier episode deferred on the run's own activity and ended; its chain
+  # is still on disk, and the crew state no longer reports recent activity.
+  : > "$state/.run-active-since-$key"
+  set_mtime "$back" "$state/.run-active-since-$key"
+  : > "$state/.writing-since-$key"
+  set_mtime "$back" "$state/.writing-since-$key"
+  printf 'churn\n' > "$wt/src/main.c"
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 \
+    FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || { reap "$pid"; fail "the write deferral never re-surfaced on the bounded cadence"; }
+  grep -F "writing its worktree" "$out" >/dev/null \
+    || fail "the write deferral did not take the threshold: $(cat "$out")"
+  [ ! -e "$state/.run-active-since-$key" ] \
+    || fail "the write deferral left the previous run-activity chain on disk, so the next recent-activity episode would age from it"
+  [ ! -e "$state/.run-active-resurfaced-$key" ] \
+    || fail "the write deferral left the previous run-activity re-surface throttle on disk"
+  pass "a write deferral retires the run-activity chain, so a finished run-activity episode cannot age into the next one"
+}
+
+# The mirror of the rule above: a recent-activity deferral owns the current
+# quiet stretch, so the write chain a previous episode left behind must go.
+test_run_activity_deferral_retires_a_stale_write_chain() {
+  local dir state fakebin out capture_file window key pane_hash sig pid back
+  dir=$(make_case wedge-run-retires-write-chain); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"
+  window="test:fm-chainswap2"
+  printf 'idle building output' > "$capture_file"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/chainswap2.meta"
+  printf 'working: still compiling\n' > "$state/chainswap2.status"
+  sig=$(seen_sig "$state/chainswap2.status"); printf '%s' "$sig" > "$state/.seen-chainswap2_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle building output")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  printf '%s' "$pane_hash" > "$state/.stale-$key"
+  back=$(( $(date +%s) - 500 ))
+  echo "$back" > "$state/.stale-since-$key"
+  set_mtime "$back" "$state/.stale-since-$key"
+  : > "$state/.run-active-since-$key"
+  set_mtime "$back" "$state/.run-active-since-$key"
+  # A write-deferral chain from an episode that has since ended.
+  : > "$state/.writing-since-$key"
+  set_mtime "$back" "$state/.writing-since-$key"
+  : > "$state/.writing-resurfaced-$key"
+  set_mtime "$back" "$state/.writing-resurfaced-$key"
+  export FM_FAKE_CREW_STATE='state: working Â· source: run-step Â· validating (fixing) Â· activity: recent'
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 \
+    FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || { reap "$pid"; unset FM_FAKE_CREW_STATE; fail "the recent-activity deferral never re-surfaced on the bounded cadence"; }
+  grep -F "no-mistakes run has reported activity" "$out" >/dev/null \
+    || { unset FM_FAKE_CREW_STATE; fail "the recent-activity deferral did not take the threshold: $(cat "$out")"; }
+  [ ! -e "$state/.writing-since-$key" ] \
+    || { unset FM_FAKE_CREW_STATE; fail "the recent-activity deferral left the previous write chain on disk, so the next write episode would age from it"; }
+  [ ! -e "$state/.writing-resurfaced-$key" ] \
+    || { unset FM_FAKE_CREW_STATE; fail "the recent-activity deferral left the previous write re-surface throttle on disk"; }
+  unset FM_FAKE_CREW_STATE
+  pass "a recent-activity deferral retires the write chain, so a finished write episode cannot age into the next one"
+}
+
 # The worktree recorded for a secondmate is a provisioned firstmate home, and that
 # home runs its OWN supervision inside itself: its watcher beacon, pane hashes and
 # heartbeats keep state/ churning whether or not the mate produced anything. Reading
@@ -6833,6 +6924,8 @@ test_paused_authoritative_working_preserves_wedge_timer
 test_nonterminal_stale_repairs_missing_or_corrupt_timer
 test_wedge_escalation_deferred_while_worktree_is_written
 test_write_deferral_resurfaces_on_the_bounded_cadence
+test_write_deferral_retires_a_stale_run_activity_chain
+test_run_activity_deferral_retires_a_stale_write_chain
 test_secondmate_home_supervision_churn_is_not_write_evidence
 test_timer_repair_drops_a_finished_write_deferral_chain
 test_terminal_first_sight_drops_a_finished_write_deferral_chain
