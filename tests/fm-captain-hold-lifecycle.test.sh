@@ -1288,6 +1288,70 @@ test_pruned_answered_call_satisfies_completion_gate() {
   pass "a pruned recorded answer satisfies completion without accepting a bare archived close"
 }
 
+# The Done archive is append-only, so one call id can hold both an earlier
+# answered incarnation and a later bare close once retention has pruned both
+# rows. The row a live gate would refuse must keep refusing: an archived answer
+# belonging to an earlier incarnation of a reused id cannot answer for the call
+# this scout actually attested, whichever order tasks-axi lists the two rows in.
+test_reused_archived_call_id_refuses_a_bare_second_close() {
+  local home first second call rows
+  home=$(make_home reused-archived-call)
+  first=sample-reused-first-review
+  second=sample-reused-second-review
+  call=sample-reused-call
+  mkdir -p "$home/data/$first"
+  tasks_in "$home" add "$first" "Investigate the first incarnation" --kind scout \
+    --repo sample --start >/dev/null \
+    || fail "could not create the first reused-id origin"
+  write_origin_meta "$home" "$first"
+  printf 'done: report complete\n' > "$home/state/$first.status"
+  printf '# First incarnation\n\nOne captain choice remains.\n' > "$home/data/$first/report.md"
+  run_captain "$home" hold "$call" --title "Choose the reused route" \
+    --reason "captain choice pending" --repo sample --origin "$first" >/dev/null \
+    || fail "could not register the first incarnation of the reused call"
+  run_captain "$home" complete "$first" "$call" >/dev/null \
+    || fail "completion failed before the first incarnation was answered"
+  printf 'Choose the archived route.\n' > "$home/reused-answer.txt"
+  run_captain "$home" answer "$call" --decision-file "$home/reused-answer.txt" >/dev/null \
+    || fail "could not answer the first incarnation of the reused call"
+  tasks_in "$home" prune --keep 0 --state "done" >/dev/null \
+    || fail "could not prune the answered first incarnation"
+  assert_grep "$call" "$home/data/done-archive.md" \
+    "the answered first incarnation did not reach the done archive"
+
+  mkdir -p "$home/data/$second"
+  tasks_in "$home" add "$second" "Investigate the second incarnation" --kind scout \
+    --repo sample --start >/dev/null \
+    || fail "could not create the second reused-id origin"
+  write_origin_meta "$home" "$second"
+  printf 'done: report complete\n' > "$home/state/$second.status"
+  printf '# Second incarnation\n\nOne captain choice remains.\n' > "$home/data/$second/report.md"
+  run_captain "$home" hold "$call" --title "Choose the reused route" \
+    --reason "captain choice pending" --repo sample --origin "$second" >/dev/null \
+    || fail "the pruned call id could not be re-held for a second incarnation"
+  run_captain "$home" complete "$second" "$call" >/dev/null \
+    || fail "completion failed before the second incarnation was closed bare"
+  tasks_in "$home" "done" "$call" >/dev/null \
+    || fail "could not close the second incarnation out of band"
+  tasks_in "$home" prune --keep 0 --state "done" >/dev/null \
+    || fail "could not prune the bare second incarnation"
+  rows=$(grep -c -F -- "- [x] $call - " "$home/data/done-archive.md" || true)
+  [ "$rows" = 2 ] \
+    || fail "the fixture did not archive both incarnations of the reused call id (rows: $rows)"
+
+  if run_captain "$home" complete "$second" --none \
+      > "$home/reused-complete.out" 2> "$home/reused-complete.err"; then
+    fail "an earlier incarnation's archived answer satisfied completion for a call closed bare"
+  fi
+  if run_teardown "$home" "$second" \
+      > "$home/reused-teardown.out" 2> "$home/reused-teardown.err"; then
+    fail "teardown accepted a scout whose own call was closed without an answer"
+  fi
+  assert_present "$home/state/$second.meta" \
+    "refused teardown removed the unanswered scout metadata"
+  pass "an archived answer from an earlier incarnation of a reused call id does not answer for a bare close"
+}
+
 # A post-teardown visual review completes against the surviving report and
 # durable tasks, with no volatile task metadata and no second decision database.
 test_visual_review_uses_shared_completion_owner() {
@@ -4113,6 +4177,7 @@ TESTS=(
   test_deferral_leaves_captains_call_until_due
   test_out_of_band_close_is_recordable
   test_pruned_answered_call_satisfies_completion_gate
+  test_reused_archived_call_id_refuses_a_bare_second_close
   test_visual_review_uses_shared_completion_owner
   test_none_inventory_and_resolved_prose_do_not_create_holds
   test_terminal_single_owner_status_decision_does_not_block_empty_inventory

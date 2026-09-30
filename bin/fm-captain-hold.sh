@@ -461,12 +461,14 @@ body_has_resolution_record() {  # <task-body>
 }
 
 # A Done row can age out of the active markdown backlog before its originating
-# scout is torn down. Accept that archived identity only when the latest row
-# for the id still carries the same resolution record verify_hold_durable
-# requires from a live row. Looking at the latest occurrence keeps an older
-# answered incarnation from answering for a newer bare close of a reused id.
+# scout is torn down. Accept that archived identity only when every archived row
+# for the id carries the resolution record verify_hold_durable requires from a
+# live row, so an earlier answered incarnation cannot answer for a bare close of
+# a reused id whatever order the append-only archive lists the two in. The rows
+# are handed to body_has_resolution_record, which stays the single definition of
+# what a record is.
 archive_has_resolution_record() {  # <task-id>
-  local id=$1 archive found
+  local id=$1 archive rows row matched=0
   archive=$(fm_backlog_archive_file "$DATA") || {
     printf 'fm-captain-hold: the Done archive cannot be resolved for %s: %s\n' \
       "$id" "${FM_BACKLOG_TRANSITION_ERROR:-data directory $DATA cannot be resolved}" >&2
@@ -478,54 +480,51 @@ archive_has_resolution_record() {  # <task-id>
       "$id" "$archive" >&2
     return 2
   fi
-  if ! found=$(LC_ALL=C awk -v id="$id" '
-    function finish_row() {
-      if (matching) latest_valid = valid
+  if ! rows=$(LC_ALL=C awk -v id="$id" '
+    function flush_row() {
+      if (matching) printf "body=%s\n", body
     }
     BEGIN {
       prefix = "- [x] " id " - "
       matching = 0
-      valid = 0
-      latest_valid = 0
-      leader = ""
+      body = ""
+      filled = 0
     }
     substr($0, 1, 6) == "- [x] " {
-      finish_row()
+      flush_row()
       matching = (substr($0, 1, length(prefix)) == prefix)
-      valid = 0
-      leader = ""
+      body = ""
+      filled = 0
       next
     }
     substr($0, 1, 3) == "## " {
-      finish_row()
+      flush_row()
       matching = 0
-      valid = 0
-      leader = ""
+      body = ""
+      filled = 0
       next
     }
     matching {
       line = $0
       sub(/^  /, "", line)
-      if (line == "Resolution recorded by fm-captain-hold.") {
-        leader = "captain"
-      } else if (line == "Resolution recorded by fm-decision-hold.") {
-        leader = "decision"
-      } else if (line == "Captain decision:" && leader != "") {
-        valid = 1
-      } else if (line == "Reconciliation evidence:" && leader == "captain") {
-        valid = 1
-      }
+      if (filled) body = body "\\n" line
+      else body = line
+      filled = 1
     }
-    END {
-      finish_row()
-      if (latest_valid) print "found"
-    }
+    END { flush_row() }
   ' "$archive" 2>/dev/null); then
     printf 'fm-captain-hold: reading the Done archive for %s failed: %s\n' \
       "$id" "$archive" >&2
     return 2
   fi
-  [ "$found" = found ]
+  while IFS= read -r row; do
+    case "$row" in body=*) : ;; *) continue ;; esac
+    matched=1
+    body_has_resolution_record "${row#body=}" || return 1
+  done <<EOF
+$rows
+EOF
+  [ "$matched" = 1 ]
 }
 
 # The recorded decision digest of either record format, from the show-escaped
@@ -822,13 +821,6 @@ resolve_entry() {  # <origin-or-empty> <entry>; prints "<id> <how>" or fails
     2) return 2 ;;
   esac
   if [ -n "$origin" ] && [ "$origin" != "$BINDING_ANY" ]; then
-    legacy=$(legacy_hold_id "$origin" "$entry")
-    archive_status=0
-    archive_has_resolution_record "$legacy" || archive_status=$?
-    case "$archive_status" in
-      0) printf '%s archived-answer' "$legacy"; return 0 ;;
-      2) return 2 ;;
-    esac
     fail "no captain-held task $entry, no migrated hold for it, and no archived Done row recording its answer in this home's configured backlog (data directory $DATA); the nearest legacy identity $legacy also resolves to nothing"
   fi
   fail "no captain-held task $entry, no migrated hold for it, and no archived Done row recording its answer in this home's configured backlog (data directory $DATA)"
