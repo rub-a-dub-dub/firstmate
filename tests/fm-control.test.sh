@@ -177,7 +177,24 @@ case "${1:-}" in
   capture-pane)
     if [ -f "$D/devin" ]; then devin_screen "$(cat "$D/devin")"; elif [ -f "$D/pane" ]; then cat "$D/pane"; else printf '╭────╮\n│    │\n╰────╯\n'; fi
     exit 0 ;;
+  list-sessions)
+    # The endpoint-absence owner scans every session on the addressed server
+    # for the task's pinned window name. This case holds one session, and
+    # $D/other-session names a second one that still has the window.
+    printf 'fmses\n'
+    if [ -f "$D/other-session" ]; then cat "$D/other-session"; fi
+    exit 0 ;;
   list-windows)
+    prev=
+    want=
+    for a in "$@"; do
+      [ "$prev" = -t ] && want=${a#=}
+      prev=$a
+    done
+    if [ -f "$D/other-session" ] && [ "$want" = "$(cat "$D/other-session")" ]; then
+      printf 'fm-t1\n'
+      exit 0
+    fi
     if [ -f "$D/windows" ]; then cat "$D/windows"; fi
     exit 0 ;;
 esac
@@ -778,23 +795,36 @@ test_already_stopped_exit_is_idempotent() {
   pass "fm-control exit: an already-stopped agent is idempotent success with no bytes sent"
 }
 
-test_missing_tmux_endpoint_refuses_rather_than_claiming_a_stop() {
+test_missing_tmux_endpoint_resolves_through_the_absence_proof() {
   local dir out rc
+  # `missing` on tmux is not a finding about the endpoint on its own; it goes
+  # through the control plane's one absence proof, which scans every session on
+  # the addressed server for the task's PINNED window name
+  # (docs/agent-control.md "Reclaiming a task whose endpoint is gone").
+  #
+  # A complete scan that never sees the name proves the endpoint gone, so exit
+  # reports what the proof established rather than a stop it invented.
   dir=$(new_case gone)
   add_task "$dir" t1 claude
   : > "$dir/fake/windows"
   out=$(run_control "$dir" t1 exit); rc=$?
-  # `missing` on tmux is not a finding about the endpoint. A task record carries
-  # no socket identity for it, and any inventory describes only the tmux server
-  # this process addresses, so a window that is merely on a server this seat
-  # cannot reach is indistinguishable from one that was destroyed. exit refuses
-  # rather than claim a stop it cannot see, and sends nothing to an address it
-  # cannot trust. Reclaim of a destroyed endpoint is Herdr-only
-  # (docs/agent-control.md "Reclaiming a task whose endpoint is gone").
-  expect_code 1 "$rc" "a tmux endpoint whose absence cannot be proven must refuse"
+  expect_code 0 "$rc" "a complete scan that never saw the window proves the endpoint gone"$'\n'"$out"
+  assert_contains "$out" "endpoint-gone" \
+    "exit should report the endpoint the scan proved gone"
+  [ -z "$(literals "$dir")" ] || fail "nothing may be sent into an endpoint that no longer exists"
+
+  # The window found alive under another session is the case this test was
+  # written to pin: the agent may still be running there, so exit refuses
+  # rather than claim a stop it cannot see, and sends nothing either.
+  dir=$(new_case gone-elsewhere)
+  add_task "$dir" t1 claude
+  : > "$dir/fake/windows"
+  printf 'work' > "$dir/fake/other-session"
+  out=$(run_control "$dir" t1 exit); rc=$?
+  expect_code 1 "$rc" "a window still alive in another session must refuse"
   assert_not_contains "$out" "endpoint-gone" "exit must not report a stop it could not prove"
   [ -z "$(literals "$dir")" ] || fail "nothing may be sent into an endpoint exit cannot trust"
-  pass "fm-control exit: an unprovable tmux endpoint refuses instead of claiming the agent stopped"
+  pass "fm-control exit: a tmux missing endpoint follows the absence proof - gone reports, found refuses"
 }
 
 test_interrupt_refuses_when_no_agent_runs() {
@@ -1095,7 +1125,7 @@ test_verb_allowlist_is_closed
 test_resume_is_refused_with_its_reason
 test_relaunch_only_flags_are_rejected_on_other_verbs
 test_already_stopped_exit_is_idempotent
-test_missing_tmux_endpoint_refuses_rather_than_claiming_a_stop
+test_missing_tmux_endpoint_resolves_through_the_absence_proof
 test_interrupt_refuses_when_no_agent_runs
 test_ambiguous_endpoint_refuses
 test_busy_agent_is_interrupted_before_the_exit_command

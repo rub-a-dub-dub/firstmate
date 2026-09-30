@@ -124,9 +124,9 @@ case "${1:-}" in
     fi
     exit 0 ;;
   list-sessions)
-    # The endpoint-absence owner asks THIS, and only a definitively absent
-    # server proves anything: a running server that does not list the window
-    # cannot tell a destroyed window from one on a socket it cannot address.
+    # The endpoint-absence owner asks THIS first, then scans each session it
+    # names for the task's pinned window. A definitively absent server proves
+    # absence on its own; otherwise the scan's own result decides.
     if [ -f "$D/server-dead" ]; then
       echo 'no server running on /tmp/tmux-1000/default' >&2
       exit 1
@@ -1872,12 +1872,12 @@ strand_endpoint() {  # <case-dir> <id>
   : > "$1/fake/windows"
 }
 
-# Every tmux `missing` refuses on BOTH verbs, whatever produced it. tmux is the
-# one verified backend whose absence cannot be proven from a task record: the
-# record carries no socket identity for the endpoint, and any inventory
-# describes only the server this process happens to address. So a window that
-# is merely on a server this seat cannot reach is indistinguishable from one
-# that was destroyed, and neither verb will guess.
+# The tmux `missing` readings that PROVE nothing refuse on BOTH verbs: the scan
+# found the task's pinned window name still alive in some session, or it could
+# not complete. Either way the endpoint may still hold the agent a relaunch
+# would duplicate, so neither verb will guess. The sibling cases above cover
+# the two readings that do prove absence - no server at all, and a complete
+# scan that never saw the name.
 assert_tmux_missing_refuses() {  # <case-dir> <id> <what-was-staged>
   local dir=$1 id=$2 what=$3 out rc brief_before
 

@@ -1096,9 +1096,9 @@ secondmate_liveness_tick() {
         ;;
       skipped)
         # A MISSING endpoint the absence proof cannot call gone holds that way
-        # indefinitely - a tmux mate whose window was killed mid-session never
-        # becomes relaunchable on its own - so it is the captain's to
-        # reconcile and must reach them. Surfacing it needs a bound, because
+        # indefinitely - the proof found the task's window still alive in some
+        # session, or could not complete its scan, and neither resolves itself
+        # - so it is the captain's to reconcile and must reach them. Surfacing it needs a bound, because
         # this tick repeats every SECONDMATE_LIVENESS_SECS: the per-mate
         # episode marker is that bound, so one wake fires when the episode
         # opens and every later tick only triage-logs. `alive` and a

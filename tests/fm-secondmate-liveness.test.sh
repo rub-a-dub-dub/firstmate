@@ -843,11 +843,17 @@ test_missing_endpoint_relaunches_only_on_a_gone_verdict() {
   [ "$out" = 'alive|alive|0|||' ] \
     || fail "an endpoint the owner re-read as alive must be the ordinary already-live outcome, got: $out"
 
-  # The owner carries a reason only with `unproven`; for a verdict it DID
-  # establish it prints a bare `dead\t`, so the report must name that verdict
-  # rather than interpolating an empty clause and claiming the agent may still
-  # be alive there.
-  for verdict in dead bogus; do
+  # An endpoint the owner re-read as present but agent-free is adoptable, so it
+  # is relaunched with the husk killed first - the same answer `exit` reports as
+  # already-stopped and `relaunch` adopts.
+  out=$(probe_local_with_verdict "$w" "$(printf 'dead\t')")
+  [ "$out" = 'relaunchable|dead|1|confirmed agent absence on existing endpoint|backend=tmux|' ] \
+    || fail "a dead endpoint should be adopted with a pre-kill, got: $out"
+
+  # Only a verdict that established nothing is reported, and because the owner
+  # carries a reason only with `unproven` the report must name the verdict
+  # itself rather than interpolating an empty clause.
+  for verdict in bogus; do
     out=$(probe_local_with_verdict "$w" "$(printf '%s\t' "$verdict")")
     [ "$out" = "skipped|missing|0|||recorded endpoint 'firstmate:fm-sm1' did not resolve on the first read, and the endpoint absence proof answered '$verdict', which does not authorize re-creating it" ] \
       || fail "a '$verdict' verdict must report itself and relaunch nothing, got: $out"
@@ -881,7 +887,7 @@ test_sweep_reboot_with_no_server_recreates_endpoint() {
 # session), so a check that read only "is a server/session running" would
 # restore exactly one secondmate and then refuse the rest - this is the exact
 # shape of regression the sibling recreate-arm fix caught. Because
-# fm_backend_endpoint_absent proves absence per WINDOW NAME rather than per
+# fm_control_endpoint_absence_verdict proves absence per WINDOW NAME rather than per
 # server/session presence, a session that now exists (from an earlier
 # secondmate's own relaunch) does not disqualify a later one whose own window
 # is still nowhere in it.
@@ -897,7 +903,7 @@ test_sweep_reboot_with_no_server_recreates_endpoint() {
 # sweep parallelizes several respawns registered in one primary's state/ (its
 # per-home task-set lock is a single non-blocking `fm_lock_try_acquire`, so
 # concurrent fresh spawns already race there today regardless of this fix -
-# confirmed independent of fm_backend_endpoint_absent by reproducing the same
+# confirmed independent of fm_control_endpoint_absence_verdict by reproducing the same
 # lock refusal with two plain `dead` secondmates on unmodified fm-spawn.sh).
 # That is a distinct defect outside this task's scope (AGENTS.md: an accepted
 # risk is not authority to widen a task); it belongs in its own follow-up.

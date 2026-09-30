@@ -397,7 +397,15 @@ fm_control_endpoint_absence_verdict() {  # <backend> <target>
       fi
       while IFS= read -r session; do
         [ -n "$session" ] || continue
-        if ! windows=$(LC_ALL=C tmux list-windows -t "=$session" -F '#{window_name}' 2>/dev/null); then
+        # The adapter owns this read and what its failures MEAN, so the
+        # classification is not restated here. Either failure class leaves the
+        # scan incomplete for this purpose and refuses: even the definitive
+        # "that session is gone" answer (status 2) is a session that
+        # list-sessions had just named, so it disappeared mid-scan - and a
+        # window in it may have been MOVED into a session already scanned past
+        # rather than destroyed with it, which is the duplicate-agent risk this
+        # proof exists to refuse.
+        if ! windows=$(fm_backend_tmux_window_inventory "=$session"); then
           printf 'unproven\tsession %s could not be listed, so the window scan never completed and proves nothing' "'$session'"
           return 0
         fi

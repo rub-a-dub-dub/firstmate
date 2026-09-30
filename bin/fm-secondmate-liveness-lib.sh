@@ -246,18 +246,30 @@ fm_secondmate_liveness_probe() {  # <meta> <id> <full|poll>
         # put a second agent into a worktree its first one still owns, so it
         # needs the control plane's own absence proof - the same single owner
         # `exit` and `relaunch` consult, so the answer cannot drift into two
-        # verdicts for one endpoint. Only a positively `gone` endpoint
-        # authorizes re-creating it; every other verdict is reported for
-        # reconciliation rather than relaunched. The owner carries a reason
-        # only with `unproven` - it prints a bare `dead\t` or `alive\t` when it
-        # DID classify the endpoint - so the report names the verdict itself
-        # in that case rather than claiming an absence nobody established.
+        # verdicts for one endpoint, so this maps each of the owner's answers
+        # exactly as the other two callers do. `gone` re-creates the endpoint;
+        # `dead` means the endpoint is there after all and provably agent-free,
+        # which is adopted with a pre-kill - the same reading the raw `dead`
+        # branch above takes, and the one `exit` reports as already-stopped and
+        # `relaunch` adopts; `alive` is a healthy mate; everything else is
+        # reported for reconciliation. The owner carries a reason only with
+        # `unproven` - it prints a bare `dead\t` or `alive\t` when it DID
+        # classify the endpoint - so a report names the verdict itself rather
+        # than claiming an absence nobody established.
         local absence verdict detail
         absence=$(fm_control_endpoint_absence_verdict "$backend" "$target")
         verdict=${absence%%$'\t'*}
         detail=${absence#*$'\t'}
         case "$verdict" in
           gone) FM_SM_LIVE_CAUSE="recorded endpoint confidently missing" ;;
+          dead)
+            # The endpoint survived and holds no agent, so there is nothing to
+            # re-create: adopt it exactly as a raw `dead` reading does, killing
+            # the husk first so the replacement can take the recorded address.
+            FM_SM_LIVE_STATE=dead
+            FM_SM_LIVE_KILL=1
+            FM_SM_LIVE_CAUSE="confirmed agent absence on existing endpoint"
+            ;;
           alive)
             # The owner did not merely fail to prove absence - it re-read the
             # endpoint and found the agent answering. The mate is healthy, so

@@ -3518,11 +3518,12 @@ if [ "$RELAUNCH" -eq 1 ]; then
     #
     # Two backends reach here, because two can prove an endpoint gone
     # (fm_control_endpoint_absence_verdict owns that argument): herdr, whose
-    # every read is scoped to the session the record names, and tmux for the
-    # single case of no server at all on this socket - the reboot, where every
-    # window that server held died with it. Every other tmux answer, and every
-    # secondmate, was already refused above, so those are the only two
-    # dispatches to make.
+    # every read is scoped to the session the record names, and tmux, whose
+    # task window name is pinned at creation so absence follows from no server
+    # at all on this socket or from a complete scan of every session that never
+    # saw the name. A tmux answer that found the name, or a scan that could not
+    # complete, was already refused above, as was every secondmate, so those
+    # are the only two dispatches to make.
     #
     # This deliberately uses the FLAT container shape rather than Herdr's
     # presentation projection: projection is a presentation-only layout that is
