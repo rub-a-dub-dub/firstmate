@@ -61,11 +61,12 @@
 #   ADOPTED as-is, while an endpoint PROVEN gone is RE-CREATED in the recorded
 #   worktree and the republished record rebinds the task to it. That proof is
 #   its own step, because a backend's `missing` also covers an endpoint that is
-#   merely unreachable from here - and it is only available on HERDR, which must
-#   still read the recorded pane as gone once that session's server is running
-#   again. A tmux `missing` always refuses: a task record carries no socket
-#   identity for its endpoint, so no read here can tell a destroyed window from
-#   one on a tmux server this process cannot address. An endpoint that turns out
+#   merely unreachable from here. On HERDR that means re-reading the recorded
+#   pane once that session's server is running again; on tmux it means the
+#   task's pinned window name is nowhere on the addressed server - no server at
+#   all, or a complete scan of every session that never saw it. A window found
+#   under any session, and any scan that could not complete, both refuse. An
+#   endpoint that turns out
 #   to have survived refuses too. The worktree is reused untouched either way; a
 #   rebind is a recovery, never a teardown. Only a crewmate or scout rebinds: a
 #   secondmate whose endpoint is gone is respawned by its own owner
@@ -1730,18 +1731,19 @@ if [ "$RELAUNCH" -eq 1 ]; then
   # endpoint was DESTROYED" with "the endpoint is UNREACHABLE from here right
   # now", and an unreachable endpoint can still hold the live agent this
   # relaunch would duplicate. So absence is PROVEN before it may rebind, never
-  # inferred from a failed read - and only HERDR can prove it:
+  # inferred from a failed read, and the control plane's one owner proves it:
   #   herdr - the recorded session's server is started, and the recorded pane is
   #           RE-READ through that session's own socket. `dead` means the pane
   #           survived the restart and is adopted after all; `alive` means the
   #           agent came back and refuses; only a second `missing` proves the
   #           pane itself did not survive.
-  #   tmux  - REFUSES, always. A task record carries no socket identity for its
-  #           endpoint, and a server-wide inventory describes only the server
-  #           this process addresses, so no read available here can tell "gone"
-  #           from "on a server I cannot see". A tmux `missing` therefore stays
-  #           as deadlocked as it was before this change - deliberately, and
-  #           with the reason stated rather than guessed past.
+  #   tmux  - the task's window NAME is its identity and is pinned at creation,
+  #           so absence is proven by no server at all on the addressed socket,
+  #           or by a complete scan of every session on it that never saw the
+  #           name. A window found anywhere refuses, and so does a scan that
+  #           could not complete, so an endpoint that may still hold a live
+  #           agent is left exactly where it is - deliberately, and with the
+  #           reason stated rather than guessed past.
   # Every transient or self-contradicting read stays `unreadable`/`ambiguous`
   # and refuses as it always did (bin/fm-backend.sh's fm_backend_agent_state
   # owns that vocabulary). The proof itself lives in one place for the whole
@@ -3541,11 +3543,20 @@ if [ "$RELAUNCH" -eq 1 ]; then
     # onto another herdr server - an identity change, published as a
     # self-consistent but wrong record.
     if [ "$BACKEND" = tmux ]; then
-      # The recorded server is gone, so its session went with it: stand the
-      # recorded session back up and re-create the task's own window in it,
-      # exactly as a fresh tmux spawn would, but against the RECORDED worktree
-      # the block above already resolved. Nothing else about the task moves.
-      SES=$(fm_backend_tmux_container_ensure) || exit 1
+      # Re-create the window under the RECORDED session, never the ambient one.
+      # fm_backend_tmux_container_ensure resolves from $TMUX (or falls back to
+      # the literal `firstmate`), so using it here would republish a task
+      # recorded at `mywork:fm-123` as `firstmate:fm-123` - the same silent
+      # session relocation the herdr branch below goes out of its way to
+      # prevent. The session may still exist (its windows were killed) or may
+      # have gone with the server; ensure exactly the recorded one either way,
+      # and open the task's own window in it against the RECORDED worktree the
+      # block above already resolved. Nothing else about the task moves.
+      SES=${RELAUNCH_TARGET%%:*}
+      tmux has-session -t "=$SES" 2>/dev/null || tmux new-session -d -s "$SES" || {
+        echo "error: task $ID's recorded tmux session '$SES' could not be re-created, so its endpoint was left alone" >&2
+        exit 1
+      }
       T="$SES:$W"
       WID=$(fm_backend_tmux_create_task "$SES" "$W" "$WT") || exit 1
       WT_TARGET="$WID"

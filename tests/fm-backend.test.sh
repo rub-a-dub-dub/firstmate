@@ -1233,18 +1233,32 @@ make_absence_verdict_tmux() {  # <dir> <mode> -> echoes fakebin
   mkdir -p "$fakebin"
   cat > "$fakebin/tmux" <<SH
 #!/usr/bin/env bash
-case "\${1:-} \$FM_TEST_TMUX_MODE" in
-  "list-sessions no-server")
-    printf 'no server running on /tmp/tmux-test/default\n' >&2
-    exit 1 ;;
-  "list-sessions socket-refused")
-    printf 'error connecting to /tmp/tmux-test/default (Connection refused)\n' >&2
-    exit 1 ;;
-  "list-sessions unreadable")
-    printf 'some other tmux failure\n' >&2
-    exit 1 ;;
-  "list-sessions "*)
-    printf 'firstmate\nother\n'
+# One session inventory per line of \$FM_TEST_TMUX_SESSIONS: "<session> <win>..".
+case "\${1:-}" in
+  list-sessions)
+    case "\$FM_TEST_TMUX_MODE" in
+      no-server)
+        printf 'no server running on /tmp/tmux-test/default\n' >&2
+        exit 1 ;;
+      socket-refused)
+        printf 'error connecting to /tmp/tmux-test/default (Connection refused)\n' >&2
+        exit 1 ;;
+      unreadable)
+        printf 'some other tmux failure\n' >&2
+        exit 1 ;;
+    esac
+    printf '%s\n' "\$FM_TEST_TMUX_SESSIONS" | awk 'NF { print \$1 }'
+    exit 0 ;;
+  list-windows)
+    want=
+    prev=
+    for a in "\$@"; do
+      [ "\$prev" = -t ] && want=\${a#=}
+      prev=\$a
+    done
+    [ "\$FM_TEST_TMUX_MODE" != session-unlistable ] || { printf 'lost server\n' >&2; exit 1; }
+    printf '%s\n' "\$FM_TEST_TMUX_SESSIONS" \
+      | awk -v s="\$want" 'NF && \$1 == s { for (i = 2; i <= NF; i++) print \$i }'
     exit 0 ;;
 esac
 exit 0
@@ -1253,10 +1267,11 @@ SH
   printf '%s\n' "$fakebin"
 }
 
-verdict_for() {  # <mode> -> "<verdict>|<has-reason>"
-  local mode=$1 fakebin out
+verdict_for() {  # <mode> <session-inventory> -> "<verdict>|<has-reason>"
+  local mode=$1 inventory=$2 fakebin out
   fakebin=$(make_absence_verdict_tmux "$TMP_ROOT/absence-verdict" "$mode")
   out=$(PATH="$fakebin:$PATH" FM_TEST_TMUX_MODE="$mode" \
+    FM_TEST_TMUX_SESSIONS="$inventory" \
     fm_control_endpoint_absence_verdict tmux 'firstmate:fm-sm1')
   case "${out#*$'\t'}" in
     '') printf '%s|no-reason\n' "${out%%$'\t'*}" ;;
@@ -1264,29 +1279,48 @@ verdict_for() {  # <mode> -> "<verdict>|<has-reason>"
   esac
 }
 
-test_tmux_absence_verdict_is_gone_only_for_an_absent_server() {
+test_tmux_absence_verdict_scans_every_session_for_the_pinned_window() {
   local out
   # shellcheck source=bin/fm-control-lib.sh
   . "$ROOT/bin/fm-control-lib.sh"
 
-  out=$(verdict_for no-server)
+  # No server at all: every window it held died with it.
+  out=$(verdict_for no-server '')
   [ "$out" = 'gone|no-reason' ] \
-    || fail "a definitively absent tmux server is the one provable absence, got: $out"
-  out=$(verdict_for socket-refused)
+    || fail "a definitively absent tmux server proves absence, got: $out"
+  out=$(verdict_for socket-refused '')
   [ "$out" = 'gone|no-reason' ] \
     || fail "a refused socket is the same absent-server answer, got: $out"
 
-  # A RUNNING server that simply does not list the window proves nothing: that
-  # is the renamed-session / moved-window / foreign-socket case, and treating
-  # it as absence is what puts a second agent on a live worktree.
-  out=$(verdict_for running)
-  [ "$out" = 'unproven|has-reason' ] \
-    || fail "a running server must never prove a window absent, got: $out"
+  # A RUNNING server whose complete inventory never shows the pinned name is
+  # the other proof - and the one that recovers every task parked across a
+  # reboot, since re-creating the first one starts a server.
+  out=$(verdict_for running 'firstmate main
+other othertask')
+  [ "$out" = 'gone|no-reason' ] \
+    || fail "a complete scan that never saw the pinned window proves absence, got: $out"
 
-  out=$(verdict_for unreadable)
+  # Found anywhere is positive evidence the window still exists: the recorded
+  # session, a renamed one, or one it was moved to all refuse.
+  out=$(verdict_for running 'firstmate main fm-sm1')
   [ "$out" = 'unproven|has-reason' ] \
-    || fail "an inventory that could not be read establishes no absence, got: $out"
-  pass "tmux endpoint absence: only a definitively absent server is gone; every other read is unproven"
+    || fail "the window still in its recorded session must refuse, got: $out"
+  out=$(verdict_for running 'work main fm-sm1')
+  [ "$out" = 'unproven|has-reason' ] \
+    || fail "a renamed session still holding the window must refuse, got: $out"
+  out=$(verdict_for running 'firstmate main
+work fm-sm1')
+  [ "$out" = 'unproven|has-reason' ] \
+    || fail "a window moved into another live session must refuse, got: $out"
+
+  # Fails closed: an incomplete scan proves nothing, in either read.
+  out=$(verdict_for unreadable '')
+  [ "$out" = 'unproven|has-reason' ] \
+    || fail "a session list that could not be read establishes no absence, got: $out"
+  out=$(verdict_for session-unlistable 'firstmate main')
+  [ "$out" = 'unproven|has-reason' ] \
+    || fail "a session whose windows could not be listed leaves the scan incomplete, got: $out"
+  pass "tmux endpoint absence: an absent server or a complete scan missing the pinned window is gone; found or incomplete refuses"
 }
 
 test_spawn_refuses_codex_app_backend_flag
@@ -1294,4 +1328,4 @@ test_spawn_refuses_unknown_fm_backend_env
 test_spawn_default_backend_writes_no_meta_field
 test_spawn_explicit_backend_flag_beats_autodetect_herdr_env
 test_spawn_autodetect_nesting_resolves_tmux_silently
-test_tmux_absence_verdict_is_gone_only_for_an_absent_server
+test_tmux_absence_verdict_scans_every_session_for_the_pinned_window

@@ -2936,7 +2936,19 @@ case "${1:-}" in
       esac
     done
     exit 0 ;;
+  list-sessions)
+    # The absence owner scans every session for the task's pinned window name.
+    # FM_FAKE_WINDOW_ELSEWHERE names a second session that still holds it -
+    # the renamed/moved case, where absence is NOT provable.
+    printf 'firstmate\n'
+    [ -z "${FM_FAKE_WINDOW_ELSEWHERE:-}" ] || printf '%s\n' "$FM_FAKE_WINDOW_ELSEWHERE"
+    exit 0 ;;
   list-windows)
+    if [ -n "${FM_FAKE_WINDOW_ELSEWHERE:-}" ] \
+      && [ "$(fake_window_of -t "$@")" = "$FM_FAKE_WINDOW_ELSEWHERE" ]; then
+      printf '%s\n' fm-sm1
+      exit 0
+    fi
     printf 'main\n'
     [ "${FM_FAKE_WINDOW_GONE:-0}" = 1 ] && exit 0
     for win in fm-sm1 fm-sm2; do
@@ -3044,17 +3056,18 @@ test_secondmate_liveness_tick_relaunches_dead_endpoint_once() {
   pass "watch liveness: a dead secondmate is relaunched once, ledgered, and quiet afterwards"
 }
 
-# A missing tmux endpoint is never provably gone - the record carries no socket
-# identity - so the tick must not re-create it, and the captain has to learn
-# that a registered mate is unrecoverable. The report is bounded: one check wake
-# when the episode opens, triage-only on every later tick, and the episode
-# clears when the mate is seen live again so a second loss reports afresh.
+# A recorded address that stops resolving while the task's pinned window is
+# still alive in ANOTHER session is not a provable absence, so the tick must
+# not re-create it and the captain has to learn the mate needs reconciling.
+# The report is bounded: one check wake when the episode opens, triage-only on
+# every later tick, and the episode clears when the mate is seen live again so
+# a second loss reports afresh.
 test_secondmate_liveness_tick_reports_an_unprovable_missing_endpoint_once() {
   local dir state pid out
   dir=$(make_secondmate_liveness_case liveness-missing)
   state="$dir/state"
 
-  run_liveness_leg "$dir" missing FM_FAKE_WINDOW_GONE=1; pid=$LIVENESS_PID
+  run_liveness_leg "$dir" missing FM_FAKE_WINDOW_GONE=1 FM_FAKE_WINDOW_ELSEWHERE=work; pid=$LIVENESS_PID
   wait_for_exit "$pid" 300 || fail "the watcher did not exit on its missing-endpoint wake"
   out="$dir/watch-missing.out"
   grep -F 'check: secondmate sm1 endpoint is missing and was not relaunched' "$out" >/dev/null \
@@ -3073,7 +3086,7 @@ test_secondmate_liveness_tick_reports_an_unprovable_missing_endpoint_once() {
   # While the episode stands, later ticks are triage-only: no second wake.
   drain_liveness_wakes "$dir"
   rm -f "$state/.secondmate-liveness-tick"
-  run_liveness_leg "$dir" missing-again FM_FAKE_WINDOW_GONE=1; pid=$LIVENESS_PID
+  run_liveness_leg "$dir" missing-again FM_FAKE_WINDOW_GONE=1 FM_FAKE_WINDOW_ELSEWHERE=work; pid=$LIVENESS_PID
   sleep 4
   is_live_non_zombie "$pid" \
     || fail "a standing missing episode re-woke the watcher: $(cat "$dir/watch-missing-again.out" "$dir/watch-missing-again.err")"
@@ -3096,7 +3109,7 @@ test_secondmate_liveness_tick_reports_an_unprovable_missing_endpoint_once() {
 
   drain_liveness_wakes "$dir"
   rm -f "$state/.secondmate-liveness-tick"
-  run_liveness_leg "$dir" missing-twice FM_FAKE_WINDOW_GONE=1; pid=$LIVENESS_PID
+  run_liveness_leg "$dir" missing-twice FM_FAKE_WINDOW_GONE=1 FM_FAKE_WINDOW_ELSEWHERE=work; pid=$LIVENESS_PID
   wait_for_exit "$pid" 300 || fail "a fresh loss after a recovery did not report"
   grep -F 'check: secondmate sm1 endpoint is missing and was not relaunched' "$dir/watch-missing-twice.out" >/dev/null \
     || fail "a second episode was not reported: $(cat "$dir/watch-missing-twice.out" "$dir/watch-missing-twice.err")"

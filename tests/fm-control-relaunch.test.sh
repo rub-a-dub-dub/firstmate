@@ -167,21 +167,32 @@ case "${1:-}" in
     done
     printf '%s\n' "$ses" >> "$D/created-sessions"
     exit 0 ;;
+  has-session)
+    # A dead server has no sessions to find; otherwise only the recorded one
+    # exists, so a rebind that targets any other name must create it.
+    [ ! -f "$D/server-dead" ] || exit 1
+    shift
+    t=
+    while [ $# -gt 0 ]; do case "$1" in -t) t=${2:-}; shift 2 ;; *) shift ;; esac; done
+    [ "${t#=}" = "$(cat "$D/session-name" 2>/dev/null || printf firstmate)" ]
+    exit $? ;;
   new-window)
     # Model the one thing an endpoint re-creation depends on: the window now
     # appears in the session inventory, so the very next agent-state read stops
     # answering `missing`. Echo a stable window id the way the real -P -F does.
     shift
-    name=
+    name= into=
     while [ $# -gt 0 ]; do
       case "$1" in
         -n) name=${2:-}; shift 2 ;;
-        -c|-t) shift 2 ;;
+        -t) into=${2:-}; shift 2 ;;
+        -c) shift 2 ;;
         *) shift ;;
       esac
     done
     printf '%s\n' "$name" >> "$D/windows"
     printf '%s\n' "$name" >> "$D/created-windows"
+    printf '%s\n' "${into%%:*}" >> "$D/created-window-sessions"
     printf '@9\n'
     exit 0 ;;
 esac
@@ -1892,13 +1903,27 @@ assert_tmux_missing_refuses() {  # <case-dir> <id> <what-was-staged>
   [ ! -s "$dir/fake/literal" ] || fail "a refused transaction must launch nothing ($what)"
 }
 
-test_tmux_refuses_a_window_missing_from_its_session() {
-  local dir
+# The task's window NAME is pinned at creation, so a COMPLETE scan of every
+# session that never finds it proves the endpoint gone - the reading that makes
+# a reboot recover every parked task, not just the one whose relaunch happens
+# to start the server. Its siblings below stay refusals because each of them is
+# a scan that either found the name or could not complete.
+test_tmux_recovers_a_window_absent_from_every_session() {
+  local dir out rc
   dir=$(new_case tmux-gone rl60)
   add_ship_task "$dir" rl60 claude
   strand_endpoint "$dir" rl60
-  assert_tmux_missing_refuses "$dir" rl60 "window absent from a readable session inventory"
-  pass "tmux: a window absent from its session refuses both verbs rather than being assumed gone"
+
+  out=$(run_control "$dir" rl60 exit); rc=$?
+  expect_code 0 "$rc" "exit must accept a window absent from every session"$'\n'"$out"
+  assert_contains "$out" "endpoint-gone" \
+    "exit should report the endpoint the scan proved gone"
+
+  out=$(run_spawn "$dir" rl60 --relaunch --harness claude); rc=$?
+  expect_code 0 "$rc" "relaunch must re-create an endpoint the scan proved gone"$'\n'"$out"
+  assert_present "$dir/fake/created-windows" \
+    "a relaunch onto a proven-gone endpoint must re-create its window"
+  pass "tmux: a window absent from a complete session scan is proven gone, so both verbs recover the task"
 }
 
 test_tmux_refuses_a_session_that_cannot_be_found() {
@@ -1935,7 +1960,17 @@ test_tmux_recovers_a_task_whose_server_is_gone() {
   expect_code 0 "$rc" "relaunch must re-create an endpoint a dead server proved gone"$'\n'"$out"
   assert_present "$dir/fake/created-windows" \
     "a relaunch onto a proven-gone endpoint must re-create its window"
-  pass "tmux: a dead server on this socket is the one provable absence, so both verbs recover the task"
+  # The record names session `fmses`; resolving the container from the ambient
+  # seat would silently republish the task under `firstmate` instead.
+  assert_contains "$(cat "$dir/fake/created-window-sessions")" "fmses" \
+    "the re-created window must go into the RECORDED session, not the ambient one"
+  assert_not_contains "$(cat "$dir/fake/created-window-sessions")" "firstmate" \
+    "a rebind must never relocate a task into the ambient firstmate session"
+  assert_contains "$(cat "$dir/fake/created-sessions")" "fmses" \
+    "the recorded session must be the one stood back up"
+  [ "$(meta_field "$dir" rl62 window)" = "fmses:fm-rl62" ] \
+    || fail "the republished record must keep the recorded session: $(meta_field "$dir" rl62 window)"
+  pass "tmux: a proven-gone endpoint is re-created under its RECORDED session, never the ambient one"
 }
 
 test_reclaim_refuses_an_unreadable_endpoint() {
@@ -2472,7 +2507,7 @@ test_spawn_relaunch_refuses_a_pending_authoritative_close
 test_spawn_relaunch_refuses_contradicting_flags
 test_spawn_relaunch_refuses_an_unrecorded_task
 test_spawn_relaunch_refuses_a_pane_outside_the_worktree
-test_tmux_refuses_a_window_missing_from_its_session
+test_tmux_recovers_a_window_absent_from_every_session
 test_tmux_refuses_a_session_that_cannot_be_found
 test_tmux_recovers_a_task_whose_server_is_gone
 test_reclaim_refuses_an_unreadable_endpoint

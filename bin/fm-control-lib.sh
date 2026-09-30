@@ -331,49 +331,84 @@ fm_control_backend_state_verified() {  # <backend>
 #     passes `--session <session>`, so the recheck starts and reads the session
 #     the RECORD names, through that session's own socket. The answer is about
 #     the task's endpoint and nothing else.
-#   tmux CAN prove exactly one case and no other: no server at all on the
-#     socket this process addresses. Every window that server held died with
-#     it, so the recorded endpoint cannot hold an agent - the reboot case, and
-#     the reason a machine restart recovers its parked tasks instead of
-#     stranding them. Nothing weaker qualifies, because a task's record does
-#     not carry the endpoint's socket identity: against a RUNNING server, a
-#     window missing from the inventory is indistinguishable from a renamed
-#     session, a window moved out of the recorded one, or a window on a server
-#     this process cannot address, and each of those is the duplicate-agent
-#     risk. So a completed scan that does not see the window stays `unproven`,
-#     and so does an inventory that could not be read at all.
+#   tmux CAN prove it from the window NAME, which is the task's identity and is
+#     pinned at creation (automatic-rename/allow-rename off). Absence is proven
+#     by no server at all on the socket this process addresses, or by a
+#     COMPLETE scan of every session on it that never saw the name. Scanning is
+#     what recovers EVERY task parked across a reboot rather than only the
+#     first - re-creating one starts a server, which a server-presence proxy
+#     would then read as "running" for all the rest - and it is the only
+#     reading available at all when firstmate itself runs inside tmux. It fails
+#     closed: an unlistable session leaves the scan incomplete and proves
+#     nothing, and finding the name anywhere - recorded session, renamed
+#     session, or a session it was moved to - refuses. The one gap it cannot
+#     close is a window alive on a server this process cannot address, since a
+#     task record carries no socket identity; the no-server reading has that
+#     same gap.
 #
 # Both control-plane callers share this one implementation so the proof cannot
 # drift into two answers for the same endpoint.
 fm_control_endpoint_absence_verdict() {  # <backend> <target>
-  local backend=${1-} target=${2-} sessions
+  local backend=${1-} target=${2-} sessions session windows window
   fm_backend_source "$backend" \
     || { printf 'unproven\tbackend %s could not be loaded to prove anything about that endpoint' "'$backend'"; return 0; }
   case "$backend" in
     tmux)
-      # One tmux answer proves absence and only one: NO SERVER AT ALL on the
-      # socket this process addresses, which is the reboot case - every window
-      # that server held died with it, so the recorded endpoint cannot be
-      # holding an agent. Nothing weaker qualifies. A running server that does
-      # not list the window proves nothing, because a task record carries no
-      # socket identity for its endpoint: a renamed session, a window moved
-      # out of the recorded one, and a window living on a server this process
-      # cannot address all read identically here, and each of them is the
-      # duplicate-agent risk. So a completed scan that simply does not see the
-      # window stays `unproven`, and so does any read that failed for a reason
-      # other than a definitively absent server.
-      if sessions=$(LC_ALL=C tmux list-sessions -F '#{session_name}' 2>&1); then
-        printf 'unproven\tthe tmux server this process addresses is running and does not list that window, which a task record carries no socket identity to tell apart from a window alive on a server this process cannot address'
+      # The task's WINDOW NAME is its identity here, and it is pinned at
+      # creation - fm_backend_tmux_create_task turns automatic-rename and
+      # allow-rename off - so scanning every session's inventory for that name
+      # answers "is this task's window still anywhere on this server" directly.
+      # Two readings prove absence: no server at all (the reboot - every window
+      # it held died with it), and a COMPLETE scan of every session that never
+      # saw the name.
+      #
+      # Scanning is what makes a reboot recover EVERY parked task rather than
+      # one: re-creating the first task starts a server, and a server-presence
+      # proxy would then answer "running" for every task after it. It is also
+      # the only reading available at all when firstmate itself runs inside
+      # tmux, where a server is always up.
+      #
+      # It fails closed. A session whose windows cannot be listed leaves the
+      # scan INCOMPLETE, so it proves nothing; and finding the name - in the
+      # recorded session, a renamed one, or one it was moved to - is positive
+      # evidence the window still exists, which refuses.
+      #
+      # One gap remains and is not closable here: a task record carries no
+      # socket identity, so a window alive on a tmux server this process cannot
+      # address is invisible to every read available. The no-server reading has
+      # that identical gap, so scanning is strictly stronger than the proxy, not
+      # a new risk.
+      case "$target" in
+        *:*:*|'':*|*:'') printf 'unproven\tthe recorded tmux target is not a single session:window pair, so no window name can be scanned for'; return 0 ;;
+        *:*) ;;
+        *) printf 'unproven\tthe recorded tmux target names no session, so no window name can be scanned for'; return 0 ;;
+      esac
+      window=${target#*:}
+      if ! sessions=$(LC_ALL=C tmux list-sessions -F '#{session_name}' 2>&1); then
+        case "$sessions" in
+          *"no server running on "*|*"error connecting to "*" (No such file or directory)"|*"error connecting to "*" (Connection refused)")
+            printf 'gone\t'
+            ;;
+          *)
+            printf 'unproven\tthe tmux session list could not be read, so no absence was established'
+            ;;
+        esac
         return 0
       fi
-      case "$sessions" in
-        *"no server running on "*|*"error connecting to "*" (No such file or directory)"|*"error connecting to "*" (Connection refused)")
-          printf 'gone\t'
-          ;;
-        *)
-          printf 'unproven\tthe tmux server inventory could not be read, so no absence was established'
-          ;;
-      esac
+      while IFS= read -r session; do
+        [ -n "$session" ] || continue
+        if ! windows=$(LC_ALL=C tmux list-windows -t "=$session" -F '#{window_name}' 2>/dev/null); then
+          printf 'unproven\tsession %s could not be listed, so the window scan never completed and proves nothing' "'$session'"
+          return 0
+        fi
+        if printf '%s\n' "$windows" | grep -Fqx "$window"; then
+          printf 'unproven\ta window named %s still exists in session %s, so the endpoint may still hold a live agent' "'$window'" "'$session'"
+          return 0
+        fi
+      done <<TMUX_SESSIONS
+$sessions
+TMUX_SESSIONS
+      printf 'gone\t'
       ;;
     herdr)
       # Start the RECORDED session's server (only the server - nothing is

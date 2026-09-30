@@ -258,6 +258,16 @@ fm_secondmate_liveness_probe() {  # <meta> <id> <full|poll>
         detail=${absence#*$'\t'}
         case "$verdict" in
           gone) FM_SM_LIVE_CAUSE="recorded endpoint confidently missing" ;;
+          alive)
+            # The owner did not merely fail to prove absence - it re-read the
+            # endpoint and found the agent answering. The mate is healthy, so
+            # this is the ordinary already-live outcome: nothing to relaunch,
+            # and nothing for the captain to reconcile.
+            FM_SM_LIVE_STATUS=alive
+            FM_SM_LIVE_STATE=alive
+            FM_SM_LIVE_LINE="secondmate $id already live (backend=$backend, answered on the endpoint recheck)"
+            return 0
+            ;;
           *)
             FM_SM_LIVE_STATUS=skipped
             if [ -n "$detail" ]; then
