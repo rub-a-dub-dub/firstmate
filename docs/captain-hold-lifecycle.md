@@ -114,10 +114,12 @@ Scout teardown calls the read-only `verify` subcommand after checking for the re
 `verify` checks three things:
 
 - The recorded attestation exists.
-- Every recorded inventory entry is still durable: actively captain-held, or carrying a recorded answer.
+- Every recorded inventory entry is still durable: actively captain-held, carrying a recorded answer, or pruned into the Done archive with that answer's resolution record intact.
 - No keyed status decision opened after the last `complete`.
 
 A keyed status decision opened after the last `complete` makes `verify` fail, and re-running `complete` is the repair.
+Done-history retention can prune an answered call out of the active backlog before its scout is torn down, so `complete` and `verify` both read the Done archive for the same resolution record a live closed row must carry, through the one definition of that record both paths already share.
+The append-only archive can list two incarnations of one reused call id, and this gate has no recorded date to bound them by the way replay's `fm_backlog_archive_row_probe` does, so an archived identity counts only when every archived row for that id carries a record: an earlier answered incarnation cannot answer for a later bare close whatever order the archive lists the two in, and a bare `tasks-axi done` close still fails the gate after pruning.
 The `--force` path remains the explicit captain-approved discard escape hatch.
 
 ## Cleanup never closes a captain call
@@ -514,6 +516,10 @@ The suite does not test the accepted merge-to-cleanup re-hold window or asynchro
 - A report-only unresolved captain call refuses `--none` completion before teardown can erase the source.
 - Non-forced scout teardown always requires the durable inventory verification.
 - The recorded-answer guard holds: a bare `tasks-axi done` close fails `verify` until `answer` records the captain's word, and an ordinary finished task cannot be dressed up as an answered call.
+- The recorded-answer guard survives Done-history pruning.
+  An answered call pruned into the archive still satisfies `complete` and lets teardown finish.
+  A pruned bare close does not.
+  An earlier answered incarnation archived beside a later bare close of the same reused call id does not answer for it, regardless of archive order.
 
 ### Answers, stamps, and deferral
 
