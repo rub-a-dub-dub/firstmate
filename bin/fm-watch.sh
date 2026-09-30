@@ -174,21 +174,6 @@
 #                          budget and is parked until a probe reads it live
 #                          again (FM_SECONDMATE_LIVENESS_MAX_ATTEMPTS and
 #                          FM_SECONDMATE_LIVENESS_WINDOW_SECS)
-#   check: secondmate <id> endpoint is missing and was not relaunched: <reason>
-#                          the recorded endpoint stopped resolving and the
-#                          absence proof could not settle it - its window was
-#                          still found somewhere, or the scan could not
-#                          complete - so nothing was re-created and the mate is
-#                          the captain's to reconcile. This tick repeats every
-#                          FM_SECONDMATE_LIVENESS_SECS, so the report is bounded
-#                          by a per-mate episode marker
-#                          (state/.secondmate-liveness-skipped-<id>): one wake
-#                          when the episode opens, triage-only on every later
-#                          tick. Reading the mate `alive`, or relaunching it,
-#                          clears the marker, so a later loss is reported
-#                          afresh. Every other skip - an ambiguous process, an
-#                          unreadable probe, an unreachable remote route - stays
-#                          triage-only and never wakes
 # For normal supervision, resume the session-start primary-harness protocol
 # after each printed reason. Direct duplicate invocations of this script still
 # no-op through the watcher singleton lock. A live holder whose beacon is stale
@@ -1087,7 +1072,7 @@ secondmate_liveness_tick() {
   [ "$(age_of "$tick_marker")" -ge "$SECONDMATE_LIVENESS_SECS" ] || return 0
   touch "$tick_marker" || return 1
   local now=$(( $(date +%s) )) meta id kind
-  local bound_marker skip_marker attempts notify_key reason queued err first_reason='' failed=0
+  local bound_marker attempts notify_key reason queued err first_reason='' failed=0
   for meta in "$STATE"/*.meta; do
     [ -e "$meta" ] || continue
     kind=$(fm_meta_get "$meta" kind 2>/dev/null || true)
@@ -1098,7 +1083,6 @@ secondmate_liveness_tick() {
     fm_secondmate_liveness_lock "$id" || continue
     fm_secondmate_liveness_probe "$meta" "$id" poll
     bound_marker="$STATE/.secondmate-relaunch-bound-$id"
-    skip_marker="$STATE/.secondmate-liveness-skipped-$id"
     reason='' notify_key='' err=''
     case "$FM_SM_LIVE_STATUS" in
       relaunchable)
@@ -1114,7 +1098,6 @@ secondmate_liveness_tick() {
             err="relaunch park marker could not be written; endpoint left $FM_SM_LIVE_STATE"
           fi
         elif fm_secondmate_liveness_relaunch "$meta" "$id" "$SECONDMATE_LIVENESS_TIMEOUT"; then
-          rm -f "$skip_marker"
           reason="check: secondmate $id auto-relaunched after $FM_SM_LIVE_CAUSE ($FM_SM_LIVE_WHERE)"
           notify_key="secondmate-relaunch-$id-$now"
         elif [ "$FM_SM_LIVE_STATUS" = skipped ]; then
@@ -1125,7 +1108,6 @@ secondmate_liveness_tick() {
         fi
         ;;
       alive)
-        rm -f "$skip_marker"
         if [ -e "$bound_marker" ] || [ -L "$bound_marker" ]; then
           if ! fm_secondmate_liveness_ledger_add "$id" rearmed; then
             err="relaunch ledger is unwritable; auto-relaunch stays paused"
@@ -1137,26 +1119,12 @@ secondmate_liveness_tick() {
         fi
         ;;
       skipped)
-        # A MISSING endpoint the absence proof cannot call gone holds that way
-        # indefinitely - the proof found the task's window still alive in some
-        # session, or could not complete its scan, and neither resolves itself
-        # - so it is the captain's to reconcile and must reach them. Surfacing it needs a bound, because
-        # this tick repeats every SECONDMATE_LIVENESS_SECS: the per-mate
-        # episode marker is that bound, so one wake fires when the episode
-        # opens and every later tick only triage-logs. `alive` and a
-        # successful relaunch clear it, so a mate that comes back and is lost
-        # again is reported afresh. Every other skip - an ambiguous process, an
-        # unreadable probe, an unreachable remote route - is evidence of
-        # nothing about the endpoint and stays triage-only exactly as before.
-        if [ "$FM_SM_LIVE_STATE" != missing ] \
-          || [ -e "$skip_marker" ] || [ -L "$skip_marker" ]; then
-          triage_log "secondmate $id liveness: $FM_SM_LIVE_REASON"
-        elif printf '%s\t%s\n' "$now" "$FM_SM_LIVE_STATE" > "$skip_marker"; then
-          reason="check: secondmate $id endpoint is missing and was not relaunched: $FM_SM_LIVE_REASON"
-          notify_key="secondmate-liveness-missing-$id"
-        else
-          err="liveness skip marker could not be written; missing endpoint left unreported: $FM_SM_LIVE_REASON"
-        fi
+        # Every skip - a MISSING endpoint the absence proof could not settle,
+        # an ambiguous process, an unreadable probe, an unreachable remote
+        # route - leaves the endpoint exactly as found. The captain's account
+        # of one is the session-start sweep's unconditional
+        # SECONDMATE_LIVENESS: report; mid-session this stays triage-only.
+        triage_log "secondmate $id liveness: $FM_SM_LIVE_REASON"
         ;;
     esac
     if [ -n "$reason" ]; then
@@ -1165,10 +1133,6 @@ secondmate_liveness_tick() {
         || fm_wake_append check "$notify_key" "$reason"; then
         [ -n "$first_reason" ] || first_reason=$reason
       else
-        # The episode marker only bounds the notification, so an outcome that
-        # never reached the queue must not leave one behind: it would record a
-        # report that was never delivered and suppress every later retry.
-        rm -f "$skip_marker"
         err="check wake row could not be queued: $reason"
       fi
     fi

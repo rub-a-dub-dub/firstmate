@@ -1300,7 +1300,7 @@ Local routes use direct guarded filesystem operations, while remote routes deleg
 - When a running home advances and its loaded instruction surface (`AGENTS.md`, `bin/`, or `.agents/skills/`) changed, bootstrap sends the re-read nudge itself through the stable `fm-<id>` selector and reports the exact completed send as `BOOTSTRAP_INFO:`.
 - If that send fails, bootstrap keeps an idempotent retry marker and emits `NUDGE_SECONDMATES:` with the failure reason.
 - The same bootstrap run emits `SECONDMATE_LIVENESS:` only when a registered secondmate is skipped or its relaunch fails; already-live and successfully relaunched secondmates are handled silently.
-- Mid-session the watcher's liveness tick queues one `check` wake per mate when a MISSING endpoint could not be proven gone, and only triage-logs on later ticks of that same episode; every other skip - an ambiguous process, an unreadable probe, an unverified harness, an unreachable remote route - stays triage-only and never wakes. Seeing the mate live again, or relaunching it, clears the episode so a later loss is reported afresh.
+- Mid-session the watcher's liveness tick only triage-logs every skip - a MISSING endpoint that could not be proven gone, an ambiguous process, an unreadable probe, an unverified harness, an unreachable remote route - and never wakes on one; the captain's account of an endpoint the absence proof could not settle is the session-start sweep's unconditional `SECONDMATE_LIVENESS:` report.
 
 **Push inherited configuration during a session**
 

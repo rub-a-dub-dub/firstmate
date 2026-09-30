@@ -3282,3 +3282,40 @@ test_inject_msg_herdr_pane_gone_defers
 test_inject_msg_herdr_submits_through_backend_dispatch
 test_inject_msg_defers_on_dead_shell_unknown
 test_inject_msg_defers_on_unrecognized_composer_state
+
+# The watcher's wedge ladder defers a quiet pane whose own no-mistakes run
+# reports recent activity, stamping state/.run-active-since-<watcher key> and
+# throttling the bounded re-surface cadence on .run-active-resurfaced-<key>
+# (wedge_defer_run_activity in bin/fm-watch.sh). Both are stale-episode
+# bookkeeping, so the daemon's reset has to clear them alongside the writing
+# and waiting chains: a marker surviving a long-finished quiet stretch makes
+# the NEXT deferral resurface on its first call, waking with an age measured
+# from the wrong stretch.
+test_pause_reconcile_clears_the_run_activity_deferral_chain() {
+  local dir state win key marker leftover=
+  dir="$TMP_ROOT/pause-run-active"
+  state="$dir/state"
+  mkdir -p "$state"
+  win='firstmate:fm-x'
+  key=$(_stale_key "$win")
+
+  : > "$state/.paused-$key"
+  for marker in .stale- .stale-since- .wedge-escalations- .writing-since- \
+    .writing-resurfaced- .waiting-resurfaced- .run-active-since- \
+    .run-active-resurfaced-; do
+    : > "$state/$marker$key"
+  done
+
+  reconcile_pause_tracking "$win" "$state" 'working: back at it'
+
+  for marker in .paused- .stale- .stale-since- .wedge-escalations- .writing-since- \
+    .writing-resurfaced- .waiting-resurfaced- .run-active-since- \
+    .run-active-resurfaced-; do
+    [ ! -e "$state/$marker$key" ] || leftover="$leftover $marker$key"
+  done
+  [ -z "$leftover" ] \
+    || fail "a resumed task kept stale-episode bookkeeping the next deferral reads:$leftover"
+  pass "daemon pause reconcile: a resume clears every deferral chain, run-activity included"
+}
+
+test_pause_reconcile_clears_the_run_activity_deferral_chain

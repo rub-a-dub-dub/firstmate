@@ -119,7 +119,7 @@ That proof has one owner for the whole control plane (`fm_control_endpoint_absen
 The sweep reads the same verdict before re-creating a *local* missing secondmate's endpoint, so a secondmate whose window is still found somewhere - or whose scan could not complete - is reported for reconciliation rather than relaunched, exactly as both verbs refuse it, while every mate parked across a reboot is recovered.
 A remote mate is outside this proof's reach: its `missing` comes from the remote control script's own host-local reading, and the sweep acts on that rather than on a verdict this host cannot establish.
 Only a `gone` verdict authorizes the sweep to re-create a local endpoint; a `dead` one is adopted with a pre-kill because the endpoint survived, `alive` is a healthy mate, and every other verdict reports instead.
-The session-start sweep reports it on its `SECONDMATE_LIVENESS:` line, and the watcher's mid-session tick queues one `check` wake per mate when the episode opens - bounded by a per-mate episode marker, so a tick that repeats every `FM_SECONDMATE_LIVENESS_SECS` reports once rather than every time, and a mate seen live again (or successfully relaunched) clears the marker so a later loss is reported afresh.
+The session-start sweep reports it on its `SECONDMATE_LIVENESS:` line, which is where the captain learns an endpoint could not be proven gone; the watcher's mid-session tick leaves such a mate exactly as it found it and only triage-logs the skip.
 `exit` reports what the proof established and nothing more - see its row in the verb table above.
 
 What a reclaim is not:

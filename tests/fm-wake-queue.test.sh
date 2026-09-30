@@ -3058,62 +3058,36 @@ test_secondmate_liveness_tick_relaunches_dead_endpoint_once() {
 
 # A recorded address that stops resolving while the task's pinned window is
 # still alive in ANOTHER session is not a provable absence, so the tick must
-# not re-create it and the captain has to learn the mate needs reconciling.
-# The report is bounded: one check wake when the episode opens, triage-only on
-# every later tick, and the episode clears when the mate is seen live again so
-# a second loss reports afresh.
-test_secondmate_liveness_tick_reports_an_unprovable_missing_endpoint_once() {
-  local dir state pid out
+# neither re-create the endpoint nor destroy it. The captain learns about such
+# a mate from the session-start sweep's unconditional SECONDMATE_LIVENESS:
+# report; mid-session the skip is triage-only and never wakes.
+test_secondmate_liveness_tick_never_touches_an_unprovable_missing_endpoint() {
+  local dir state pid
   dir=$(make_secondmate_liveness_case liveness-missing)
   state="$dir/state"
 
   run_liveness_leg "$dir" missing FM_FAKE_WINDOW_GONE=1 FM_FAKE_WINDOW_ELSEWHERE=work; pid=$LIVENESS_PID
-  wait_for_exit "$pid" 300 || fail "the watcher did not exit on its missing-endpoint wake"
-  out="$dir/watch-missing.out"
-  grep -F 'check: secondmate sm1 endpoint is missing and was not relaunched' "$out" >/dev/null \
-    || fail "an unprovable missing endpoint was not reported: $(cat "$out" "$dir/watch-missing.err")"
-  assert_not_contains "$(cat "$dir/tmux.log")" "new-window" \
-    "an endpoint that cannot be proven gone must not be relaunched"
-  assert_not_contains "$(cat "$dir/tmux.log")" "kill-window" \
-    "an endpoint that cannot be proven gone must not be destroyed either"
+  sleep 4
+  is_live_non_zombie "$pid" \
+    || fail "an unprovable missing endpoint woke the watcher: $(cat "$dir/watch-missing.out" "$dir/watch-missing.err")"
+  kill_liveness_leg "$pid"
+  if [ -e "$dir/tmux.log" ]; then
+    assert_not_contains "$(cat "$dir/tmux.log")" "new-window" \
+      "an endpoint that cannot be proven gone must not be relaunched"
+    assert_not_contains "$(cat "$dir/tmux.log")" "kill-window" \
+      "an endpoint that cannot be proven gone must not be destroyed either"
+  fi
+  # fm_secondmate_liveness_relaunch ledgers its `attempt` row before it spawns
+  # anything, so an absent ledger is positive proof no relaunch was begun.
   [ ! -e "$state/.secondmate-relaunch-sm1" ] \
-    || fail "a reported-only episode ledgered a relaunch attempt: $(cat "$state/.secondmate-relaunch-sm1")"
-  [ "$(grep -c 'secondmate-liveness-missing-sm1' "$state/.wake-queue")" -eq 1 ] \
-    || fail "the missing-endpoint row was not queued exactly once: $(cat "$state/.wake-queue")"
-  [ -e "$state/.secondmate-liveness-skipped-sm1" ] \
-    || fail "the episode marker that bounds the report was not written"
-
-  # While the episode stands, later ticks are triage-only: no second wake.
-  drain_liveness_wakes "$dir"
-  rm -f "$state/.secondmate-liveness-tick"
-  run_liveness_leg "$dir" missing-again FM_FAKE_WINDOW_GONE=1 FM_FAKE_WINDOW_ELSEWHERE=work; pid=$LIVENESS_PID
-  sleep 4
-  is_live_non_zombie "$pid" \
-    || fail "a standing missing episode re-woke the watcher: $(cat "$dir/watch-missing-again.out" "$dir/watch-missing-again.err")"
-  kill_liveness_leg "$pid"
-  [ "$(grep -c 'secondmate-liveness-missing-sm1' "$state/.wake-queue" 2>/dev/null || true)" -eq 0 ] \
-    || fail "a standing episode queued a second wake: $(cat "$state/.wake-queue")"
+    || fail "a triage-only skip ledgered a relaunch attempt: $(cat "$state/.secondmate-relaunch-sm1")"
+  [ ! -e "$state/.wake-queue" ] || [ "$(grep -c secondmate "$state/.wake-queue")" -eq 0 ] \
+    || fail "an unprovable missing endpoint queued a wake: $(cat "$state/.wake-queue")"
   grep -F 'secondmate sm1 liveness:' "$state/.watch-triage.log" >/dev/null \
-    || fail "later ticks did not triage-log the standing episode: $(cat "$state/.watch-triage.log" 2>/dev/null)"
-
-  # Seeing the mate live again closes the episode, so a later loss reports.
-  drain_liveness_wakes "$dir"
-  rm -f "$state/.secondmate-liveness-tick"
-  run_liveness_leg "$dir" back FM_FAKE_TMUX_CURRENT_COMMAND=claude; pid=$LIVENESS_PID
-  sleep 4
-  is_live_non_zombie "$pid" \
-    || fail "the watcher exited against a mate that came back: $(cat "$dir/watch-back.out" "$dir/watch-back.err")"
-  kill_liveness_leg "$pid"
-  [ ! -e "$state/.secondmate-liveness-skipped-sm1" ] \
-    || fail "a mate seen live again did not clear its episode marker"
-
-  drain_liveness_wakes "$dir"
-  rm -f "$state/.secondmate-liveness-tick"
-  run_liveness_leg "$dir" missing-twice FM_FAKE_WINDOW_GONE=1 FM_FAKE_WINDOW_ELSEWHERE=work; pid=$LIVENESS_PID
-  wait_for_exit "$pid" 300 || fail "a fresh loss after a recovery did not report"
-  grep -F 'check: secondmate sm1 endpoint is missing and was not relaunched' "$dir/watch-missing-twice.out" >/dev/null \
-    || fail "a second episode was not reported: $(cat "$dir/watch-missing-twice.out" "$dir/watch-missing-twice.err")"
-  pass "watch liveness: an unprovable missing endpoint is reported once per episode, never relaunched"
+    || fail "the skip was not triage-logged: $(cat "$state/.watch-triage.log" 2>/dev/null)"
+  [ -e "$state/.secondmate-liveness-tick" ] \
+    || fail "the liveness cadence marker was not stamped"
+  pass "watch liveness: an unprovable missing endpoint is triage-logged, never relaunched or destroyed"
 }
 
 test_secondmate_liveness_tick_relaunches_every_dead_mate_before_waking() {
@@ -3823,7 +3797,7 @@ test_interruption_before_and_after_raw_commit
 test_wake_queue_prune_task
 test_drain_rotates_orphaned_scratch
 test_secondmate_liveness_tick_relaunches_dead_endpoint_once
-test_secondmate_liveness_tick_reports_an_unprovable_missing_endpoint_once
+test_secondmate_liveness_tick_never_touches_an_unprovable_missing_endpoint
 test_secondmate_liveness_tick_relaunches_every_dead_mate_before_waking
 test_secondmate_liveness_tick_leaves_alive_and_inconclusive_untouched
 test_secondmate_liveness_tick_cadence_gates_the_probe
