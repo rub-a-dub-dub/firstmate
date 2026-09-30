@@ -5574,6 +5574,28 @@ test_captured_completed_history() {
   pass 'captured completed status yields to synthetic subsequent development'
 }
 
+# The general form's second half: a worker on a declared wait must be able to
+# report a finding without losing that wait. An informational note: (unlike
+# working:, which is a real state transition) is not itself a state, so it
+# must never cancel or supersede a declared paused: beneath it.
+test_no_run_idle_pane_paused_survives_trailing_note() {
+  reset_fakes
+  local d; d=$(new_case paused-then-note)
+  make_repo_on_branch "$d/wt" fm/feat-pause-note
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-pause-note.meta" "window=fm:fm-feat-pause-note" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'paused: holding for the vendor rate limit to reset\nnote: found a related edge case worth flagging\n' > "$d/state/feat-pause-note.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" feat-pause-note
+  local out; out=$(run_crew_state "$d" feat-pause-note)
+  assert_contains "$out" "state: paused" "an informational note: does not cancel a declared pause"
+  assert_contains "$out" "source: status-log" "the declared pause is still read from the status log"
+  assert_contains "$out" "holding for the vendor rate limit to reset" "the pause reason is still carried in the detail"
+  assert_not_contains "$out" "found a related edge case" "the note's own text is not the pause detail"
+  pass "a worker can report a finding via note: without losing its declared pause"
+}
+
 test_captured_axi_status_shapes
 test_captured_inventory_replay
 test_captured_authority_transition
@@ -5765,5 +5787,7 @@ test_competing_live_runs_report_unknown_with_both_ids
 test_newer_failed_run_is_not_hidden_by_older_live_run
 test_unverifiable_run_selection_reports_unknown
 test_legacy_conflicting_run_records_report_unknown
+
+test_no_run_idle_pane_paused_survives_trailing_note
 
 echo "all fm-crew-state tests passed"

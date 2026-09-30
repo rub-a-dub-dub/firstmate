@@ -54,6 +54,8 @@ FM_SM_LIVE_LIB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 
 # shellcheck source=bin/fm-backend.sh
 . "$FM_SM_LIVE_LIB_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-control-lib.sh
+. "$FM_SM_LIVE_LIB_DIR/fm-control-lib.sh"
 # shellcheck source=bin/fm-remote-readiness-lib.sh
 . "$FM_SM_LIVE_LIB_DIR/fm-remote-readiness-lib.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
@@ -234,18 +236,34 @@ fm_secondmate_liveness_probe() {  # <meta> <id> <full|poll>
         FM_SM_LIVE_CAUSE="confirmed agent absence on existing endpoint"
       else
         # A `missing` address only proves the recorded endpoint stopped
-        # resolving - a renamed session or a window moved out of the recorded
-        # one reads exactly the same while the agent keeps running elsewhere -
-        # so a relaunch, the one outcome that can duplicate a live agent onto
-        # its own worktree, must additionally prove the endpoint is absent from
-        # the backend's whole surface. A backend with no such probe reports
-        # "not absent" and simply never qualifies.
-        if ! fm_backend_endpoint_absent "$backend" "$target"; then
-          FM_SM_LIVE_STATUS=skipped
-          FM_SM_LIVE_REASON="recorded endpoint '$target' does not resolve, but it could not be proven absent from $backend, so its agent may be alive there; reconcile the endpoint before any relaunch"
-          return 0
-        fi
-        FM_SM_LIVE_CAUSE="recorded endpoint confidently missing"
+        # resolving; it conflates a destroyed endpoint with one merely
+        # unreachable from this seat. Relaunching is the one outcome that can
+        # put a second agent into a worktree its first one still owns, so it
+        # needs the control plane's own absence proof - the same single owner
+        # `exit` and `relaunch` consult, so the answer cannot drift into two
+        # verdicts for one endpoint. Only a positively `gone` endpoint
+        # authorizes re-creating it; tmux always answers `unproven`, so a
+        # missing tmux secondmate is reported for reconciliation rather than
+        # relaunched.
+        local absence
+        absence=$(fm_control_endpoint_absence_verdict "$backend" "$target")
+        case "${absence%%$'\t'*}" in
+          gone) FM_SM_LIVE_CAUSE="recorded endpoint confidently missing" ;;
+          dead)
+            FM_SM_LIVE_KILL=1
+            FM_SM_LIVE_CAUSE="confirmed agent absence on existing endpoint"
+            ;;
+          alive)
+            FM_SM_LIVE_STATUS=skipped
+            FM_SM_LIVE_REASON="recorded endpoint '$target' did not resolve on the first read, but its agent answered on the recheck, so there is nothing to relaunch"
+            return 0
+            ;;
+          *)
+            FM_SM_LIVE_STATUS=skipped
+            FM_SM_LIVE_REASON="recorded endpoint '$target' does not resolve, and ${absence#*$'\t'}; its agent may still be alive there, so reconcile the endpoint before any relaunch"
+            return 0
+            ;;
+        esac
       fi
       FM_SM_LIVE_WHERE="backend=$backend"
       ;;

@@ -452,7 +452,13 @@ test_sweep_leaves_alive_secondmate_untouched() {
   pass "sweep: an already-live secondmate is untouched and distinguishable in verbose diagnostics"
 }
 
-test_sweep_respawns_authoritatively_missing_pi_secondmate() {
+# A `missing` tmux window says only that the RECORDED address stopped
+# resolving. tmux absence is unprovable from a task record - it carries no
+# socket identity, and a server-wide inventory describes only the server this
+# process addresses - so the control plane's one absence owner answers
+# `unproven` and the sweep must report the mate for reconciliation instead of
+# launching a second agent into the worktree the first one may still hold.
+test_sweep_reports_a_missing_tmux_secondmate_instead_of_relaunching_it() {
   local w fb tmuxfb log out
   w=$(new_world sweep-missing-pi)
   add_sm_home "$w" sm1 firstmate:fm-sm1 pi
@@ -461,10 +467,15 @@ test_sweep_respawns_authoritatively_missing_pi_secondmate() {
 
   out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" missing "$log")
 
-  assert_not_contains "$out" "SECONDMATE_LIVENESS:" "a successful missing-window recovery should stay silent by default"
-  assert_contains "$(cat "$log")" "new-window" "an authoritatively missing Pi secondmate should be relaunched"
-  assert_not_contains "$(cat "$log")" "kill-window" "an absent window should not need a destructive pre-kill"
-  pass "sweep: an authoritatively missing Pi secondmate window is relaunched"
+  assert_contains "$out" "SECONDMATE_LIVENESS: secondmate sm1: skipped:" \
+    "an unprovable tmux absence must be reported, never silently skipped"
+  assert_contains "$out" "tmux absence cannot be proven from a task record" \
+    "the skip should name the control plane's own reason"
+  assert_not_contains "$(cat "$log")" "new-window" \
+    "a missing tmux secondmate must not be relaunched on an unprovable absence"
+  assert_not_contains "$(cat "$log")" "kill-window" \
+    "an unprovable absence must not destroy anything either"
+  pass "sweep: a missing tmux secondmate is reported for reconciliation, not relaunched"
 }
 
 test_sweep_respawns_authoritatively_missing_pi_signed_secondmate() {
@@ -479,11 +490,13 @@ test_sweep_respawns_authoritatively_missing_pi_signed_secondmate() {
 
   assert_not_contains "$out" "unverified for recovery" \
     "a recorded pi-signed secondmate should be verified for recovery"
-  assert_contains "$(cat "$log")" "new-window" \
-    "an authoritatively missing pi-signed secondmate should be relaunched"
+  assert_contains "$out" "SECONDMATE_LIVENESS: secondmate sm1: skipped:" \
+    "a pi-signed mate behind an unprovable tmux absence must still be reported"
+  assert_not_contains "$(cat "$log")" "new-window" \
+    "a missing pi-signed tmux secondmate must not be relaunched on an unprovable absence"
   assert_not_contains "$(cat "$log")" "kill-window" \
-    "an absent pi-signed window should not need a destructive pre-kill"
-  pass "sweep: an authoritatively missing pi-signed secondmate window is relaunched"
+    "an unprovable absence must not destroy anything either"
+  pass "sweep: a recovery-verified harness does not by itself license relaunching an unprovable tmux absence"
 }
 
 test_sweep_never_acts_on_ambiguous_existing_process() {
@@ -516,18 +529,18 @@ test_sweep_never_acts_on_transient_unreadability() {
   pass "sweep: transient target unreadability never licenses recovery"
 }
 
-test_sweep_reports_missing_endpoint_relaunch_failure() {
+test_sweep_reports_dead_endpoint_relaunch_failure() {
   local w fb tmuxfb log out
-  w=$(new_world sweep-missing-failure)
-  add_sm_home "$w" sm1 firstmate:fm-sm1 pi
+  w=$(new_world sweep-dead-failure)
+  add_sm_home "$w" sm1 firstmate:fm-sm1
   fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
   log="$w/calls.log"; : > "$log"
 
-  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" missing "$log" FM_TEST_FAIL_NEW_WINDOW=1)
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" zsh "$log" FM_TEST_FAIL_NEW_WINDOW=1)
 
-  assert_contains "$out" "SECONDMATE_LIVENESS: secondmate sm1: respawn failed after recorded endpoint confidently missing" \
-    "a failed missing-endpoint relaunch should retain its authorizing cause"
-  pass "sweep: failed relaunch diagnostics distinguish a confidently missing endpoint"
+  assert_contains "$out" "SECONDMATE_LIVENESS: secondmate sm1: respawn failed after confirmed agent absence on existing endpoint" \
+    "a failed relaunch should retain the cause that authorized it"
+  pass "sweep: failed relaunch diagnostics name the endpoint verdict that authorized the attempt"
 }
 
 test_sweep_never_acts_on_unverified_harness_dead_reading() {
@@ -708,11 +721,11 @@ test_herdr_agent_state_preserves_husk_classifier
 test_agent_state_dispatcher_and_compatibility
 test_sweep_respawns_confirmed_dead_secondmate
 test_sweep_leaves_alive_secondmate_untouched
-test_sweep_respawns_authoritatively_missing_pi_secondmate
+test_sweep_reports_a_missing_tmux_secondmate_instead_of_relaunching_it
 test_sweep_respawns_authoritatively_missing_pi_signed_secondmate
 test_sweep_never_acts_on_ambiguous_existing_process
 test_sweep_never_acts_on_transient_unreadability
-test_sweep_reports_missing_endpoint_relaunch_failure
+test_sweep_reports_dead_endpoint_relaunch_failure
 test_sweep_never_acts_on_unverified_harness_dead_reading
 test_sweep_converges_no_retouch_once_alive
 test_sweep_skipped_under_detect_only
