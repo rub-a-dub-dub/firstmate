@@ -810,6 +810,7 @@ test_remote_poll_probe_unreachable_preserves_route() {
 # duplicate a live agent onto its own worktree.
 probe_local_with_verdict() {  # <w> <verdict-line> -> "<status>|<state>|<kill>|<cause>|<where>|<reason>"
   local w=$1 verdict=$2
+  # shellcheck disable=SC2016
   env STATE="$w/home/state" FM_HOME="$w/home" FM_DATA_OVERRIDE="$w/home/data" \
     FM_TEST_VERDICT="$verdict" \
     bash -c '

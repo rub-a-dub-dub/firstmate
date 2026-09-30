@@ -2717,7 +2717,7 @@ test_malformed_presentation_lock_reports_acquire_failure() {
 
   FM_STATE_OVERRIDE="$state" FM_STATUS_PRESENTATION_LOCK_TIMEOUT=1 \
     "$DRAIN" > "$out" 2> "$err" || fail "malformed-lock drain failed"
-  grep -F 'wake drain: status presentation lock could not be acquired safely' "$err" >/dev/null \
+  grep -F 'STATUS PRESENTATION INCOMPLETE: status presentation lock could not be acquired safely' "$out" >/dev/null \
     || fail "malformed presentation lock did not report an acquire failure"
   if grep -F 'STATUS PRESENTATION SKIPPED: lock remains held by live pid' "$out" >/dev/null; then
     fail "malformed presentation lock was reported as live-holder contention"

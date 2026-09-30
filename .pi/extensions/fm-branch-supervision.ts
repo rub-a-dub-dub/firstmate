@@ -2155,6 +2155,30 @@ ${context.command}
     call?: Text;
     result?: Text | Container;
   };
+  const formatOutcomesToolCall = (
+    args: unknown,
+    theme: Parameters<NonNullable<ToolDefinition["renderCall"]>>[1],
+    expanded: boolean,
+  ): string => {
+    const header = theme.fg("toolTitle", theme.bold("fm_branch_outcomes"));
+    if (args == null) return header;
+    const entries = typeof args === "object" && !Array.isArray(args)
+      ? Object.entries(args)
+      : [["args", args]];
+    if (entries.length === 0) return header;
+    if (expanded) {
+      const lines = entries.map(([key, value]) => {
+        const text = typeof value === "string" ? value : (JSON.stringify(value, null, 2) ?? String(value));
+        return `  ${key}: ${text.replace(/\t/g, "   ").replace(/\r/g, "").split("\n").join("\n    ")}`;
+      });
+      return `${header}\n${theme.fg("muted", lines.join("\n"))}`;
+    }
+    const pairs = entries
+      .map(([key, value]) => `${key}=${JSON.stringify(value) ?? String(value)}`)
+      .join(" ");
+    const preview = pairs.length > 100 ? `${pairs.slice(0, 97)}...` : pairs;
+    return `${header} ${theme.fg("muted", preview)}`;
+  };
   const refreshOutcomesToolShell = (
     shellState: OutcomesToolShellState,
     theme: Parameters<NonNullable<ToolDefinition["renderCall"]>>[1],
@@ -2184,11 +2208,11 @@ ${context.command}
       recent: Type.Optional(Type.Number({ description: "How many most-recent outcomes to read (default 20)" })),
     }),
     renderShell: "self",
-    renderCall: (_args, theme, context) => {
+    renderCall: (args, theme, context) => {
       if (calmPresentation.stockExportRendering) throw new Error("Use Pi stock export rendering");
       if (calmHides("assistant-tool-call")) return new Container();
       const shellState = context.state as OutcomesToolShellState;
-      shellState.call = new Text(theme.fg("toolTitle", theme.bold("fm_branch_outcomes")), 0, 0);
+      shellState.call = new Text(formatOutcomesToolCall(args, theme, context.expanded), 0, 0);
       return refreshOutcomesToolShell(shellState, theme, context);
     },
     renderResult: (result, options, theme, context) => {

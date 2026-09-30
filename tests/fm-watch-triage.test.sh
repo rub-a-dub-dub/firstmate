@@ -574,7 +574,7 @@ test_crew_wedge_reconciliation_state_classifier() {
   [ "$(crew_wedge_reconciliation_state a)" = recent ] \
     || fail "a live run reporting recent activity was not read as recent"
   FM_FAKE_CREW_STATE='state: done · source: run-step · checks green'
-  [ "$(crew_wedge_reconciliation_state a)" = done ] \
+  [ "$(crew_wedge_reconciliation_state a)" = "done" ] \
     || fail "a reconciled done task was not read as done"
   FM_FAKE_CREW_STATE='state: working · source: run-step · validating (fixing)'
   [ -z "$(crew_wedge_reconciliation_state a)" ] \
