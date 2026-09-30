@@ -18,6 +18,16 @@
 # after its durable wake is appended.
 # The receipt binds the terminal observation to the canonical registration and
 # lets a restart finish fixed-path removal without executing state-file bytes.
+#
+# A recorded file identity (fm_pr_file_identity: device:inode) is compared
+# against a live file across process restarts, which on macOS can span a
+# reboot: the device component of that pair is not stable across a reboot
+# even though the inode and file content are unchanged. Durable recovery
+# comparisons made through fm_pr_identity_matches therefore tolerate a
+# device-only difference and refuse a genuine inode or content change. Live
+# poll authentication stays stricter: fm_pr_poll_artifacts_valid requires the
+# full recorded identities, and the watcher may update only a proved
+# device-only shift through fm_pr_poll_registration_rerecord_device.
 
 FM_PR_PROVIDER=
 FM_PR_URL=
@@ -102,6 +112,34 @@ FM_PR_POLL_RETIREMENT_REJECTED=
 # so no rejection is labelled a poll-artifact failure it was not.
 # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
 FM_PR_POLL_REJECT_REASON=
+
+# Which component of a recorded identity a fm_pr_identity_matches call refused
+# - unreadable, content, or inode - so a caller can name it.
+# shellcheck disable=SC2034 # Output global, read by the sourcing caller.
+FM_PR_IDENTITY_MISMATCH=
+
+# Compare a live file against a recorded identity and content hash, tolerating
+# a device-only difference: the inode and the bytes must both match, and either
+# a changed inode or changed bytes refuses. Callers that additionally require
+# the recorded device compare it themselves.
+fm_pr_identity_matches() {
+  local path=$1 expected_identity=$2 expected_hash=$3
+  local live_identity live_hash live_inode expected_inode
+  FM_PR_IDENTITY_MISMATCH=
+  live_identity=$(fm_pr_file_identity "$path") || { FM_PR_IDENTITY_MISMATCH=unreadable; return 1; }
+  live_hash=$(fm_pr_sha256 "$path") || { FM_PR_IDENTITY_MISMATCH=unreadable; return 1; }
+  live_inode=${live_identity#*:}
+  expected_inode=${expected_identity#*:}
+  if [ "$live_inode" = "$expected_inode" ] && [ "$live_hash" = "$expected_hash" ]; then
+    return 0
+  fi
+  if [ "$live_hash" != "$expected_hash" ]; then
+    FM_PR_IDENTITY_MISMATCH=content
+  else
+    FM_PR_IDENTITY_MISMATCH=inode
+  fi
+  return 1
+}
 
 fm_task_id_path_safe() {
   local id=${1-}
@@ -667,20 +705,40 @@ fm_pr_poll_publish_prepared() {
 }
 
 fm_pr_poll_artifacts_valid() {
-  local state=$1 id=$2 template=$3 data_identity check_identity
+  local state=$1 id=$2 template=$3 data check data_identity check_identity
   fm_pr_poll_artifacts_content_valid "$state" "$id" "$template" || return 1
-  data_identity=$(fm_pr_file_identity "$state/$id.pr-poll") || {
-    FM_PR_POLL_REJECT_REASON="data file unreadable"; return 1; }
-  check_identity=$(fm_pr_file_identity "$state/$id.check.sh") || {
-    FM_PR_POLL_REJECT_REASON="check file unreadable"; return 1; }
+  data="$state/$id.pr-poll"
+  check="$state/$id.check.sh"
   # The recorded identities bind the registration to the exact sidecar and
   # check file objects published in its own transaction, so a byte-identical
   # replacement or a torn re-arm pairing one generation's check with another's
-  # registration is refused.
-  [ "$FM_PR_REG_DATA_IDENTITY" = "$data_identity" ] || {
-    FM_PR_POLL_REJECT_REASON="data file inode"; return 1; }
-  [ "$FM_PR_REG_CHECK_IDENTITY" = "$check_identity" ] || {
-    FM_PR_POLL_REJECT_REASON="check file inode"; return 1; }
+  # registration is refused. Live authentication also requires the recorded
+  # device, which the shared comparison deliberately tolerates for durable
+  # recovery, so it is compared here on its own.
+  if ! fm_pr_identity_matches "$data" "$FM_PR_REG_DATA_IDENTITY" "$FM_PR_REG_DATA_HASH"; then
+    FM_PR_POLL_REJECT_REASON="data file $FM_PR_IDENTITY_MISMATCH"
+    return 1
+  fi
+  data_identity=$(fm_pr_file_identity "$data") || {
+    FM_PR_POLL_REJECT_REASON="data file unreadable"
+    return 1
+  }
+  if [ "$data_identity" != "$FM_PR_REG_DATA_IDENTITY" ]; then
+    FM_PR_POLL_REJECT_REASON="data file device"
+    return 1
+  fi
+  if ! fm_pr_identity_matches "$check" "$FM_PR_REG_CHECK_IDENTITY" "$FM_PR_REG_TEMPLATE_HASH"; then
+    FM_PR_POLL_REJECT_REASON="check file $FM_PR_IDENTITY_MISMATCH"
+    return 1
+  fi
+  check_identity=$(fm_pr_file_identity "$check") || {
+    FM_PR_POLL_REJECT_REASON="check file unreadable"
+    return 1
+  }
+  if [ "$check_identity" != "$FM_PR_REG_CHECK_IDENTITY" ]; then
+    FM_PR_POLL_REJECT_REASON="check file device"
+    return 1
+  fi
 }
 
 # Everything fm_pr_poll_artifacts_valid proves except that the registration's
@@ -1151,30 +1209,25 @@ fm_pr_gerrit_read_revision() {  # <host> <number>
 }
 
 fm_pr_poll_retirement_data_valid() {
-  local state=$1 id=$2 state_device data data_hash data_identity
+  local state=$1 id=$2 state_device data
   state_device=$(fm_pr_file_device "$state") || return 1
   data="$state/$id.pr-poll"
   fm_pr_private_file_valid "$data" 600 "$state_device" || return 1
   fm_pr_poll_data_parse "$data" || return 1
-  data_hash=$(fm_pr_sha256 "$data") || return 1
-  data_identity=$(fm_pr_file_identity "$data") || return 1
   [ "$FM_PR_DATA_PROVIDER" = "$FM_PR_RETIRE_PROVIDER" ] || return 1
   [ "$FM_PR_DATA_URL" = "$FM_PR_RETIRE_URL" ] || return 1
   [ "$FM_PR_DATA_HOST" = "$FM_PR_RETIRE_HOST" ] || return 1
   [ "$FM_PR_DATA_PATH" = "$FM_PR_RETIRE_PATH" ] || return 1
   [ "$FM_PR_DATA_NUMBER" = "$FM_PR_RETIRE_NUMBER" ] || return 1
-  [ "$data_hash" = "$FM_PR_RETIRE_DATA_HASH" ] || return 1
-  [ "$data_identity" = "$FM_PR_RETIRE_DATA_IDENTITY" ]
+  fm_pr_identity_matches "$data" "$FM_PR_RETIRE_DATA_IDENTITY" "$FM_PR_RETIRE_DATA_HASH"
 }
 
 fm_pr_poll_retirement_registration_valid() {
-  local state=$1 id=$2 state_device registration reg_hash reg_identity
+  local state=$1 id=$2 state_device registration
   state_device=$(fm_pr_file_device "$state") || return 1
   registration="$state/$id.pr-poll-registration"
   fm_pr_private_file_valid "$registration" 600 "$state_device" || return 1
   fm_pr_poll_registration_parse "$registration" || return 1
-  reg_hash=$(fm_pr_sha256 "$registration") || return 1
-  reg_identity=$(fm_pr_file_identity "$registration") || return 1
   [ "$FM_PR_REG_ID" = "$id" ] || return 1
   [ "$FM_PR_REG_PROVIDER" = "$FM_PR_RETIRE_PROVIDER" ] || return 1
   [ "$FM_PR_REG_URL" = "$FM_PR_RETIRE_URL" ] || return 1
@@ -1183,21 +1236,21 @@ fm_pr_poll_retirement_registration_valid() {
   [ "$FM_PR_REG_NUMBER" = "$FM_PR_RETIRE_NUMBER" ] || return 1
   [ "$FM_PR_REG_DATA_HASH" = "$FM_PR_RETIRE_DATA_HASH" ] || return 1
   [ "$FM_PR_REG_TEMPLATE_HASH" = "$FM_PR_RETIRE_TEMPLATE_HASH" ] || return 1
+  # These two compare a pair of already-persisted identity strings rather
+  # than a live stat: both the registration and the receipt copy the
+  # registration's own recorded value, so they stay equal regardless of any
+  # device renumbering between when each file was written.
   [ "$FM_PR_REG_DATA_IDENTITY" = "$FM_PR_RETIRE_DATA_IDENTITY" ] || return 1
   [ "$FM_PR_REG_CHECK_IDENTITY" = "$FM_PR_RETIRE_CHECK_IDENTITY" ] || return 1
-  [ "$reg_hash" = "$FM_PR_RETIRE_REG_HASH" ] || return 1
-  [ "$reg_identity" = "$FM_PR_RETIRE_REG_IDENTITY" ]
+  fm_pr_identity_matches "$registration" "$FM_PR_RETIRE_REG_IDENTITY" "$FM_PR_RETIRE_REG_HASH"
 }
 
 fm_pr_poll_retirement_check_valid() {
-  local state=$1 id=$2 state_device check check_hash check_identity
+  local state=$1 id=$2 state_device check
   state_device=$(fm_pr_file_device "$state") || return 1
   check="$state/$id.check.sh"
   fm_pr_private_file_valid "$check" 600 "$state_device" || return 1
-  check_hash=$(fm_pr_sha256 "$check") || return 1
-  check_identity=$(fm_pr_file_identity "$check") || return 1
-  [ "$check_hash" = "$FM_PR_RETIRE_TEMPLATE_HASH" ] || return 1
-  [ "$check_identity" = "$FM_PR_RETIRE_CHECK_IDENTITY" ]
+  fm_pr_identity_matches "$check" "$FM_PR_RETIRE_CHECK_IDENTITY" "$FM_PR_RETIRE_TEMPLATE_HASH"
 }
 
 fm_pr_poll_retirement_state_valid() {
@@ -1228,8 +1281,7 @@ fm_pr_poll_retirement_state_valid() {
 fm_pr_poll_retirement_remove_exact() {
   local path=$1 state_device=$2 expected_identity=$3 expected_hash=$4
   fm_pr_private_file_valid "$path" 600 "$state_device" || return 1
-  [ "$(fm_pr_file_identity "$path")" = "$expected_identity" ] || return 1
-  [ "$(fm_pr_sha256 "$path")" = "$expected_hash" ] || return 1
+  fm_pr_identity_matches "$path" "$expected_identity" "$expected_hash" || return 1
   rm -f -- "$path" || return 1
   [ ! -e "$path" ] && [ ! -L "$path" ]
 }

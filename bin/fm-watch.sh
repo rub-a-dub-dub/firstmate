@@ -128,7 +128,8 @@
 #                          each path carries a parenthesised mismatch reason
 #                          when the refusal identified one - which artifact
 #                          (data or check file) and whether its content, its
-#                          inode identity, or its readability is what failed
+#                          inode, its recorded device number, or its
+#                          readability is what failed
 #   check: rejected unauthenticated PR poll retirement receipts: <paths>
 #                          invalid pending retirements were preserved without
 #                          running a check or removing poll artifacts
