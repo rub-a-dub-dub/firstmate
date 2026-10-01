@@ -1343,9 +1343,9 @@ test_reused_archived_call_id_refuses_a_bare_second_close() {
       > "$home/reused-complete.out" 2> "$home/reused-complete.err"; then
     fail "an earlier incarnation's archived answer satisfied completion for a call closed bare"
   fi
-  assert_grep "an archived Done row for $call does not record an answer" \
+  assert_grep "no archived Done row for $call records an answer" \
     "$home/reused-complete.err" \
-    "the refusal did not say an archived Done row for the reused id records no answer: $(cat "$home/reused-complete.err")"
+    "the refusal did not say no archived Done row for the reused id records an answer: $(cat "$home/reused-complete.err")"
   assert_grep "bin/fm-teardown.sh --force" "$home/reused-complete.err" \
     "the refusal did not name the captain-approved --force escape: $(cat "$home/reused-complete.err")"
   if run_teardown "$home" "$second" \

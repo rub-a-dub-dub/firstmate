@@ -469,13 +469,9 @@ body_has_resolution_record() {  # <task-body>
 # what a record is.
 archive_has_resolution_record() {  # <task-id>
   local id=$1 archive rows row matched=0
-  archive=$(fm_backlog_archive_file "$DATA") || {
-    printf 'fm-captain-hold: the Done archive cannot be resolved for %s: %s\n' \
-      "$id" "${FM_BACKLOG_TRANSITION_ERROR:-data directory $DATA cannot be resolved}" >&2
-    return 2
-  }
+  archive=$(fm_backlog_archive_file "$DATA") || return 1
   [ -f "$archive" ] && [ ! -L "$archive" ] && [ -r "$archive" ] || return 1
-  if ! rows=$(LC_ALL=C awk -v id="$id" '
+  rows=$(LC_ALL=C awk -v id="$id" '
     function flush_row() {
       if (matching) printf "body=%s\n", body
     }
@@ -507,11 +503,7 @@ archive_has_resolution_record() {  # <task-id>
       filled = 1
     }
     END { flush_row() }
-  ' "$archive" 2>/dev/null); then
-    printf 'fm-captain-hold: reading the Done archive for %s failed: %s\n' \
-      "$id" "$archive" >&2
-    return 2
-  fi
+  ' "$archive" 2>/dev/null) || return 1
   while IFS= read -r row; do
     case "$row" in body=*) : ;; *) continue ;; esac
     matched=1
@@ -790,7 +782,7 @@ resolve_migrated_entry() {  # <origin-or-empty> <entry>
 # migrated-prefix, or archived-answer, so a caller can record which evidence
 # carried the attestation.
 resolve_entry() {  # <origin-or-empty> <entry>; prints "<id> <how>" or fails
-  local origin=$1 entry=$2 legacy migrated rc archive_status
+  local origin=$1 entry=$2 legacy migrated rc
   if task_show "$entry"; then
     printf '%s exact' "$entry"
     return 0
@@ -809,16 +801,14 @@ resolve_entry() {  # <origin-or-empty> <entry>; prints "<id> <how>" or fails
     2) return 2 ;;
     124) return 124 ;;
   esac
-  archive_status=0
-  archive_has_resolution_record "$entry" || archive_status=$?
-  case "$archive_status" in
-    0) printf '%s archived-answer' "$entry"; return 0 ;;
-    2) return 2 ;;
-  esac
-  if [ -n "$origin" ] && [ "$origin" != "$BINDING_ANY" ]; then
-    fail "no captain-held task $entry and no migrated hold for it in this home's configured backlog (data directory $DATA), and an archived Done row for $entry does not record an answer (a reused id needs a record on every archived row); the nearest legacy identity $legacy also resolves to nothing - discard the work with bin/fm-teardown.sh --force once the captain approves"
+  if archive_has_resolution_record "$entry"; then
+    printf '%s archived-answer' "$entry"
+    return 0
   fi
-  fail "no captain-held task $entry and no migrated hold for it in this home's configured backlog (data directory $DATA), and an archived Done row for $entry does not record an answer (a reused id needs a record on every archived row) - discard the work with bin/fm-teardown.sh --force once the captain approves"
+  if [ -n "$origin" ] && [ "$origin" != "$BINDING_ANY" ]; then
+    fail "no captain-held task $entry and no migrated hold for it in this home's configured backlog (data directory $DATA), and no archived Done row for $entry records an answer (a reused id needs a record on every archived row); the nearest legacy identity $legacy also resolves to nothing - check the inventory id, and discard a genuinely reused call's work with bin/fm-teardown.sh --force once the captain approves"
+  fi
+  fail "no captain-held task $entry and no migrated hold for it in this home's configured backlog (data directory $DATA), and no archived Done row for $entry records an answer (a reused id needs a record on every archived row) - check the inventory id, and discard a genuinely reused call's work with bin/fm-teardown.sh --force once the captain approves"
 }
 
 body_hold_set_timestamp() {  # <decoded-task-body>
