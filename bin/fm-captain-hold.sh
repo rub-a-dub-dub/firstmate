@@ -845,14 +845,15 @@ write_hold_set_stamp() {  # <task-id> <shown-body> <timestamp> <preserve-existin
 }
 
 # Resolve one entry and verify the row it names is durably captain-held. A
-# resolution failure that is not the read bound keeps resolve_entry's own
-# status - its stderr already named the entry; 124 means the backend never
-# answered, which is not the same as an unknown entry and must not be spent
-# as absence. Done-history retention can prune an answered call out of the
-# active backlog before its scout is torn down, so an entry with no live row is
-# still durable when the Done archive records its answer; that evidence is only
-# usable here, so this gate owns both the archive read and the refusal. On
-# success prints "<id> <how>" so the caller can keep the attestation evidence.
+# migrated-scan refusal keeps resolve_entry's own status 2 - that scan's stderr
+# already named the entry; 124 means the backend never answered, which is not
+# the same as an unknown entry and must not be spent as absence. Done-history
+# retention can prune an answered call out of the active backlog before its
+# scout is torn down, so an entry with no live row is still durable when the
+# Done archive records its answer; that evidence is only usable here, so plain
+# absence comes back silently as status 1 and this gate owns both the archive
+# read and the refusal that reports it. On success prints "<id> <how>" so the
+# caller can keep the attestation evidence.
 verify_entry_durable() {  # <origin-or-empty> <entry>; prints "<id> <how>"
   local origin=$1 entry=$2 resolved resolve_status=0 legacy refusal
   resolved=$(resolve_entry "$origin" "$entry") || resolve_status=$?
