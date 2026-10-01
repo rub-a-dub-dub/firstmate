@@ -871,7 +871,7 @@ verify_entry_durable() {  # <origin-or-empty> <entry>; prints "<id> <how>"
     printf '%s archived-answer\n' "$entry"
     return 0
   fi
-  refusal="no captain-held task $entry and no migrated hold for it in this home's configured backlog (data directory $DATA), and no archived Done row for $entry records an answer (a reused id needs a record on every archived row)"
+  refusal="no captain-held task $entry and no migrated hold for it in this home's configured backlog (data directory $DATA), and either no archived Done row exists for $entry or not every archived Done row for $entry records an answer (a reused id needs a record on every archived row)"
   if [ -n "$origin" ] && [ "$origin" != "$BINDING_ANY" ]; then
     legacy=$(legacy_hold_id "$origin" "$entry")
     refusal="$refusal; the nearest legacy identity $legacy also resolves to nothing"
