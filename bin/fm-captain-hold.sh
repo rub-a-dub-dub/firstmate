@@ -474,12 +474,7 @@ archive_has_resolution_record() {  # <task-id>
       "$id" "${FM_BACKLOG_TRANSITION_ERROR:-data directory $DATA cannot be resolved}" >&2
     return 2
   }
-  [ -e "$archive" ] || return 1
-  if [ ! -f "$archive" ] || [ -L "$archive" ] || [ ! -r "$archive" ]; then
-    printf 'fm-captain-hold: the Done archive for %s is not a readable regular file: %s\n' \
-      "$id" "$archive" >&2
-    return 2
-  fi
+  [ -f "$archive" ] && [ ! -L "$archive" ] && [ -r "$archive" ] || return 1
   if ! rows=$(LC_ALL=C awk -v id="$id" '
     function flush_row() {
       if (matching) printf "body=%s\n", body
@@ -821,9 +816,9 @@ resolve_entry() {  # <origin-or-empty> <entry>; prints "<id> <how>" or fails
     2) return 2 ;;
   esac
   if [ -n "$origin" ] && [ "$origin" != "$BINDING_ANY" ]; then
-    fail "no captain-held task $entry, no migrated hold for it, and no archived Done row recording its answer in this home's configured backlog (data directory $DATA); the nearest legacy identity $legacy also resolves to nothing"
+    fail "no captain-held task $entry and no migrated hold for it in this home's configured backlog (data directory $DATA), and an archived Done row for $entry does not record an answer (a reused id needs a record on every archived row); the nearest legacy identity $legacy also resolves to nothing - discard the work with bin/fm-teardown.sh --force once the captain approves"
   fi
-  fail "no captain-held task $entry, no migrated hold for it, and no archived Done row recording its answer in this home's configured backlog (data directory $DATA)"
+  fail "no captain-held task $entry and no migrated hold for it in this home's configured backlog (data directory $DATA), and an archived Done row for $entry does not record an answer (a reused id needs a record on every archived row) - discard the work with bin/fm-teardown.sh --force once the captain approves"
 }
 
 body_hold_set_timestamp() {  # <decoded-task-body>
