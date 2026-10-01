@@ -1,0 +1,49 @@
+fatal: not a git repository (or any of the parent directories): .git
+=== BEFORE the fix (base 6ee9e824) (repo: ) ===
+
+$ tasks-axi add cowork-awaiting-verify-burndown 'Burn down the awaiting-verify queue' --kind scout --repo sample --start
+ok: scout row created
+
+$ bin/fm-captain-hold.sh hold cowork-awaiting-verify-burndown-resolution-schema --origin cowork-awaiting-verify-burndown ...
+ok: captain call held
+
+$ bin/fm-captain-hold.sh complete cowork-awaiting-verify-burndown cowork-awaiting-verify-burndown-resolution-schema
+complete: cowork-awaiting-verify-burndown captain-call inventory reviewed (cowork-awaiting-verify-burndown-resolution-schema)
+
+$ bin/fm-captain-hold.sh answer cowork-awaiting-verify-burndown-resolution-schema --decision-file captain-answer.txt
+answered: cowork-awaiting-verify-burndown-resolution-schema
+
+$ tasks-axi prune --keep 0 --state done        # Done-history retention
+ok: Done history pruned
+
+$ grep -c 'cowork-awaiting-verify-burndown-resolution-schema' data/backlog.md              # the answered row is gone
+0
+0 (absent from the active backlog)
+
+$ sed -n '/- \[x\] cowork-awaiting-verify-burndown-resolution-schema/,/^$/p' data/done-archive.md   # it lives in the Done archive
+- [x] cowork-awaiting-verify-burndown-resolution-schema - Pick the resolution schema (repo: sample) (kind: captain) (done 2026-09-30) (hold: captain choice pending) (hold-kind: captain)
+  Resolution recorded by fm-captain-hold.
+  Decision digest: 431ebb2b57e00390b6716fa850a2c9ad06fa44a871d948eb20ed5c7fa32cdc4d
+  Resolution mode: answered
+
+--- the two operations the bug report says refuse ---
+
+$ bin/fm-captain-hold.sh complete cowork-awaiting-verify-burndown --none
+fm-captain-hold: no captain-held task cowork-awaiting-verify-burndown-resolution-schema and no migrated hold for it in this home's configured backlog (data directory /var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T//fm-repro.7pOeE6/data); the nearest legacy identity cowork-awaiting-verify-burndown-decision-cowork-awaiting-verify-burndown-resolution-schema also resolves to nothing
+EXIT 1: completion REFUSED
+
+$ bin/fm-teardown.sh cowork-awaiting-verify-burndown
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+fm-captain-hold: no captain-held task cowork-awaiting-verify-burndown-resolution-schema and no migrated hold for it in this home's configured backlog (data directory /var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T//fm-repro.7pOeE6/data); the nearest legacy identity cowork-awaiting-verify-burndown-decision-cowork-awaiting-verify-burndown-resolution-schema also resolves to nothing
+REFUSED: scout task cowork-awaiting-verify-burndown has not passed the captain-call completion gate.
+Inventory its report and any visual review through bin/fm-captain-hold.sh before teardown.
+EXIT 1: teardown REFUSED
+
+$ ls state/cowork-awaiting-verify-burndown.meta  # scout metadata after teardown
+still present: the scout could not be cleaned up

@@ -1,0 +1,47 @@
+=== AFTER the fix (957a8d98) (repo: 957a8d98) ===
+
+$ tasks-axi add cowork-awaiting-verify-burndown 'Burn down the awaiting-verify queue' --kind scout --repo sample --start
+ok: scout row created
+
+$ bin/fm-captain-hold.sh hold cowork-awaiting-verify-burndown-resolution-schema --origin cowork-awaiting-verify-burndown ...
+ok: captain call held
+
+$ bin/fm-captain-hold.sh complete cowork-awaiting-verify-burndown cowork-awaiting-verify-burndown-resolution-schema
+complete: cowork-awaiting-verify-burndown captain-call inventory reviewed (cowork-awaiting-verify-burndown-resolution-schema)
+
+$ bin/fm-captain-hold.sh answer cowork-awaiting-verify-burndown-resolution-schema --decision-file captain-answer.txt
+answered: cowork-awaiting-verify-burndown-resolution-schema
+
+$ tasks-axi prune --keep 0 --state done        # Done-history retention
+ok: Done history pruned
+
+$ grep -c 'cowork-awaiting-verify-burndown-resolution-schema' data/backlog.md              # the answered row is gone
+0
+0 (absent from the active backlog)
+
+$ sed -n '/- \[x\] cowork-awaiting-verify-burndown-resolution-schema/,/^$/p' data/done-archive.md   # it lives in the Done archive
+- [x] cowork-awaiting-verify-burndown-resolution-schema - Pick the resolution schema (repo: sample) (kind: captain) (done 2026-09-30) (hold: captain choice pending) (hold-kind: captain)
+  Resolution recorded by fm-captain-hold.
+  Decision digest: 431ebb2b57e00390b6716fa850a2c9ad06fa44a871d948eb20ed5c7fa32cdc4d
+  Resolution mode: answered
+
+--- the two operations the bug report says refuse ---
+
+$ bin/fm-captain-hold.sh complete cowork-awaiting-verify-burndown --none
+complete: cowork-awaiting-verify-burndown captain-call inventory reviewed (cowork-awaiting-verify-burndown-resolution-schema)
+EXIT 0: completion accepted the archived answer
+
+$ bin/fm-teardown.sh cowork-awaiting-verify-burndown
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+teardown cowork-awaiting-verify-burndown complete (window firstmate:fm-cowork-awaiting-verify-burndown, worktree /var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T//fm-repro.uaDkaC/projects/missing-cowork-awaiting-verify-burndown)
+Backlog: cowork-awaiting-verify-burndown is closed in /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-repro.uaDkaC/data/backlog.md. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+EXIT 0: scout torn down
+
+$ ls state/cowork-awaiting-verify-burndown.meta  # scout metadata after teardown
+removed: the finished scout is cleaned up

@@ -1,0 +1,43 @@
+=== reused archived call id (repo: 957a8d98) ===
+
+$ fm-captain-hold.sh hold sample-reused-call --origin first-incarnation-review   # first incarnation
+ok: held
+ok: inventory attested
+
+$ fm-captain-hold.sh answer sample-reused-call --decision-file answer.txt   # captain answers it
+answered: sample-reused-call
+ok: answered row pruned into the archive
+
+$ fm-captain-hold.sh hold sample-reused-call --origin second-incarnation-review  # the id is re-used later
+ok: re-held
+ok: inventory attested
+
+$ tasks-axi done sample-reused-call            # closed out of band, no captain answer
+ok: bare close
+ok: bare close pruned into the archive
+
+$ grep -c -- '- [x] sample-reused-call - ' data/done-archive.md   # both incarnations archived
+2
+
+--- the gate must still refuse the second scout ---
+
+$ fm-captain-hold.sh complete second-incarnation-review --none
+fm-captain-hold: no captain-held task sample-reused-call and no migrated hold for it in this home's configured backlog (data directory /var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T//fm-reused.ACTRXy/data), and either no archived Done row exists for sample-reused-call or not every archived Done row for sample-reused-call records an answer (a reused id needs a record on every archived row); the nearest legacy identity second-incarnation-review-decision-sample-reused-call also resolves to nothing - check the inventory id, and discard a genuinely reused call's work with bin/fm-teardown.sh --force once the captain approves
+EXIT 1: refused
+
+$ bin/fm-teardown.sh second-incarnation-review
+fm-captain-hold: no captain-held task sample-reused-call and no migrated hold for it in this home's configured backlog (data directory /var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T//fm-reused.ACTRXy/data), and either no archived Done row exists for sample-reused-call or not every archived Done row for sample-reused-call records an answer (a reused id needs a record on every archived row); the nearest legacy identity second-incarnation-review-decision-sample-reused-call also resolves to nothing - check the inventory id, and discard a genuinely reused call's work with bin/fm-teardown.sh --force once the captain approves
+REFUSED: scout task second-incarnation-review has not passed the captain-call completion gate.
+Inventory its report and any visual review through bin/fm-captain-hold.sh before teardown.
+scout metadata still present: the unanswered call was not discarded
+
+--- same two rows, archive order reversed ---
+rewrote data/done-archive.md with the bare-close row listed first
+
+$ head -1 of each archived row after the swap
+3:- [x] sample-reused-call ... (done 2026-09-30) (hold: captain choice pending) (hold-kind: captain)
+8:- [x] sample-reused-call ... (done 2026-09-30) (hold: captain choice pending) (hold-kind: captain)
+
+$ fm-captain-hold.sh complete second-incarnation-review --none   # newest-first archive order
+fm-captain-hold: no captain-held task sample-reused-call and no migrated hold for it in this home's configured backlog (data directory /var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T//fm-reused.ACTRXy/data), and either no archived Done row exists for sample-reused-call or not every archived Done row for sample-reused-call records an answer (a reused id needs a record on every archived row); the nearest legacy identity second-incarnation-review-decision-sample-reused-call also resolves to nothing - check the inventory id, and discard a genuinely reused call's work with bin/fm-teardown.sh --force once the captain approves
+EXIT 1: refused in this order too

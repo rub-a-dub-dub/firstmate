@@ -1,0 +1,7 @@
+=== keyed-answer intake for a pruned, already-answered call (957a8d98) ===
+
+$ printf "<call-id>	Choose the archived route.	Board
+" | bin/fm-captain-hold.sh answers cowork-awaiting-verify-burndown --source "late board sequence 1"
+skipped: cowork-awaiting-verify-burndown-resolution-schema (no captain-held task with that id)
+answers: closed=0 skipped=1
+EXIT 1

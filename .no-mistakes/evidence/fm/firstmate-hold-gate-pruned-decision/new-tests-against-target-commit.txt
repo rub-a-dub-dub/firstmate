@@ -1,0 +1,6 @@
+=== the three new regressions run against the TARGET commit 957a8d98 ===
+1..3
+ok - a pruned recorded answer satisfies completion without accepting a bare archived close
+ok - an archived answer from an earlier incarnation of a reused call id does not answer for a bare close
+ok - the keyed intake reports a pruned answered call as carrying no captain-held task
+EXIT 0
