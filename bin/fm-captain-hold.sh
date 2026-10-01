@@ -775,13 +775,13 @@ resolve_migrated_entry() {  # <origin-or-empty> <entry>
   return 2
 }
 
-# Resolve one inventory entry or channel key to the task that carries it: the
-# exact task id when it exists, else the legacy derived identity, else - on the
-# beads backend - the migrated row the markdown-to-beads hold migration wrote.
-# Prints "<resolved id> <how>", where <how> is exact, legacy, migrated-note,
-# migrated-prefix, or archived-answer, so a caller can record which evidence
-# carried the attestation.
-resolve_entry() {  # <origin-or-empty> <entry>; prints "<id> <how>" or fails
+# Resolve one inventory entry or channel key to the live task that carries it:
+# the exact task id when it exists, else the legacy derived identity, else - on
+# the beads backend - the migrated row the markdown-to-beads hold migration
+# wrote. Prints "<resolved id> <how>", where <how> is exact, legacy,
+# migrated-note, or migrated-prefix, so a caller can record which evidence
+# carried the attestation, and returns 1 when no live row carries the entry.
+resolve_entry() {  # <origin-or-empty> <entry>; prints "<id> <how>" or returns 1
   local origin=$1 entry=$2 legacy migrated rc
   if task_show "$entry"; then
     printf '%s exact' "$entry"
@@ -801,14 +801,7 @@ resolve_entry() {  # <origin-or-empty> <entry>; prints "<id> <how>" or fails
     2) return 2 ;;
     124) return 124 ;;
   esac
-  if archive_has_resolution_record "$entry"; then
-    printf '%s archived-answer' "$entry"
-    return 0
-  fi
-  if [ -n "$origin" ] && [ "$origin" != "$BINDING_ANY" ]; then
-    fail "no captain-held task $entry and no migrated hold for it in this home's configured backlog (data directory $DATA), and no archived Done row for $entry records an answer (a reused id needs a record on every archived row); the nearest legacy identity $legacy also resolves to nothing - check the inventory id, and discard a genuinely reused call's work with bin/fm-teardown.sh --force once the captain approves"
-  fi
-  fail "no captain-held task $entry and no migrated hold for it in this home's configured backlog (data directory $DATA), and no archived Done row for $entry records an answer (a reused id needs a record on every archived row) - check the inventory id, and discard a genuinely reused call's work with bin/fm-teardown.sh --force once the captain approves"
+  return 1
 }
 
 body_hold_set_timestamp() {  # <decoded-task-body>
@@ -855,18 +848,33 @@ write_hold_set_stamp() {  # <task-id> <shown-body> <timestamp> <preserve-existin
 # resolution failure that is not the read bound keeps resolve_entry's own
 # status - its stderr already named the entry; 124 means the backend never
 # answered, which is not the same as an unknown entry and must not be spent
-# as absence. On success prints "<id> <how>" so the caller can keep the
-# attestation evidence.
+# as absence. Done-history retention can prune an answered call out of the
+# active backlog before its scout is torn down, so an entry with no live row is
+# still durable when the Done archive records its answer; that evidence is only
+# usable here, so this gate owns both the archive read and the refusal. On
+# success prints "<id> <how>" so the caller can keep the attestation evidence.
 verify_entry_durable() {  # <origin-or-empty> <entry>; prints "<id> <how>"
-  local origin=$1 entry=$2 resolved resolve_status=0
+  local origin=$1 entry=$2 resolved resolve_status=0 legacy
   resolved=$(resolve_entry "$origin" "$entry") || resolve_status=$?
-  if [ "$resolve_status" -ne 0 ]; then
-    [ "$resolve_status" -ne 124 ] \
-      || fail "the backlog backend exceeded its read bound resolving $entry"
-    exit "$resolve_status"
+  if [ "$resolve_status" -eq 0 ]; then
+    printf '%s\n' "$resolved"
+    verify_hold_durable "${resolved%% *}"
+    return
   fi
-  printf '%s\n' "$resolved"
-  [ "${resolved##* }" = archived-answer ] || verify_hold_durable "${resolved%% *}"
+  case "$resolve_status" in
+    1) : ;;
+    124) fail "the backlog backend exceeded its read bound resolving $entry" ;;
+    *) exit "$resolve_status" ;;
+  esac
+  if archive_has_resolution_record "$entry"; then
+    printf '%s archived-answer\n' "$entry"
+    return 0
+  fi
+  if [ -n "$origin" ] && [ "$origin" != "$BINDING_ANY" ]; then
+    legacy=$(legacy_hold_id "$origin" "$entry")
+    fail "no captain-held task $entry and no migrated hold for it in this home's configured backlog (data directory $DATA), and no archived Done row for $entry records an answer (a reused id needs a record on every archived row); the nearest legacy identity $legacy also resolves to nothing - check the inventory id, and discard a genuinely reused call's work with bin/fm-teardown.sh --force once the captain approves"
+  fi
+  fail "no captain-held task $entry and no migrated hold for it in this home's configured backlog (data directory $DATA), and no archived Done row for $entry records an answer (a reused id needs a record on every archived row) - check the inventory id, and discard a genuinely reused call's work with bin/fm-teardown.sh --force once the captain approves"
 }
 
 command_hold() {

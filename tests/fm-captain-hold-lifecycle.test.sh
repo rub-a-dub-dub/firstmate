@@ -1357,6 +1357,47 @@ test_reused_archived_call_id_refuses_a_bare_second_close() {
   pass "an archived answer from an earlier incarnation of a reused call id does not answer for a bare close"
 }
 
+# Done-history retention can prune an answered call before a late captured
+# answer for the same key reaches the keyed intake. That intake closes live
+# rows, so the archived answer is evidence only the durability gate can spend:
+# the key is reported as carrying no captain-held task, not as a row the
+# backlog lost.
+test_keyed_intake_reports_a_pruned_answered_call_as_unheld() {
+  local home id call out rc
+  home=$(make_home pruned-answer-intake)
+  id=sample-intake-prune-review
+  call=sample-intake-prune-call
+  mkdir -p "$home/data/$id"
+  tasks_in "$home" add "$id" "Investigate the pruned intake answer" --kind scout \
+    --repo sample --start >/dev/null \
+    || fail "could not create the pruned-intake origin"
+  write_origin_meta "$home" "$id"
+  printf 'done: report complete\n' > "$home/state/$id.status"
+  printf '# Pruned intake review\n\nOne captain choice remains.\n' > "$home/data/$id/report.md"
+  run_captain "$home" hold "$call" --title "Choose the pruned intake route" \
+    --reason "captain choice pending" --repo sample --origin "$id" >/dev/null \
+    || fail "could not register the pruned-intake captain-held task"
+  run_captain "$home" complete "$id" "$call" >/dev/null \
+    || fail "completion failed before the pruned intake answer"
+  printf 'Choose the archived route.\n' > "$home/pruned-intake-answer.txt"
+  run_captain "$home" answer "$call" --decision-file "$home/pruned-intake-answer.txt" >/dev/null \
+    || fail "could not answer the captain-held task before pruning"
+  tasks_in "$home" prune --keep 0 --state "done" >/dev/null \
+    || fail "could not prune the answered captain-held task"
+  assert_grep "$call" "$home/data/done-archive.md" \
+    "the pruned captain-held task did not reach the done archive"
+
+  set +e
+  out=$(printf '%s\tChoose the archived route.\tBoard\n' "$call" \
+    | run_captain "$home" answers "$id" --source "late board sequence 1" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "the keyed intake accepted an answer for a pruned call: $out"
+  assert_contains "$out" "skipped: $call (no captain-held task with that id)" \
+    "the keyed intake did not report the pruned answered call as unheld: $out"
+  pass "the keyed intake reports a pruned answered call as carrying no captain-held task"
+}
+
 # A post-teardown visual review completes against the surviving report and
 # durable tasks, with no volatile task metadata and no second decision database.
 test_visual_review_uses_shared_completion_owner() {
@@ -4183,6 +4224,7 @@ TESTS=(
   test_out_of_band_close_is_recordable
   test_pruned_answered_call_satisfies_completion_gate
   test_reused_archived_call_id_refuses_a_bare_second_close
+  test_keyed_intake_reports_a_pruned_answered_call_as_unheld
   test_visual_review_uses_shared_completion_owner
   test_none_inventory_and_resolved_prose_do_not_create_holds
   test_terminal_single_owner_status_decision_does_not_block_empty_inventory
