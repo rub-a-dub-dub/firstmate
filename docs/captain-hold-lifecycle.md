@@ -102,7 +102,7 @@ A post-teardown visual review can complete against the surviving report and dura
 
 `complete` accepts `--none` as an explicit semantic inventory result.
 `--none` is refused while the origin still has a lifecycle-open keyed status decision.
-Before recording completion, `complete` verifies every listed task against tasks-axi.
+Before recording completion, `complete` verifies every listed entry through the same durability rule the `verify` section below records, so a tasks-axi row is not the only evidence that can satisfy it.
 
 With a non-empty inventory, `complete` appends a `captain-held [key=<key>]` transfer event for every still-open keyed status decision.
 The event names the reviewed inventory.
