@@ -37,13 +37,12 @@
 #      stopped. A verb whose postcondition cannot be proven on the recorded
 #      backend is refused rather than performed blind.
 #
-# `resume` is deliberately NOT a verb. It is not deterministic across the
-# verified adapters: codex and grok resume only from a session id printed at
-# exit, opencode resumes the most recent session for the cwd with --continue,
-# and claude, pi, pi-signed, omp, and kimi have no verified pane-resume contract
-# at all. `relaunch` covers the same need deterministically for every adapter,
-# because the brief on disk - not a harness-private session - is the durable
-# instruction.
+# `resume` is deliberately NOT a verb: it is not deterministic across the
+# verified adapters (docs/agent-control.md owns the per-adapter resume facts).
+# `relaunch` uses the brief on disk rather than a harness-private session as
+# its durable instruction. The relaunch-time exception is
+# fm_control_relaunch_resume_flag below: a reference the endpoint's runtime
+# bound as its status authority is returned to a replacement with that adapter.
 
 # The complete control-plane verb allowlist, one per line.
 fm_control_verbs() {
@@ -65,15 +64,15 @@ fm_control_verb_allowed() {  # <verb>
 # section 4's verified-adapter list; an unverified adapter is refused rather
 # than guessed at, exactly as a spawn on it would be.
 fm_control_harnesses() {
-  printf '%s\n' claude codex opencode pi pi-signed grok kimi cursor gemini muse rovo omp agy
+  printf '%s\n' claude codex opencode pi pi-signed grok kimi cursor gemini muse rovo omp agy devin
 }
 
 fm_control_harness_supported() {  # <harness>
-  local harness
+  local harness found=1
   while read -r harness; do
-    [ "$harness" = "${1-}" ] && return 0
+    [ "$harness" = "${1-}" ] && found=0
   done < <(fm_control_harnesses)
-  return 1
+  return "$found"
 }
 
 # The verified adapter a RECORDED harness value belongs to. Every table below
@@ -91,6 +90,7 @@ fm_control_harness_family() {  # <recorded-harness>
     pi-signed) printf 'pi-signed' ;;
     omp) printf 'omp' ;;
     agy) printf 'agy' ;;
+    devin) printf 'devin' ;;
     claude*) printf 'claude' ;;
     codex*) printf 'codex' ;;
     opencode*) printf 'opencode' ;;
@@ -104,7 +104,7 @@ fm_control_harness_family() {  # <recorded-harness>
   esac
 }
 
-# Which task kinds an adapter is verified to run. muse, gemini, rovo, and agy
+# Which task kinds an adapter is verified to run. muse, gemini, rovo, agy, and devin
 # are crewmate/scout adapters only: none has a primary supervision protocol,
 # and bin/fm-spawn.sh refuses a --secondmate launch on any of them. The control
 # plane asks this BEFORE it stops anything, so an incompatible relaunch target is
@@ -114,7 +114,7 @@ fm_control_harness_supports_kind() {  # <harness> <kind>
   local harness=${1-} kind=${2-}
   fm_control_harness_supported "$harness" || return 1
   case "$harness" in
-    muse|gemini|rovo|agy) [ "$kind" != secondmate ] || return 1 ;;
+    muse|gemini|rovo|agy|devin) [ "$kind" != secondmate ] || return 1 ;;
   esac
   return 0
 }
@@ -131,18 +131,61 @@ fm_control_harness_supports_kind() {  # <harness> <kind>
 # through Herdr).
 fm_control_interrupt_key() {  # <harness>
   case "${1-}" in
-    claude|codex|opencode|pi|pi-signed|omp|kimi|cursor|gemini|muse|rovo|agy) printf 'Escape' ;;
+    claude|codex|opencode|pi|pi-signed|omp|kimi|cursor|gemini|muse|rovo|agy|devin) printf 'Escape' ;;
     grok) printf 'C-c' ;;
     *) return 1 ;;
   esac
 }
 
-# How many times the interrupt key must be delivered. OpenCode needs a double
+# How many times the interrupt key must be delivered. OpenCode and Devin need a double
 # Escape; every other verified adapter interrupts on a single press.
 fm_control_interrupt_repeat() {  # <harness>
   case "${1-}" in
-    opencode) printf '2' ;;
+    opencode|devin) printf '2' ;;
     claude|codex|pi|pi-signed|omp|grok|kimi|cursor|gemini|muse|rovo|agy) printf '1' ;;
+    *) return 1 ;;
+  esac
+}
+
+# The rendered proof, read from the visible viewport between presses, that the
+# first interrupt press landed on a RUNNING turn; empty when the adapter sends
+# its presses blind. Devin needs it because the same fast double Escape that
+# cancels a running turn opens its /revert "Revert to step" picker on an idle
+# agent, where a later Enter reverts file changes. One Escape on a running turn
+# renders `esc again to interrupt` for about three seconds, while an idle agent
+# renders nothing, so the second press is sent only after that proof and never
+# sooner than fm_control_interrupt_press_gap: an unproven arm sends nothing
+# more. Verified live on devin 3000.11.1: an idle pair opened the picker at a
+# 0.05-0.1 s gap and did not at 0.15 s or more, and a running turn cancelled
+# with a 0.6 s gap.
+fm_control_interrupt_arm_signal() {  # <harness>
+  case "${1-}" in
+    devin) printf '%s' 'esc again to interrupt' ;;
+    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|gemini|muse|rovo|agy) ;;
+    *) return 1 ;;
+  esac
+}
+
+# The minimum seconds between two presses of an armed interrupt: several times
+# Devin's observed idle double-tap window, well inside its three-second armed
+# window. A turn that ends between the presses therefore cannot pair them.
+fm_control_interrupt_press_gap() {  # <harness>
+  case "${1-}" in
+    devin) printf '0.5' ;;
+    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|gemini|muse|rovo|agy) printf '0.2' ;;
+    *) return 1 ;;
+  esac
+}
+
+# A rendered surface that a mistimed interrupt press can open and that must be
+# dismissed with one more interrupt key before anything else is typed; empty
+# when the adapter has none. Devin's revert picker is recognized by either of
+# two independent rows, its `Revert to step:` title or its `↵ revert` footer,
+# and Escape cancels it without reverting (verified live, devin 3000.11.1).
+fm_control_interrupt_hazard_signal() {  # <harness>
+  case "${1-}" in
+    devin) printf '%s' 'Revert to step:|↵ revert' ;;
+    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|gemini|muse|rovo|agy) ;;
     *) return 1 ;;
   esac
 }
@@ -163,7 +206,7 @@ fm_control_interrupt_repeat() {  # <harness>
 fm_control_interrupt_clear_key() {  # <harness>
   case "${1-}" in
     muse) printf 'C-u' ;;
-    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|gemini|rovo|agy) ;;
+    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|gemini|rovo|agy|devin) ;;
     *) return 1 ;;
   esac
 }
@@ -178,7 +221,7 @@ fm_control_interrupt_ack_source() {  # <harness>
     # rovo's TUI prints "Agent cancelled" on Escape, but for parity with
     # claude/cursor this stays 'none': the ack is a rendered string, not a
     # recorded state source, and rovo has no busy wiring to confirm against.
-    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|gemini|rovo|agy) printf 'none' ;;
+    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|gemini|rovo|agy|devin) printf 'none' ;;
     *) return 1 ;;
   esac
 }
@@ -187,9 +230,46 @@ fm_control_interrupt_ack_source() {  # <harness>
 fm_control_exit_command() {  # <harness>
   case "${1-}" in
     claude|opencode|grok|kimi|cursor|muse|rovo) printf '/exit' ;;
-    codex|pi|pi-signed|omp|gemini|agy) printf '/quit' ;;
+    codex|pi|pi-signed|omp|gemini|agy|devin) printf '/quit' ;;
     *) return 1 ;;
   esac
+}
+
+# The launch argument that makes a RELAUNCH of <harness> RESUME an exact agent
+# session instead of starting a fresh one, printed only when <registered-agent>
+# is the label that session reference belongs to; nothing otherwise.
+#
+# This exists for one runtime failure, not as a general resume feature. Herdr
+# gives a pane one status authority, and for Pi with its installed integration
+# that authority is the lifecycle hooks, which also suppress Herdr's screen
+# detection for the pane. That registration outlives its agent process in the
+# crew shape - a nested worktree shell under the pane's top shell - and Herdr
+# then applies only reports carrying the session identity it bound. A
+# replacement agent started fresh in that same pane reports a NEW session, so
+# its state reports are ignored and the pane stays frozen at whatever the
+# previous agent last reported: a working crewmate reads idle until its task
+# ends (reproduced and fixed live 2026-09-21, herdr 0.9.1; the read that
+# supplies the reference is
+# bin/backends/herdr.sh's fm_backend_herdr_pane_agent_session_ref).
+#
+# So the reference is not chosen from what looks recent - it is the exact
+# identity the endpoint's own runtime recorded, which is why a matched
+# registered-agent label is required: resuming a reference reported by a
+# DIFFERENT agent would inject another agent's conversation into this launch.
+# `pi` is the label Pi and pi-signed both report, so one entry covers both.
+# Every other harness returns nothing and keeps today's fresh-session
+# relaunch, which is what the adapter tables above (and the absence of a
+# verified resume form for those harnesses) require.
+#
+# Prints the flag name only; the caller quotes and appends the reference, since
+# shell quoting belongs to the owner of the launch line (bin/fm-spawn.sh).
+fm_control_relaunch_resume_flag() {  # <harness> <registered-agent>
+  case "${1-}" in
+    pi|pi-signed)
+      [ "${2-}" = pi ] && printf -- '--session'
+      ;;
+  esac
+  return 0
 }
 
 # Which named keys a backend adapter can deliver. Every session provider
@@ -251,23 +331,92 @@ fm_control_backend_state_verified() {  # <backend>
 #     passes `--session <session>`, so the recheck starts and reads the session
 #     the RECORD names, through that session's own socket. The answer is about
 #     the task's endpoint and nothing else.
-#   tmux CANNOT. `list-windows -a` describes only the server the CURRENT
-#     process addresses (its TMUX_TMPDIR/socket), and a task's record does not
-#     carry the endpoint's socket identity - so a different but running server
-#     would answer "not anywhere" about a window it was never able to see.
-#     There is no read available here that closes that gap, so tmux always
-#     returns `unproven` and both verbs refuse. tmux is left exactly as
-#     deadlocked as it was before this change - no worse - but deliberately.
+#   tmux CAN prove it from the window NAME, which is the task's identity and is
+#     pinned at creation (automatic-rename/allow-rename off). Absence is proven
+#     by no server at all on the socket this process addresses, or by a
+#     COMPLETE scan of every session on it that never saw the name. Scanning is
+#     what recovers EVERY task parked across a reboot rather than only the
+#     first - re-creating one starts a server, which a server-presence proxy
+#     would then read as "running" for all the rest - and it is the only
+#     reading available at all when firstmate itself runs inside tmux. It fails
+#     closed: an unlistable session leaves the scan incomplete and proves
+#     nothing, and finding the name anywhere - recorded session, renamed
+#     session, or a session it was moved to - refuses. The one gap it cannot
+#     close is a window alive on a server this process cannot address, since a
+#     task record carries no socket identity; the no-server reading has that
+#     same gap.
 #
 # Both control-plane callers share this one implementation so the proof cannot
 # drift into two answers for the same endpoint.
 fm_control_endpoint_absence_verdict() {  # <backend> <target>
-  local backend=${1-} target=${2-}
+  local backend=${1-} target=${2-} sessions session windows window
   fm_backend_source "$backend" \
     || { printf 'unproven\tbackend %s could not be loaded to prove anything about that endpoint' "'$backend'"; return 0; }
   case "$backend" in
     tmux)
-      printf 'unproven\ttmux absence cannot be proven from a task record: the record does not carry the endpoint'"'"'s socket identity, and a server-wide window inventory only describes the tmux server this process addresses, so a window absent from it may still be alive on another'
+      # The task's WINDOW NAME is its identity here, and it is pinned at
+      # creation - fm_backend_tmux_create_task turns automatic-rename and
+      # allow-rename off - so scanning every session's inventory for that name
+      # answers "is this task's window still anywhere on this server" directly.
+      # Two readings prove absence: no server at all (the reboot - every window
+      # it held died with it), and a COMPLETE scan of every session that never
+      # saw the name.
+      #
+      # Scanning is what makes a reboot recover EVERY parked task rather than
+      # one: re-creating the first task starts a server, and a server-presence
+      # proxy would then answer "running" for every task after it. It is also
+      # the only reading available at all when firstmate itself runs inside
+      # tmux, where a server is always up.
+      #
+      # It fails closed. A session whose windows cannot be listed leaves the
+      # scan INCOMPLETE, so it proves nothing; and finding the name - in the
+      # recorded session, a renamed one, or one it was moved to - is positive
+      # evidence the window still exists, which refuses.
+      #
+      # One gap remains and is not closable here: a task record carries no
+      # socket identity, so a window alive on a tmux server this process cannot
+      # address is invisible to every read available. The no-server reading has
+      # that identical gap, so scanning is strictly stronger than the proxy, not
+      # a new risk.
+      case "$target" in
+        *:*:*|'':*|*:'') printf 'unproven\tthe recorded tmux target is not a single session:window pair, so no window name can be scanned for'; return 0 ;;
+        *:*) ;;
+        *) printf 'unproven\tthe recorded tmux target names no session, so no window name can be scanned for'; return 0 ;;
+      esac
+      window=${target#*:}
+      if ! sessions=$(LC_ALL=C tmux list-sessions -F '#{session_name}' 2>&1); then
+        case "$sessions" in
+          *"no server running on "*|*"error connecting to "*" (No such file or directory)"|*"error connecting to "*" (Connection refused)")
+            printf 'gone\t'
+            ;;
+          *)
+            printf 'unproven\tthe tmux session list could not be read, so no absence was established'
+            ;;
+        esac
+        return 0
+      fi
+      while IFS= read -r session; do
+        [ -n "$session" ] || continue
+        # The adapter owns this read and what its failures MEAN, so the
+        # classification is not restated here. Either failure class leaves the
+        # scan incomplete for this purpose and refuses: even the definitive
+        # "that session is gone" answer (status 2) is a session that
+        # list-sessions had just named, so it disappeared mid-scan - and a
+        # window in it may have been MOVED into a session already scanned past
+        # rather than destroyed with it, which is the duplicate-agent risk this
+        # proof exists to refuse.
+        if ! windows=$(fm_backend_tmux_window_inventory "=$session"); then
+          printf 'unproven\tsession %s could not be listed, so the window scan never completed and proves nothing' "'$session'"
+          return 0
+        fi
+        if printf '%s\n' "$windows" | grep -Fqx "$window"; then
+          printf 'unproven\ta window named %s still exists in session %s, so the endpoint may still hold a live agent' "'$window'" "'$session'"
+          return 0
+        fi
+      done <<TMUX_SESSIONS
+$sessions
+TMUX_SESSIONS
+      printf 'gone\t'
       ;;
     herdr)
       # Start the RECORDED session's server (only the server - nothing is
@@ -323,6 +472,7 @@ fm_control_harness_wiring_paths() {  # <harness> <worktree> <state-dir> <id>
     # is written into the worktree, whose own .gemini/settings.json belongs to
     # the project, and nothing global is installed.
     gemini) printf '%s\n' "$state/$id.gemini-settings.json" ;;
+    devin) printf '%s\n' "$state/$id.devin-config.json" ;;
   esac
 }
 

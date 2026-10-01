@@ -3,16 +3,22 @@
 # optionally acknowledge handled records,
 # annotate every unread line for validated signal status keys, surface unread
 # informational status lines, latest captain-facing statuses not covered by a
-# newer branch outcome, OPEN DECISIONS, and captain-call record divergence,
-# then assert liveness.
+# newer branch outcome, OPEN DECISIONS, captain-call record divergence, and on
+# a supervision-host home the supervision session's new and unprocessed
+# outcomes (BRANCH OUTCOMES), then assert liveness.
 #
 # Keep sequence-bound row consumption independent from generation-bound episode
 # retirement; docs/watcher-continuity.md owns the recovery contract.
+# Every scratch file this script mints (.main-eligible-rows.tmp.*,
+# .wake-rows.consume.*, .wake-queue.retire.*, .wake-queue.ack.*,
+# .wake-queue.actor-view.*) is created and removed under the queue lock, so one
+# found while taking that lock was left by a drain that died mid-write; each
+# locked drain rotates such leftovers away before doing anything else.
 # FM_STATUS_PRESENTATION_LOCK_TIMEOUT sets the positive whole-second wait for
 # presentation-path locks (default 10); queue mutation locks remain blocking.
 set -u
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd "${d:-/}" && pwd)"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
@@ -23,6 +29,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 # shellcheck source=bin/fm-lease-lib.sh
 . "$SCRIPT_DIR/fm-lease-lib.sh"
+# shellcheck source=bin/fm-supervision-engine-lib.sh
+. "$SCRIPT_DIR/fm-supervision-engine-lib.sh"
+# shellcheck source=bin/fm-afk-contract.sh
+. "$SCRIPT_DIR/fm-afk-contract.sh"
 
 DRAIN_TMP=
 DRAIN_VIEW_TMP=
@@ -39,6 +49,7 @@ PRESENTED_MAX=0
 ACK_FINGERPRINTS=
 ACK_NOTICE_FINGERPRINTS=
 PRESENTATION_LOCK_TIMEOUT=${FM_STATUS_PRESENTATION_LOCK_TIMEOUT:-10}
+BRANCH_OUTCOMES_RC=0
 case "$PRESENTATION_LOCK_TIMEOUT" in ''|*[!0-9]*|0) PRESENTATION_LOCK_TIMEOUT=10 ;; esac
 
 # --- per-actor consume (docs/watcher-continuity.md "Per-actor acknowledgement") --
@@ -69,6 +80,16 @@ ELIGIBLE_OWNER_FILE="$STATE/.branch-eligible-owner"
 MAIN_ROWS_FILE="$STATE/.main-eligible-rows"
 
 rows_file_valid() { fm_wake_grant_rows_valid "$1"; }
+
+# rotate_scratch_locked: remove scratch a dead drain left behind (header).
+rotate_scratch_locked() {
+  local scratch
+  for scratch in "$STATE"/.main-eligible-rows.tmp.* "$STATE"/.wake-rows.consume.* \
+    "$STATE"/.wake-queue.retire.* "$STATE"/.wake-queue.ack.* "$STATE"/.wake-queue.actor-view.*; do
+    [ -e "$scratch" ] || [ -L "$scratch" ] || continue
+    rm -f -- "$scratch"
+  done
+}
 
 reclaim_stale_branch_grant_locked() {
   [ -e "$ELIGIBLE_ROWS_FILE" ] || [ -L "$ELIGIBLE_ROWS_FILE" ] || return 0
@@ -139,16 +160,19 @@ write_rows_file_locked() { # <target> <source>
   _fm_atomic_replace "$source" "$target"
 }
 
+# claim_main_rows_locked [<cutoff>]: claim every unreserved queued row for main,
+# or with a cutoff only the unreserved rows at or below it. Rows main already
+# owns stay owned either way.
 claim_main_rows_locked() {
   DRAIN_TMP=$(mktemp "$STATE/.main-eligible-rows.tmp.XXXXXX") || return 1
-  awk -F '\t' -v branch="$ELIGIBLE_ROWS_FILE" -v main="$MAIN_ROWS_FILE" '
+  awk -F '\t' -v branch="$ELIGIBLE_ROWS_FILE" -v main="$MAIN_ROWS_FILE" -v cutoff="${1:-}" '
     BEGIN {
       while ((getline line < branch) > 0) reserved[line]=1
       while ((getline line < main) > 0) owned[line]=1
     }
     NF >= 5 && $2 ~ /^[0-9]+$/ {
       present[$2]=1
-      if (!($2 in reserved)) owned[$2]=1
+      if (!($2 in reserved) && (cutoff == "" || $2 + 0 <= cutoff + 0)) owned[$2]=1
     }
     END { for (seq in owned) if (seq in present) print seq }
   ' "$FM_WAKE_QUEUE" | LC_ALL=C sort -n > "$DRAIN_TMP" || return 1
@@ -399,9 +423,7 @@ EOF
 # cursor-backed unread span as the annotation path, and runs on every drain -
 # including the empty-queue fast path - so a buried answer cannot be swallowed
 # when the fold later advances the cursor. Prints nothing when nothing is
-# unread, which is the common case. The header's "not re-printed" promise holds
-# because this section runs only on a drain that goes on to commit its
-# presentation receipt: any earlier failure skips the sections outright.
+# unread, which is the common case.
 print_unread_status_section() {  # <task-and-endpoint-snapshot>
   local snapshot=$1 unread task line shown=0
 
@@ -427,7 +449,7 @@ EOF
 # Print the consolidated OPEN DECISIONS section: every still-open
 # needs-decision/blocked, fleet-wide, folded from the durable status logs by
 # fm-classify-lib.sh's status_open_decisions fold (via its cursor-backed
-# scan_open_decisions_snapshot wrapper) rather than from the annotations
+# scan_open_decisions_incremental wrapper) rather than from the annotations
 # above, so a decision buried under later unrelated appends cannot be silently
 # missed. Informational `note:` lines and pending-reply resolutions are not
 # decisions; print_unread_status_section owns their one-shot surface. Runs on
@@ -448,11 +470,6 @@ print_open_decisions_section() {  # <task-and-endpoint-snapshot>
 
   while IFS=$(printf '\t') read -r task key verb note; do
     [ -n "$task" ] || continue
-    # Always show the key, "default" included: the footer below names the
-    # exact --resolve-key value to use, and an unkeyed row's key IS "default"
-    # (fm-send.sh accepts it like any other stated key) - hiding it here left
-    # the footer naming a command no reader could actually fill in for that
-    # row.
     line="$task [key=$key] $verb: $note"
     # The shared cut counts the item's own characters; the trailing newline this
     # section's global budget also pays for is this caller's, so the per-item
@@ -545,29 +562,192 @@ EOF
   printf 'RECORD DIVERGENCE: reconcile each one - record the captain'"'"'s own words with bin/fm-captain-hold.sh answer <task> --decision-file <path>, or re-open the status decision when that resolution was not the captain'"'"'s word.\n' || return 1
 }
 
-# A computation failure before the prepared section bytes reach stdout must
-# never be indistinguishable from "computed, and genuinely nothing is open or
-# unread". The caller supplies the failed operation so the notice says both
-# what is missing and why. Receipt persistence is deliberately separate: once
-# every prepared byte reached stdout, only the receipt can be incomplete.
+# Print BRANCH OUTCOMES: what the supervision host's session recorded since
+# main last drained (docs/supervision-host.md "Captain outcomes"). Off Pi this
+# presentation is what the Pi branch's transcript entries are. It runs only for
+# main, only where fm_supervision_host_outcomes_drained holds (the Pi branch
+# extension owns this path on Pi), and never while an away record exists,
+# because those outcomes wait for the return; quiet mode's record is a present
+# captain (bin/fm-afk-contract.sh AWAY OR QUIET). Bounded, and silent when
+# nothing is new or unprocessed.
+#   - Captain outcomes come first and never wait behind routine ones. Every
+#     unprocessed captain row is presented on every drain until main
+#     acknowledges it, collapsed to one line per task: the task's newest
+#     presented summary, naming how many unprocessed captain outcomes it
+#     carries, with tasks in order of their oldest unprocessed row. The byte
+#     cap presents only the oldest contiguous run of captain rows and counts
+#     the newer ones it holds back, so the printed bin/fm-branch-outcome.sh
+#     mark-processed target, the newest presented row, acknowledges exactly
+#     what was presented and always at least the oldest row. An unprocessed
+#     captain row is never adopted as processed, so a home that opts in
+#     mid-session cannot lose its first captain outcome. Each line names how
+#     long ago its row was recorded (the store's "recordedAgo"), because a row
+#     main never acknowledged can come back long after its situation settled
+#     (after a harness or posture switch, or an upgrade whose earlier
+#     presenter never advanced the read cursor), and the section asks main to
+#     check the task's current state first and reply to the captain only
+#     about outcomes still open, as if settled ones had never been listed,
+#     then acknowledge every presented outcome, settled and open alike.
+#   - Visible routine outcomes are listed once, for awareness, the way the Pi
+#     branch's routine notes reach main's transcript without a turn; silent
+#     routine outcomes never appear. The newest visible rows that fit a byte
+#     cap are listed, and older visible rows collapse into a count, since
+#     bin/fm-branch-outcome.sh list keeps them all.
+# Once the section is printed, the store's read cursor advances through every
+# presented row, which is what lets mark-processed accept main's
+# acknowledgement and keeps a routine row from repeating; a drain stopped
+# before it prints leaves every row unread. The budgets count bytes. When jq is
+# missing, the store cannot be read or projected, the section cannot be printed, or its read
+# cursor cannot advance, the section says so on stderr and fails, and the drain exits
+# nonzero after the rest of its presentation, so a caller such as the return
+# (bin/fm-afk-return.sh) keeps its catch-up gated instead of clearing over
+# outcomes a later drain would present again.
+print_branch_outcomes_section() {
+  local config rows through captain routine line seq task task_line target i
+  local text='' used=0 shown=0 held=0 bytes item_bytes=600 captain_bytes=4000 routine_bytes=2000
+  local routine_lines='' routine_count=0 routine_shown=0
+  local -a captain_tasks=() captain_lines=() captain_line_bytes=()
+  [ "$ACTOR" = main ] || return 0
+  config=${FM_CONFIG_OVERRIDE:-$FM_HOME/config}
+  fm_supervision_host_outcomes_drained "$config" || return 0
+  [ -s "$STATE/branch-outcomes.jsonl" ] || return 0
+  ! fm_afk_contract_away_present "$STATE" || return 0
+  if ! command -v jq >/dev/null 2>&1; then
+    printf 'BRANCH OUTCOMES SKIPPED: jq is not installed, so the outcome store cannot be presented; nothing was marked read, and these outcomes are presented once jq is back.\n' >&2
+    return 1
+  fi
+  if ! rows=$("$SCRIPT_DIR/fm-branch-outcome.sh" present 2>/dev/null); then
+    printf 'BRANCH OUTCOMES SKIPPED: the outcome store could not be read safely; repair it before relying on this section.\n' >&2
+    return 1
+  fi
+  [ -n "$rows" ] || return 0
+  if ! through=$(printf '%s\n' "$rows" | jq -s 'map(select(.unread) | .seq) | max // 0' 2>/dev/null) \
+    || ! captain=$(printf '%s\n' "$rows" | jq -rs '
+      map(select(.verdict == "captain")) | sort_by(.seq)
+      | reduce .[] as $r ({count: {}, lines: []};
+          .count[$r.task] += 1
+          | .lines += ["\($r.seq)\t\($r.task)\t[seq \($r.seq)\(if .count[$r.task] > 1 then ", newest of \(.count[$r.task]) for this task" else "" end), recorded \($r.recordedAgo) ago] \($r.task): \($r.summary | gsub("[\t\n\r]"; " "))"])
+      | .lines[]' 2>/dev/null) \
+    || ! routine=$(printf '%s\n' "$rows" | jq -rs 'map(select(.unread and .verdict == "routine" and .silent != true)) | sort_by(.seq) | reverse | .[]
+      | "[seq \(.seq)] \(.task): \(.summary | gsub("[\t\n\r]"; " "))"' 2>/dev/null) \
+    || case "$through" in ''|*[!0-9]*) true ;; *) false ;; esac; then
+    printf 'BRANCH OUTCOMES SKIPPED: the outcome store could not be projected safely; nothing was marked read, so these outcomes are presented again on the next drain.\n' >&2
+    return 1
+  fi
+
+  target=0
+  while IFS=$(printf '\t') read -r seq task task_line; do
+    case "$seq" in ''|*[!0-9]*) continue ;; esac
+    if [ "$held" -gt 0 ]; then
+      held=$((held + 1))
+      continue
+    fi
+    cap_outcome_line "$task_line" $((item_bytes - 1))
+    i=0
+    while [ "$i" -lt "$shown" ] && [ "${captain_tasks[$i]}" != "$task" ]; do i=$((i + 1)); done
+    bytes=$(( used + OUTCOME_LINE_BYTES + 1 ))
+    [ "$i" -eq "$shown" ] || bytes=$(( bytes - captain_line_bytes[i] - 1 ))
+    if [ "$bytes" -gt "$captain_bytes" ]; then
+      held=1
+      continue
+    fi
+    captain_tasks[i]=$task
+    captain_lines[i]=$OUTCOME_LINE
+    captain_line_bytes[i]=$OUTCOME_LINE_BYTES
+    [ "$i" -lt "$shown" ] || shown=$((shown + 1))
+    used=$bytes
+    target=$seq
+  done <<ROWS
+$captain
+ROWS
+  if [ "$shown" -gt 0 ]; then
+    text="BRANCH OUTCOMES (captain outcomes the supervision session recorded for you, one line per task, oldest first; each says what was true when it was recorded, so check the task's current state first, including its still-open decisions listed above under OPEN DECISIONS, and sort them into still open and already settled, such as a decision since answered, a PR since merged, or a task since finished - process the still-open ones as firstmate: tell the captain, land or merge what is ready, answer or escalate a decision, or act on a blocker; your reply to the captain covers only those, as if the settled ones had never been listed, and a settled one needs only the acknowledgement):
+"
+    for line in "${captain_lines[@]}"; do
+      text="$text$line
+"
+    done
+    [ "$held" -eq 0 ] || text="${text}BRANCH OUTCOMES: $held newer captain outcome(s) are held back (byte cap); they follow on the next drain once these are acknowledged
+"
+    text="${text}BRANCH OUTCOMES: after processing them run bin/fm-branch-outcome.sh mark-processed --through $target; until then every drain presents them again
+"
+  fi
+
+  used=0
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    routine_count=$((routine_count + 1))
+  done <<ROWS
+$routine
+ROWS
+  # Newest first against the cap, printed oldest first.
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    cap_outcome_line "$line" $((item_bytes - 1))
+    bytes=$(( OUTCOME_LINE_BYTES + 1 ))
+    [ $((used + bytes)) -le "$routine_bytes" ] || break
+    routine_lines="$OUTCOME_LINE
+$routine_lines"
+    used=$((used + bytes))
+    routine_shown=$((routine_shown + 1))
+  done <<ROWS
+$routine
+ROWS
+  if [ "$routine_count" -gt 0 ]; then
+    text="${text}BRANCH OUTCOMES, ROUTINE (handled by the supervision session since your last drain; for your awareness, nothing to acknowledge):
+"
+    [ "$routine_shown" -eq "$routine_count" ] || text="${text}($((routine_count - routine_shown)) earlier routine outcome(s) not shown; bin/fm-branch-outcome.sh list keeps them)
+"
+    text="$text$routine_lines"
+  fi
+  if [ -n "$text" ]; then
+    printf '%s' "$text" || return 1
+  fi
+  [ "$through" -gt 0 ] || return 0
+  if ! "$SCRIPT_DIR/fm-branch-outcome.sh" mark-read --through "$through" >/dev/null 2>&1; then
+    printf 'BRANCH OUTCOMES: the store could not record this presentation, so these outcomes are presented again on the next drain and an acknowledgement above is refused until then.\n' >&2
+    return 1
+  fi
+}
+
+# BRANCH OUTCOMES' per-item cut: the shared digest marker in place of the
+# tail once the line passes <max> bytes, cut bytewise whatever the caller's
+# locale and backed off to the last whole UTF-8 character, so a multibyte
+# summary keeps the section inside its byte budgets and stays valid text. Sets
+# OUTCOME_LINE and OUTCOME_LINE_BYTES.
+cap_outcome_line() {  # <line> <max-bytes>
+  local LC_ALL=C line=$1 max=$2 keep body tail rest need
+  if [ "${#line}" -le "$max" ]; then
+    OUTCOME_LINE=$line
+    OUTCOME_LINE_BYTES=${#line}
+    return 0
+  fi
+  keep=$((max - ${#FM_LINE_CAP_SUFFIX}))
+  [ "$keep" -ge 0 ] || keep=0
+  body=${line:0:keep}
+  tail=${body##*[!$'\x80'-$'\xbf']}
+  rest=${body%"$tail"}
+  case "${rest: -1}" in
+    [$'\xc0'-$'\xdf']) need=1 ;;
+    [$'\xe0'-$'\xef']) need=2 ;;
+    [$'\xf0'-$'\xf7']) need=3 ;;
+    *) need=0 ;;
+  esac
+  [ "${#tail}" -ge "$need" ] || body=${rest%?}
+  OUTCOME_LINE=$body$FM_LINE_CAP_SUFFIX
+  OUTCOME_LINE_BYTES=${#OUTCOME_LINE}
+}
+
 print_status_sections_incomplete_notice() {  # <reason>
-  local reason=$1
-  printf 'STATUS PRESENTATION INCOMPLETE: unread status, outcome backstop, OPEN DECISIONS, and record divergence could not be fully computed this drain (%s); do not read this drain'"'"'s silence as nothing open or unread - retry on the next drain.\n' "$reason"
+  printf 'STATUS PRESENTATION INCOMPLETE: unread status, outcome backstop, OPEN DECISIONS, and record divergence could not be fully computed this drain (%s); do not read this drain'"'"'s silence as nothing open or unread - retry on the next drain.\n' "$1"
 }
 
 print_status_receipt_failure_notice() {
   printf 'STATUS PRESENTATION RECEIPT FAILED: the status sections above were fully computed and printed, but their presentation receipt could not be committed; they may repeat on the next drain.\n'
 }
 
-# One notice for every failure that leaves this drain with no presentation to
-# make at all - the lock, the fleet snapshot, or the annotation pass, whether or
-# not the failure can name a task. Such a drain acknowledges nothing and commits
-# nothing, so "nothing was marked as seen" needs no per-task bookkeeping to be
-# true: every presentation cursor is still where the previous drain left it.
 print_status_presentation_incomplete_notice() {  # <reason>
-  local reason=$1
-  printf 'STATUS PRESENTATION INCOMPLETE: %s; no status annotations or fleet-wide status sections were computed this drain, nothing was marked as seen and no presentation cursor advanced, so every unread status line is still unread.\n' \
-    "$reason"
+  printf 'STATUS PRESENTATION INCOMPLETE: %s; no status annotations or fleet-wide status sections were computed this drain, nothing was marked as seen and no presentation cursor advanced, so every unread status line is still unread.\n' "$1"
 }
 
 print_status_sections() {  # <task-and-endpoint-snapshot> [<fully-presented-task-ids>]
@@ -622,11 +802,6 @@ print_status_presentation() {  # [<deduped-raw-rows>]
     fi
     return 1
   fi
-  # A failed snapshot read still leaves every task it printed BEFORE the failure
-  # in the captured value. Acknowledging and committing that truncated fleet view
-  # would rewrite the shared presentation-cursor manifest without the tasks the
-  # read never reached, resetting their unread and outcome-backstop cursors for
-  # good, so the partial capture is discarded here and nothing below runs on it.
   snapshot=$(status_presentation_snapshot "$STATE") || {
     snapshot=
     incomplete_reason='status snapshot could not be read'
@@ -641,11 +816,6 @@ print_status_presentation() {  # [<deduped-raw-rows>]
       rc=1
     fi
   fi
-  # One rule for the snapshot and the annotation pass alike, whether or not the
-  # failure can name a task: a drain that could not compute either presents
-  # nothing as seen. It says so once and skips the acknowledge and commit passes
-  # entirely, so no task's presentation cursor moves and the next drain still
-  # owes every unread line.
   if [ -n "$incomplete_reason" ]; then
     print_status_presentation_incomplete_notice "$incomplete_reason"
   elif [ -n "$snapshot" ]; then
@@ -685,6 +855,7 @@ else
   exit 1
 fi
 DRAIN_LOCK_HELD=true
+rotate_scratch_locked
 reclaim_stale_branch_grant_locked || exit 1
 [ "$ACTOR" != main ] || retire_unconsumable_rows_locked
 [ "$ACTOR" != branch ] || require_branch_eligible_rows || exit 1
@@ -696,21 +867,26 @@ if [ -n "$ACK_THROUGH" ]; then
     PRESENTED_MAX=$(presented_max_row "$MAIN_ROWS_FILE") || exit 1
   fi
   if [ "$ACTOR" = main ]; then
-    # Preserve main's original whole-cutoff acknowledgement contract: rows may
-    # arrive after presentation but before the printed ack runs, and a direct
-    # or replayed main ack still owns every unreserved row through its cutoff.
-    # Claim again under the queue lock so those rows cannot be stranded merely
-    # because they were not present during the earlier drain. A live branch
+    # Preserve main's original whole-cutoff acknowledgement contract: a direct
+    # or replayed main ack still owns every unreserved row through its cutoff,
+    # so claim those again under the queue lock and none is stranded merely
+    # because it was not present during the earlier drain. A row above the
+    # cutoff arrived after presentation and was never shown to main, so it
+    # stays unowned for whichever actor presents it next; claiming it here
+    # would hand every later away-session wake back to main. A live branch
     # grant remains excluded by claim_main_rows_locked.
-    claim_main_rows_locked || exit 1
+    claim_main_rows_locked "$ACK_THROUGH" || exit 1
   fi
   if [ "$ACTOR" = branch ]; then
-    # check-kind rows (inactive-outcome receipts, secondmate stall markers)
-    # are never in a branch's eligible snapshot - they are main-only by
-    # construction (docs/pi-supervision-branch.md) - so a branch-actor ack
-    # never removes one and these scans would find nothing relevant anyway.
-    ACK_FINGERPRINTS=
-    ACK_NOTICE_FINGERPRINTS=
+    # An away-posture grant can name check-kind rows - the attended
+    # partition's check/decision exclusions lift under the away record
+    # (docs/pi-supervision-branch.md "Postures") - so a branch ack must retire
+    # the inactive-outcome and notice receipts carried by the exact granted
+    # sequences it consumes. Otherwise the receipt stays pending and every
+    # later reconcile scan re-queues the same fingerprint. Attended, a grant
+    # names no check row and both scans find nothing.
+    ACK_FINGERPRINTS=$(inactive_outcome_fingerprints "$ACK_THROUGH" 'inactive-outcome:' "$ELIGIBLE_ROWS_FILE") || exit 1
+    ACK_NOTICE_FINGERPRINTS=$(inactive_outcome_fingerprints "$ACK_THROUGH" 'inactive-reconcile:' "$ELIGIBLE_ROWS_FILE") || exit 1
   else
     if { [ -e "$MAIN_ROWS_FILE" ] || [ -L "$MAIN_ROWS_FILE" ]; } \
       && ! rows_file_valid "$MAIN_ROWS_FILE"; then
@@ -740,6 +916,10 @@ if [ -n "$ACK_THROUGH" ]; then
       BEGIN { while ((getline line < seqs) > 0) if (line ~ /^[0-9]+$/) keep[line] = 1 }
       NF < 5 || $2 !~ /^[0-9]+$/ || $2 > cutoff || !($2 in keep) { print }
     ' "$FM_WAKE_QUEUE" > "$DRAIN_TMP" || exit 1
+    fm_wake_commit_secondmate_stall_receipts_through "$ACK_THROUGH" "$ELIGIBLE_ROWS_FILE" || {
+      echo "wake drain: secondmate stall receipt could not be recorded safely" >&2
+      exit 1
+    }
   else
     awk -F '\t' -v cutoff="$ACK_THROUGH" -v seqs="$MAIN_ROWS_FILE" '
       BEGIN { while ((getline line < seqs) > 0) owned[line]=1 }
@@ -824,11 +1004,12 @@ if [ ! -s "$FM_WAKE_QUEUE" ]; then
   fm_lock_release "$FM_WAKE_QUEUE_LOCK"
   DRAIN_LOCK_HELD=false
   (print_status_presentation) || true
+  print_branch_outcomes_section || BRANCH_OUTCOMES_RC=1
   if [ "$RECOVERY_ACK_REQUIRED" = true ]; then
     printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 0 --recovery-generation %s\n' "${RECOVERY_MARKER_TOKEN##*:}" >&2
   fi
   assert_watcher_liveness
-  exit 0
+  exit "$BRANCH_OUTCOMES_RC"
 fi
 
 if [ "$ACTOR" = main ]; then
@@ -845,8 +1026,9 @@ if [ "$ACTOR" = main ]; then
     fm_lock_release "$FM_WAKE_QUEUE_LOCK"
     DRAIN_LOCK_HELD=false
     (print_status_presentation) || true
+    print_branch_outcomes_section || BRANCH_OUTCOMES_RC=1
     assert_watcher_liveness
-    exit 0
+    exit "$BRANCH_OUTCOMES_RC"
   fi
 fi
 
@@ -907,5 +1089,6 @@ printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --a
   "$ACK_THROUGH" "${RECOVERY_MARKER_TOKEN##*:}" >&2
 
 (print_status_presentation "$RAW_ROWS") || true
+print_branch_outcomes_section || BRANCH_OUTCOMES_RC=1
 assert_watcher_liveness
-exit 0
+exit "$BRANCH_OUTCOMES_RC"

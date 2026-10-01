@@ -116,8 +116,15 @@ resolve_base_ref() {
   done
   return 1
 }
-BASE_REF=$(resolve_base_ref) \
-  || fail "fm-backend baseline requires local main or origin/main; fetch the default branch before running this test"
+BASE_REF=
+
+backend_base_ref() {
+  if [ -z "${BASE_REF:-}" ]; then
+    BASE_REF=$(resolve_base_ref) \
+      || fail "fm-backend baseline requires local main or origin/main; fetch the default branch before running this test"
+  fi
+  printf '%s\n' "$BASE_REF"
+}
 
 # Newest first-parent revision whose bin/backends/tmux.sh still uses the
 # pre-exact permissive kill-window target. Content-addressed from history so the
@@ -157,14 +164,15 @@ resolve_permissive_tmux_kill_ref() {
 # after this complete baseline has been materialized.
 
 build_old_bin() {  # <name> -> echoes root dir (root/bin/<script> is the entry point)
-  local name=$1 root archive
+  local name=$1 root archive base_ref
   root="$TMP_ROOT/$name"
   archive="$root/bin.tar"
   mkdir -p "$root"
-  git -C "$ROOT" archive --format=tar "$BASE_REF" bin > "$archive" \
-    || fail "old-bin shim: could not archive bin/ from $BASE_REF"
+  base_ref=$(backend_base_ref)
+  git -C "$ROOT" archive --format=tar "$base_ref" bin > "$archive" \
+    || fail "old-bin shim: could not archive bin/ from $base_ref"
   tar -xf "$archive" -C "$root" \
-    || fail "old-bin shim: could not extract bin/ from $BASE_REF"
+    || fail "old-bin shim: could not extract bin/ from $base_ref"
   rm -f "$archive"
   printf '%s\n' "$root"
 }
@@ -518,6 +526,42 @@ test_backend_source_shell_portable() {
   pass "bash: fm_backend_source recognizes known backends and rejects unknown ones"
 }
 
+test_backend_source_requires_adapter_file() {
+  local dir adapter exit_status continuation out rc condition test_bash
+  dir="$TMP_ROOT/adapter-precheck"
+  adapter="$dir/backends/tmux.sh"
+  test_bash=${FM_TEST_BASH:-${BASH:-bash}}
+  mkdir -p "$dir/backends"
+
+  for condition in missing unreadable; do
+    if [ "$condition" = unreadable ]; then
+      printf ':\n' > "$adapter"
+      chmod 000 "$adapter"
+      if [ -r "$adapter" ]; then
+        pass "fm_backend_source: unreadable adapter case skipped (this user can read mode-000 files)"
+        continue
+      fi
+    fi
+    exit_status="$dir/$condition.exit"
+    continuation="$dir/$condition.continued"
+    # shellcheck disable=SC2016 # The child Bash expands $1..$4 and $? at runtime.
+    out=$("$test_bash" -c '
+      . "$1"
+      FM_BACKEND_LIB_DIR=$2
+      trap '\''printf "%s\n" "$?" > "$3"'\'' EXIT
+      set -e
+      fm_backend_source tmux
+      : > "$4"
+    ' _ "$ROOT/bin/fm-backend.sh" "$dir" "$exit_status" "$continuation" 2>&1)
+    rc=$?
+    [ "$rc" -ne 0 ] || fail "fm_backend_source returned success for a $condition adapter: $out"
+    [ -f "$exit_status" ] || fail "fm_backend_source did not record the $condition adapter exit status"
+    [ "$(cat "$exit_status")" -ne 0 ] || fail "fm_backend_source lost the $condition adapter failure at EXIT"
+    [ ! -e "$continuation" ] || fail "fm_backend_source continued the lifecycle after a $condition adapter"
+    pass "fm_backend_source: $condition adapter fails before lifecycle continuation"
+  done
+}
+
 test_backend_validate_spawn_accepts_orca() {
   local out
   fm_backend_validate_spawn tmux 2>/dev/null || fail "fm_backend_validate_spawn should accept tmux"
@@ -809,10 +853,12 @@ SH
 }
 
 run_spawn_case() {  # <bin-root> <fakebin> <log> <state> <data> <config> <proj> -- <spawn args...>
-  local bin=$1 fb=$2 log=$3 state=$4 data=$5 config=$6 proj=$7; shift 7
+  local bin=$1 fb=$2 log=$3 state=$4 data=$5 config=$6 proj=$7 home; shift 7
   [ "${1:-}" = -- ] && shift
+  home="$TMP_ROOT/spawn-home"
+  mkdir -p "$home/state"
   : > "$log"
-  env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$bin" HOME="$SPAWN_HOME" CLAUDE_CONFIG_DIR='' \
+  env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$bin" FM_HOME="$home" HOME="$SPAWN_HOME" CLAUDE_CONFIG_DIR='' \
     FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
     FM_PROJECTS_OVERRIDE="$TMP_ROOT/unused-projects" \
     FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" FM_TMUX_LOG="$log" \
@@ -938,7 +984,18 @@ set -u
 { printf 'treehouse'; for a in "$@"; do printf '\x1f%s' "$a"; done; printf '\n'; } >> "${FM_TMUX_LOG:?}"
 exit 0
 SH
-  chmod +x "$fb/tmux" "$fb/treehouse"
+  cat > "$fb/tasks-axi" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "${1:-}" in
+  --version) printf '0.2.6\n'; exit 0 ;;
+  hold) [ "${2:-}" = --help ] && { printf '%s\n' 'usage: tasks-axi hold <id> --reason <text> --kind captain'; exit 0; } ;;
+  update) [ "${2:-}" = --help ] && { printf '%s\n' 'usage: tasks-axi update <id> --body-file <path> --archive-body'; exit 0; } ;;
+  mv) [ "${2:-}" = --help ] && { printf '%s\n' 'usage: tasks-axi mv <id> [<id>...] --to <path-or-dir>'; exit 0; } ;;
+esac
+exit 0
+SH
+  chmod +x "$fb/tmux" "$fb/treehouse" "$fb/tasks-axi"
   printf '%s\n' "$fb"
 }
 
@@ -1132,6 +1189,13 @@ test_spawn_autodetect_nesting_resolves_tmux_silently() {
   pass "fm-spawn.sh: auto-detect resolves nested tmux-in-herdr to tmux and stays silent end to end"
 }
 
+if [ -n "${FM_TEST_ONLY:-}" ]; then
+  "$FM_TEST_ONLY"
+  exit 0
+fi
+
+backend_base_ref >/dev/null
+
 test_backend_name_precedence
 test_backend_detect_precedence
 test_backend_detect_cmux_fallback_bundle_id
@@ -1145,6 +1209,7 @@ test_backend_name_autodetect_notice
 test_backend_name_explicit_beats_detection
 test_backend_validate_refuses_unknown
 test_backend_source_shell_portable
+test_backend_source_requires_adapter_file
 test_backend_validate_spawn_accepts_orca
 test_meta_get_and_backend_of_meta
 test_resolve_selector_three_forms
@@ -1154,8 +1219,114 @@ test_peek_conformance_old_vs_new
 test_spawn_symlinked_project_prefix_avoids_false_refusal
 test_teardown_conformance_old_vs_new
 test_spawn_refuses_unknown_backend_flag
+
+# fm_control_endpoint_absence_verdict is the ONE owner of "may this endpoint be
+# re-created", shared by fm-control.sh's exit/relaunch verbs and the secondmate
+# liveness sweep. On tmux it proves absence from the task's window NAME, which
+# is pinned at creation, and from two readings only: no server at all on the
+# addressed socket, or a COMPLETE scan of every session on it that never saw
+# the name. Finding the name in any session refuses - that is the renamed,
+# moved, or still-in-place window - and so does a scan that could not complete,
+# since a task record carries no socket identity to settle it by.
+make_absence_verdict_tmux() {  # <dir> <mode> -> echoes fakebin
+  local dir=$1 mode=$2 fakebin
+  fakebin="$dir/$mode-bin"
+  mkdir -p "$fakebin"
+  cat > "$fakebin/tmux" <<SH
+#!/usr/bin/env bash
+# One session inventory per line of \$FM_TEST_TMUX_SESSIONS: "<session> <win>..".
+case "\${1:-}" in
+  list-sessions)
+    case "\$FM_TEST_TMUX_MODE" in
+      no-server)
+        printf 'no server running on /tmp/tmux-test/default\n' >&2
+        exit 1 ;;
+      socket-refused)
+        printf 'error connecting to /tmp/tmux-test/default (Connection refused)\n' >&2
+        exit 1 ;;
+      unreadable)
+        printf 'some other tmux failure\n' >&2
+        exit 1 ;;
+    esac
+    printf '%s\n' "\$FM_TEST_TMUX_SESSIONS" | awk 'NF { print \$1 }'
+    exit 0 ;;
+  list-windows)
+    want=
+    prev=
+    for a in "\$@"; do
+      [ "\$prev" = -t ] && want=\${a#=}
+      prev=\$a
+    done
+    [ "\$FM_TEST_TMUX_MODE" != session-unlistable ] || { printf 'lost server\n' >&2; exit 1; }
+    printf '%s\n' "\$FM_TEST_TMUX_SESSIONS" \
+      | awk -v s="\$want" 'NF && \$1 == s { for (i = 2; i <= NF; i++) print \$i }'
+    exit 0 ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/tmux"
+  printf '%s\n' "$fakebin"
+}
+
+verdict_for() {  # <mode> <session-inventory> -> "<verdict>|<has-reason>"
+  local mode=$1 inventory=$2 fakebin out
+  fakebin=$(make_absence_verdict_tmux "$TMP_ROOT/absence-verdict" "$mode")
+  out=$(PATH="$fakebin:$PATH" FM_TEST_TMUX_MODE="$mode" \
+    FM_TEST_TMUX_SESSIONS="$inventory" \
+    fm_control_endpoint_absence_verdict tmux 'firstmate:fm-sm1')
+  case "${out#*$'\t'}" in
+    '') printf '%s|no-reason\n' "${out%%$'\t'*}" ;;
+    *) printf '%s|has-reason\n' "${out%%$'\t'*}" ;;
+  esac
+}
+
+test_tmux_absence_verdict_scans_every_session_for_the_pinned_window() {
+  local out
+  # shellcheck source=bin/fm-control-lib.sh
+  . "$ROOT/bin/fm-control-lib.sh"
+
+  # No server at all: every window it held died with it.
+  out=$(verdict_for no-server '')
+  [ "$out" = 'gone|no-reason' ] \
+    || fail "a definitively absent tmux server proves absence, got: $out"
+  out=$(verdict_for socket-refused '')
+  [ "$out" = 'gone|no-reason' ] \
+    || fail "a refused socket is the same absent-server answer, got: $out"
+
+  # A RUNNING server whose complete inventory never shows the pinned name is
+  # the other proof - and the one that recovers every task parked across a
+  # reboot, since re-creating the first one starts a server.
+  out=$(verdict_for running 'firstmate main
+other othertask')
+  [ "$out" = 'gone|no-reason' ] \
+    || fail "a complete scan that never saw the pinned window proves absence, got: $out"
+
+  # Found anywhere is positive evidence the window still exists: the recorded
+  # session, a renamed one, or one it was moved to all refuse.
+  out=$(verdict_for running 'firstmate main fm-sm1')
+  [ "$out" = 'unproven|has-reason' ] \
+    || fail "the window still in its recorded session must refuse, got: $out"
+  out=$(verdict_for running 'work main fm-sm1')
+  [ "$out" = 'unproven|has-reason' ] \
+    || fail "a renamed session still holding the window must refuse, got: $out"
+  out=$(verdict_for running 'firstmate main
+work fm-sm1')
+  [ "$out" = 'unproven|has-reason' ] \
+    || fail "a window moved into another live session must refuse, got: $out"
+
+  # Fails closed: an incomplete scan proves nothing, in either read.
+  out=$(verdict_for unreadable '')
+  [ "$out" = 'unproven|has-reason' ] \
+    || fail "a session list that could not be read establishes no absence, got: $out"
+  out=$(verdict_for session-unlistable 'firstmate main')
+  [ "$out" = 'unproven|has-reason' ] \
+    || fail "a session whose windows could not be listed leaves the scan incomplete, got: $out"
+  pass "tmux endpoint absence: an absent server or a complete scan missing the pinned window is gone; found or incomplete refuses"
+}
+
 test_spawn_refuses_codex_app_backend_flag
 test_spawn_refuses_unknown_fm_backend_env
 test_spawn_default_backend_writes_no_meta_field
 test_spawn_explicit_backend_flag_beats_autodetect_herdr_env
 test_spawn_autodetect_nesting_resolves_tmux_silently
+test_tmux_absence_verdict_scans_every_session_for_the_pinned_window

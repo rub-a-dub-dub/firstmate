@@ -42,14 +42,14 @@ FM_MERGE_OUTCOME_ALREADY_RECORDED=false
 #   poll - this home's merge poll detected the merge, so the canonical outcome
 #          also wakes this home after any upward hop needed by a secondmate.
 # Optional <authority> is away, attended, attended-ci-waived, or external (the
-# retired yolo and away-grant values are still accepted for a persisted authority
-# written before the words model landed). Away, attended-ci-waived, external,
-# and the retired tags are appended to the ledger line; attended remains
-# untagged. attended-ci-waived is
-# bin/fm-merge-authority-lib.sh's tag for an attended merge that used
-# bin/fm-pr-merge.sh's --waive-no-ci-evidence escape, so the waiver survives
-# in this captain-facing outcome. The merge entrypoint supplies its authority
-# after forge acceptance, while the poll supplies the persisted
+# retired yolo and away-grant values are still accepted for a persisted
+# authority written before the words model landed). Away, attended-ci-waived,
+# external, and the retired tags are appended to the ledger line; attended
+# remains untagged. attended-ci-waived is bin/fm-merge-authority-lib.sh's tag
+# for an attended merge that used bin/fm-pr-merge.sh's --waive-no-ci-evidence
+# escape, so the waiver survives in this captain-facing outcome. The merge
+# entrypoint supplies its authority after forge acceptance, while the poll
+# supplies the persisted
 # identity-bound value or external when no matching record proves that this
 # home authorized the merge.
 #
@@ -113,5 +113,7 @@ fm_merge_outcome_report() {  # <home> <state> <task-id> <pr-url> <origin> [autho
       "$provider" "$host" "$path" "$number" || status=1
   fi
   fm_lock_release "$lock"
+  # Opt-in fleet activity ledger (docs/fleet-ledger.md); off costs one file test.
+  [ ! -e "${FM_CONFIG_OVERRIDE:-$home/config}/fleet-ledger" ] || [ "$status" -ne 0 ] || FM_HOME=$home FM_STATE_OVERRIDE=$state "$_FM_MERGE_OUTCOME_LIB_DIR/fm-fleet-ledger.sh" merged "$id" pr "$FM_PR_URL" || true
   return "$status"
 }

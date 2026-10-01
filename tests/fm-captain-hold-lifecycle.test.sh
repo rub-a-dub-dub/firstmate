@@ -115,6 +115,13 @@ case "${1:-} ${2:-}" in
   "api graphql")
     printf '%s\n' 'state=MERGED' 'merged=true' 'queued=false' 'base=main'
     ;;
+  "api --paginate")
+    case " $* " in
+      *merge_queue*) ;;
+      *) printf '%s\n' '[]' ;;
+    esac
+    ;;
+  "api repos/"*) printf '%s\n' '{"name":"main","protected":false}' ;;
 esac
 SH
   cat > "$home/fakebin/gh-axi" <<'SH'
@@ -334,7 +341,7 @@ write_known_rows_stub() {  # <fakebin> <row-id...>
   cat > "$fb/tasks-axi" <<'SH'
 #!/usr/bin/env bash
 case "${1:-}" in
-  --version) printf '%s\n' '0.2.5' ;;
+  --version) printf '%s\n' '0.2.6' ;;
   update)
     [ "${2:-}" = --help ] || exit 1
     printf '%s\n' '--archive-body'
@@ -530,7 +537,7 @@ EOF
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "@LOG@"
 case "${1:-}" in
-  --version) printf '%s\n' '0.2.5' ;;
+  --version) printf '%s\n' '0.2.6' ;;
   update)
     if [ "${2:-}" = --help ]; then
       printf '%s\n' '--archive-body'
@@ -4027,15 +4034,6 @@ test_retained_body_keeps_its_utf8_bytes() {
   pass "cleanup preserves every byte of a retained body's non-ASCII characters"
 }
 
-# This file runs long enough (single digit minutes, per
-# bin/fm-test-run.sh's own portable_parallel_weight_hints) that a caller with
-# a shorter invocation budget can cut the run off mid-stream. A truncated
-# run's tail looks identical, byte for byte, to a genuinely complete pass: a
-# run of "ok" lines followed by silence. The plan line below gives a scanner
-# a declared count to check the observed ok/not-ok count against, so a run
-# stopped early reads as interrupted rather than as a failure; see plan() in
-# tests/lib.sh. Add a new test to TESTS, not as a bare call below, so it stays
-# covered by the count.
 TESTS=(
   test_uninventoried_report_decision_refuses_completion
   test_hold_decodes_a_bare_scalar_body_without_the_nonref_default
@@ -4089,6 +4087,7 @@ TESTS=(
   test_verify_names_the_unresolvable_legacy_id_once
   test_verify_resolves_a_pre_collapse_key_through_its_derived_marker
   test_captain_hold_mutations_address_the_beads_backend
+  test_hold_creates_a_captain_row_when_beads_requires_due_without_custom_type
 )
 
 plan "${#TESTS[@]}"

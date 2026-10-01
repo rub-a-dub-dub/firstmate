@@ -613,42 +613,77 @@ fm_backend_expected_label_of_selector() {  # <raw-target> <state-dir>
 # Each adapter is an independently linted canonical root. The /dev/null source
 # boundaries keep runtime dispatch from importing all five adapter ASTs into
 # every dispatcher consumer while preserving the runtime source operations.
+# Bash 3.2 can enter an EXIT trap with status 0 after `set -e` aborts on a
+# missing or unreadable dot-sourced file, and a newer Bash can print that
+# diagnostic and keep going. Both report a successful teardown. Prove the
+# adapter and the siblings it sources are readable regular files before `.`.
+fm_backend_source_readable() {  # <path>
+  [ -f "$1" ] && [ -r "$1" ]
+}
+
 fm_backend_source() {  # <name>
-  local name=$1
+  local name=$1 adapter rel path siblings
   fm_backend_validate "$name" || return 1
+  adapter="$FM_BACKEND_LIB_DIR/backends/$name.sh"
+  case "$name" in
+    tmux)
+      siblings="fm-tmux-lib.sh fm-composer-lib.sh fm-cursor-lib.sh fm-session-lock-lib.sh fm-agent-process-lib.sh fm-gemini-lib.sh"
+      ;;
+    herdr)
+      siblings="fm-composer-lib.sh fm-transition-lib.sh fm-agent-process-lib.sh fm-session-lock-lib.sh fm-gemini-lib.sh"
+      ;;
+    zellij)
+      siblings="fm-backend-hometag-lib.sh fm-composer-lib.sh"
+      ;;
+    orca)
+      siblings="fm-composer-lib.sh"
+      ;;
+    cmux)
+      siblings="fm-backend-hometag-lib.sh fm-composer-lib.sh"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  fm_backend_source_readable "$adapter" || return 1
+  # shellcheck disable=SC2086 # sibling names are a fixed space-separated list
+  for rel in $siblings; do
+    path="$FM_BACKEND_LIB_DIR/$rel"
+    fm_backend_source_readable "$path" || return 1
+  done
   case "$name" in
     tmux)
       if [ -z "${_FM_BACKEND_TMUX_SOURCED:-}" ]; then
         # shellcheck source=/dev/null
-        . "$FM_BACKEND_LIB_DIR/backends/tmux.sh" || return 1
+        . "$adapter" || return 1
         _FM_BACKEND_TMUX_SOURCED=1
       fi
       ;;
     herdr)
       if [ -z "${_FM_BACKEND_HERDR_SOURCED:-}" ]; then
         # shellcheck source=/dev/null
-        . "$FM_BACKEND_LIB_DIR/backends/herdr.sh" || return 1
+        . "$adapter" || return 1
         _FM_BACKEND_HERDR_SOURCED=1
       fi
       ;;
     zellij)
       if [ -z "${_FM_BACKEND_ZELLIJ_SOURCED:-}" ]; then
         # shellcheck source=/dev/null
-        . "$FM_BACKEND_LIB_DIR/backends/zellij.sh" || return 1
+        . "$adapter" || return 1
         _FM_BACKEND_ZELLIJ_SOURCED=1
       fi
       ;;
     orca)
       if [ -z "${_FM_BACKEND_ORCA_SOURCED:-}" ]; then
         # shellcheck source=/dev/null
-        . "$FM_BACKEND_LIB_DIR/backends/orca.sh" || return 1
+        . "$adapter" || return 1
         _FM_BACKEND_ORCA_SOURCED=1
       fi
       ;;
     cmux)
       if [ -z "${_FM_BACKEND_CMUX_SOURCED:-}" ]; then
         # shellcheck source=/dev/null
-        . "$FM_BACKEND_LIB_DIR/backends/cmux.sh" || return 1
+        . "$adapter" || return 1
         _FM_BACKEND_CMUX_SOURCED=1
       fi
       ;;
@@ -957,26 +992,6 @@ fm_backend_agent_state() {  # <backend> <target>
     tmux) fm_backend_tmux_agent_state "$target" ;;
     herdr) fm_backend_herdr_agent_state "$target" ;;
     *) printf 'unverified' ;;
-  esac
-}
-
-# fm_backend_endpoint_absent: 0 only when <target> exists nowhere on <backend>,
-# so the task's agent cannot be running in it at any address. This is a
-# STRICTLY stronger claim than a `missing` agent state, which says only that
-# the recorded address stopped resolving: a renamed tmux session or a window
-# moved out of the recorded one both read `missing` while the agent keeps
-# running somewhere else. Callers that are about to CREATE a replacement
-# endpoint must ask this, because there the difference decides whether a second
-# agent joins a worktree that already has one. Each backend proves absence over
-# its own whole surface rather than over the recorded address alone; a backend
-# with no such probe reports "not absent", so it simply never qualifies.
-fm_backend_endpoint_absent() {  # <backend> <target>
-  local backend=$1 target=$2
-  fm_backend_source "$backend" || return 1
-  case "$backend" in
-    tmux) fm_backend_tmux_endpoint_absent "$target" ;;
-    herdr) fm_backend_herdr_endpoint_absent "$target" ;;
-    *) return 1 ;;
   esac
 }
 
