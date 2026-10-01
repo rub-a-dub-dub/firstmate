@@ -854,7 +854,7 @@ write_hold_set_stamp() {  # <task-id> <shown-body> <timestamp> <preserve-existin
 # usable here, so this gate owns both the archive read and the refusal. On
 # success prints "<id> <how>" so the caller can keep the attestation evidence.
 verify_entry_durable() {  # <origin-or-empty> <entry>; prints "<id> <how>"
-  local origin=$1 entry=$2 resolved resolve_status=0 legacy
+  local origin=$1 entry=$2 resolved resolve_status=0 legacy refusal
   resolved=$(resolve_entry "$origin" "$entry") || resolve_status=$?
   if [ "$resolve_status" -eq 0 ]; then
     printf '%s\n' "$resolved"
@@ -870,11 +870,12 @@ verify_entry_durable() {  # <origin-or-empty> <entry>; prints "<id> <how>"
     printf '%s archived-answer\n' "$entry"
     return 0
   fi
+  refusal="no captain-held task $entry and no migrated hold for it in this home's configured backlog (data directory $DATA), and no archived Done row for $entry records an answer (a reused id needs a record on every archived row)"
   if [ -n "$origin" ] && [ "$origin" != "$BINDING_ANY" ]; then
     legacy=$(legacy_hold_id "$origin" "$entry")
-    fail "no captain-held task $entry and no migrated hold for it in this home's configured backlog (data directory $DATA), and no archived Done row for $entry records an answer (a reused id needs a record on every archived row); the nearest legacy identity $legacy also resolves to nothing - check the inventory id, and discard a genuinely reused call's work with bin/fm-teardown.sh --force once the captain approves"
+    refusal="$refusal; the nearest legacy identity $legacy also resolves to nothing"
   fi
-  fail "no captain-held task $entry and no migrated hold for it in this home's configured backlog (data directory $DATA), and no archived Done row for $entry records an answer (a reused id needs a record on every archived row) - check the inventory id, and discard a genuinely reused call's work with bin/fm-teardown.sh --force once the captain approves"
+  fail "$refusal - check the inventory id, and discard a genuinely reused call's work with bin/fm-teardown.sh --force once the captain approves"
 }
 
 command_hold() {
