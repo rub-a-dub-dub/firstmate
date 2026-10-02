@@ -682,7 +682,7 @@ test_watcher_rerings_idle_pane_quietly() {
     sleep 0.1
     i=$((i + 1))
   done
-  grep -qF "Firstmate instruction waiting: list \"\$FM_TASK_INBOX\"/*.msg in your 't1.inbox'" "$log" \
+  grep -qF "Firstmate instruction waiting: list \"\$FM_TASK_INBOX\"/*.msg in your 't1.inbox' steering inbox" "$log" \
     || { kill "$pid" 2>/dev/null; fail "the watcher never re-rang the doorbell:"$'\n'"$(cat "$log")"; }
   kill -0 "$pid" 2>/dev/null \
     || fail "a healthy re-ring must not wake firstmate (watcher exited):"$'\n'"$(cat "$out")"
