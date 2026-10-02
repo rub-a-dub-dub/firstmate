@@ -51,8 +51,9 @@ It works in this order:
 
 1. It uses an existing task, or creates one when nothing exists to hold.
 2. It records the task's UTC hold-set timestamp as the leading line of the task body.
-3. It invokes the underlying tasks-axi hold operation.
-4. It verifies both records.
+3. When `--origin` is supplied, it records the origin on the task, replacing any previous association.
+4. It invokes the underlying tasks-axi hold operation.
+5. It verifies the hold and timestamp.
 
 Publishing the stamp first ensures a snapshot cannot observe a newly captain-held task without the timestamp that defines its age.
 
@@ -62,6 +63,10 @@ Repeat and edge cases:
 - Re-holding released work starts a new timestamped lifecycle.
 - A closed task is refused rather than reopened.
 - `--until` stores the captain's own deferral date through tasks-axi's date gate.
+- Before the backend hold runs, `--origin` records the origin the call is held for on its own `Captain hold origin:` body line, which `complete` and `verify` check using backend identities rather than alias spellings.
+  If that write fails, the backend hold is not attempted.
+- The reason may contain parentheses, semicolons, quotes, and line breaks.
+  [`bin/fm-hold-reason-lib.sh`](../bin/fm-hold-reason-lib.sh) owns the storage encoding and compatibility rules; [`bin/fm-tasks-axi.sh --help`](../bin/fm-tasks-axi.sh) owns the public read commands and output contract.
 
 ### Answering a call (`answer`)
 
@@ -102,7 +107,13 @@ A post-teardown visual review can complete against the surviving report and dura
 
 `complete` accepts `--none` as an explicit semantic inventory result.
 `--none` is refused while the origin still has a lifecycle-open keyed status decision.
-Before recording completion, `complete` verifies every listed entry through the same durability rule the `verify` section below records, so a tasks-axi row is not the only evidence that can satisfy it.
+Before recording completion, `complete` verifies every listed task against tasks-axi.
+The origin is never its own inventory entry, so a hold that failed cannot be vouched for by the origin row.
+For a historical inventory that names its own origin, hold a separate captain task with `--origin`, replace only the invalid entry in the final `decision_keys=` line of the origin metadata with that task id while preserving all other entries, and re-run `complete`.
+An entry whose live row records an origin other than the one being completed is refused; a live row carries one recorded origin, so any difference refuses.
+An entry with no recorded origin, such as a hold made before origins were recorded or without `--origin`, is accepted on the durability check alone and named in the output.
+An entry pruned from tasks-axi can still satisfy the durability check when the Done archive retains its recorded answer, so a live tasks-axi row is not the only evidence that can satisfy completion.
+Once that live row is gone the origin rule reads the archive instead, where one reused id can carry several rows: the entry is accepted when at least one archived Done row for that id records the origin being completed, and refused only when one or more origins are recorded and none of them matches, while every archived row must still carry its own resolution record.
 
 With a non-empty inventory, `complete` appends a `captain-held [key=<key>]` transfer event for every still-open keyed status decision.
 The event names the reviewed inventory.
@@ -114,12 +125,13 @@ Scout teardown calls the read-only `verify` subcommand after checking for the re
 `verify` checks three things:
 
 - The recorded attestation exists.
-- Every recorded inventory entry is still durable: actively captain-held, carrying a recorded answer, or pruned into the Done archive with that answer's resolution record intact.
+- Every recorded inventory entry still passes the [completion inventory checks](#recording-a-reviewed-inventory-complete).
 - No keyed status decision opened after the last `complete`.
 
 A keyed status decision opened after the last `complete` makes `verify` fail, and re-running `complete` is the repair.
 Done-history retention can prune an answered call out of the active backlog before its scout is torn down, so `complete` and `verify` both read the Done archive for the same resolution record a live closed row must carry, through the one definition of that record both paths already share.
 The append-only archive can list two incarnations of one reused call id, and this gate has no recorded date to bound them by the way replay's `fm_backlog_archive_row_probe` does, so an archived identity counts only when every archived row for that id carries a record: an earlier answered incarnation cannot answer for a later bare close whatever order the archive lists the two in, and a bare `tasks-axi done` close still fails the gate after pruning.
+The recorded-origin binding across those incarnations is per id rather than per row: one archived row recording the origin being completed satisfies it, and the gate refuses only when origins are recorded and none matches, so when two incarnations were each answered under their own origin neither one's answered row wedges the other's teardown.
 The `--force` path remains the explicit captain-approved discard escape hatch.
 
 ## Cleanup never closes a captain call
@@ -142,6 +154,7 @@ After cleanup, and still under the task's own lock, teardown does three things:
 
 - It records one `Deliverable of the finished work: ...` line at the end of the task body.
 - It copies a supported pull request or canonical `data/<id>/report.md` into the row's structured artifact fields.
+  A Gerrit change URL is not a pull request tasks-axi accepts, so it appears only in the deliverable line.
 - It runs `tasks-axi reopen`.
 
 The row returns to Queued with its hold intact.
@@ -154,6 +167,7 @@ That record carries the retention intent as a `mode=retain` line.
 An interrupted cleanup therefore replays the retention at the next session start through the same record, validator, and lock as an ordinary close, and never closes the row.
 
 If the captain answers before replay, `answer` validates that record and copies any supported retained pull request or report into the row before closing it.
+A retained Gerrit change URL is instead recorded as a `Gerrit change <url>` note on that close.
 Replay then retires the record.
 
 ### Known retained-delivery gaps
@@ -479,7 +493,7 @@ It then finishes any still-recorded dependency-edge cleanup without rewriting th
 
 ## Verification record
 
-The focused end-to-end regression suite is `tests/fm-captain-hold-lifecycle.test.sh`, using only synthetic `sample` identities and decision text.
+The focused end-to-end regression suite is `tests/fm-captain-hold-lifecycle.test.sh`, using only synthetic identities and decision text.
 It proves the behaviors below.
 The suite does not test the accepted merge-to-cleanup re-hold window or asynchronous queued-forge landing because those events occur after the locally serialized merge command has returned.
 
@@ -520,6 +534,7 @@ The suite does not test the accepted merge-to-cleanup re-hold window or asynchro
   An answered call pruned into the archive still satisfies `complete` and lets teardown finish.
   A pruned bare close does not.
   An earlier answered incarnation archived beside a later bare close of the same reused call id does not answer for it, regardless of archive order.
+- The archived origin binding holds per id: a pruned answered call completes for the origin its archived row records and is refused for one that id was never held for, and two archived incarnations each complete under their own recorded origin.
 
 ### Answers, stamps, and deferral
 
@@ -532,7 +547,8 @@ The suite does not test the accepted merge-to-cleanup re-hold window or asynchro
 
 ### Legacy paths
 
-- Every legacy path works: composed identities through the shim, pre-collapse `decision_keys=` metadata, routed-resolution replay, and a concrete-origin binding.
+- Composed identities through the shim, valid pre-collapse `decision_keys=` inventories, routed-resolution replay, and a concrete-origin binding remain supported.
+  Historical self-inventories require the [documented repair](#recording-a-reviewed-inventory-complete).
 
 ### Task-body read-back cases
 

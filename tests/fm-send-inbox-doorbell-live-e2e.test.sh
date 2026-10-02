@@ -3,20 +3,21 @@
 # (live-harness-optin family).
 #
 # The steering inbox's one behavioral assumption is that a real worker agent
-# follows the constant self-describing doorbell line: list the inbox, read and
-# act on its records in numeric order, and mv each into handled/ once read,
-# that move confirming receipt rather than completion. The steer below is
-# phrased in that shipped order (acknowledge first, then do the work), but the
-# verdict requires only that BOTH legs happen within the timeout - it does not
-# observe which landed first, so it proves comprehension of the doorbell, not
-# the relative ordering of the ack and the work. A stub can only confirm
-# the assumption already
-# written into the stub, so per .agents/skills/firstmate-coding-guidelines
-# this is proven against every INSTALLED verified harness: each is launched
-# idle in an isolated tmux server, steered through the REAL fm-send (durable
-# record + doorbell), and must both ACT on the instruction (create a named
-# file) and ACKNOWLEDGE it (the mv into handled/), failing loudly with the
-# harness name and version.
+# follows the constant self-describing doorbell line: list the inbox, read each
+# record in numeric order, mv it into handled/ once understood - that move
+# confirms receipt rather than completion - and only then act on it. The steer
+# below is phrased in that same order, and the verdict requires both legs within
+# the timeout. The
+# doorbell names the inbox as "$FM_TASK_INBOX", so each worker is launched the
+# way bin/fm-spawn.sh launches it, with FM_TASK_INBOX exported to its home's
+# state/<task>.inbox, and receives no brief at all: it must resolve the inbox
+# from the doorbell plus its own environment. A stub can only confirm the
+# assumption already written into the stub, so per
+# .agents/skills/firstmate-coding-guidelines this is proven against every
+# INSTALLED verified harness: each is launched idle in an isolated tmux server,
+# steered through the REAL fm-send (durable record + doorbell), and must both
+# ACT on the instruction (create a named file) and ACKNOWLEDGE it (the mv into
+# handled/), failing loudly with the harness name and version.
 #
 # Run explicitly with FM_SEND_INBOX_LIVE_E2E=1. This test spends a small
 # number of real model tokens per installed harness (one short turn each) -
@@ -136,7 +137,7 @@ check_harness_doorbell() {  # <name>
   task="live-$name"
   acted="$LAB/acted-$name"
   tmux -L "$SOCKET" new-window -d -t "$SESSION:" -n "$win" -c "$ROOT" \
-    -- bash -lc "$cmd" \
+    -- bash -lc "export FM_TASK_INBOX=$(printf '%q' "$home/state/$task.inbox"); $cmd" \
     || { FAILED=1; printf 'not ok - %s (%s): could not launch in the isolated tmux server\n' "$name" "$version" >&2; return 0; }
   wait_ready "$win"; ready_rc=$?
   if [ "$ready_rc" -eq 1 ]; then
