@@ -801,7 +801,7 @@ The guard also notes whether the starfield and the placeholder were actually dra
 
 ## Steering-inbox doorbell
 
-The steering channel's one behavioral assumption - a real worker agent follows the constant self-describing doorbell line (list the inbox, read each record in numeric order, move it into `handled/` immediately to confirm receipt, and then act on it) - was verified on 2026-08-23 against every installed verified harness, on tmux 3.6a, macOS arm64, on an isolated private socket, driving the REAL `bin/fm-send.sh` end to end (durable record plus doorbell, with one mid-wait re-ring playing the watcher's role).
+The steering channel's one behavioral assumption - a real worker agent follows the constant self-describing doorbell line (list the inbox, read and act on its records in numeric order, then `mv` each into `handled/`) - was verified on 2026-08-23 against every installed verified harness, on tmux 3.6a, macOS arm64, on an isolated private socket, driving the REAL `bin/fm-send.sh` end to end (durable record plus doorbell, with one mid-wait re-ring playing the watcher's role).
 
 ```sh
 FM_SEND_INBOX_LIVE_E2E=1 tests/fm-send-inbox-doorbell-live-e2e.test.sh

@@ -359,8 +359,8 @@ INBOX_DIR=$(shell_quote "$STATE/$ID.inbox")
 IFS= read -r -d '' INBOX_SECTION <<EOF || true
 # Firstmate instruction inbox
 Firstmate steers you through durable message files in $INBOX_DIR.
-When a terminal message says an instruction is waiting there - and at any natural checkpoint when you are unsure - list $INBOX_DIR/*.msg, read and act on each message in numeric order, then acknowledge each handled message by moving it: \`mv $INBOX_DIR/NNN.msg $INBOX_DIR/handled/\`.
-The move IS the acknowledgement: without it firstmate rings again and eventually treats you as stuck. An empty or absent inbox needs no action.
+When a terminal message says an instruction is waiting there - and at any natural checkpoint when you are unsure - list $INBOX_DIR/*.msg and, in numeric order, read each message and acknowledge it as soon as you have read and understood it by moving it: \`mv $INBOX_DIR/NNN.msg $INBOX_DIR/handled/\`, then act on it.
+The move IS the acknowledgement, and it only confirms receipt, not that the work the message asks for is done: without it firstmate rings again and eventually treats you as stuck. An empty or absent inbox needs no action.
 EOF
 if [ -e "$CONFIG/wait-no-turns" ]; then
   INBOX_SECTION+="Do not poll or list the inbox while waiting; a waiting instruction rings."$'\n'
