@@ -170,14 +170,14 @@ test_write_is_durable_and_exact() {
   [ "$doorbell" = "$doorbell2" ] \
     || fail "every record in one inbox should ring the same drain-all doorbell"
   assert_contains "$doorbell" "list \"\$FM_TASK_INBOX\"/*.msg" "doorbell should list all unhandled records through FM_TASK_INBOX"
-  assert_contains "$doorbell" "'t1.inbox'" "doorbell should quote and name the inbox"
+  assert_contains "$doorbell" "'t1.inbox' steering inbox" "doorbell should quote and name the inbox"
   assert_contains "$doorbell" "numeric order" "doorbell should require ordered processing"
   assert_contains "$doorbell" "handled/" "doorbell should name the handled dir"
   assert_contains "$doorbell" "Firstmate instruction waiting" "doorbell should be self-describing"
-  assert_contains "$doorbell" "immediately to confirm receipt, then act" \
-    "doorbell should require acknowledgement as receipt before the requested work"
-  assert_contains "$doorbell" "leaving none behind" \
-    "doorbell should require every record it lists to be acknowledged, not just one of them"
+  assert_contains "$doorbell" "read and act on each" \
+    "doorbell should direct the worker to act on each record, not merely read it"
+  assert_contains "$doorbell" "only confirms receipt" \
+    "doorbell should say the move confirms receipt, not completion of the requested work"
   case "$doorbell" in
     *$'\n'*) fail "the doorbell must be a single line" ;;
   esac
