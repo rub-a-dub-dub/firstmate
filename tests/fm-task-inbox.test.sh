@@ -176,9 +176,9 @@ test_write_is_durable_and_exact() {
   assert_contains "$doorbell" "Firstmate instruction waiting" "doorbell should be self-describing"
   assert_contains "$doorbell" "mv to handled/ on read" \
     "doorbell should make the acknowledgement due as soon as the record is read"
-  assert_contains "$doorbell" "as receipt only" \
-    "doorbell should say the move confirms receipt, not completion of the requested work"
-  assert_contains "$doorbell" "then act" \
+  assert_contains "$doorbell" "leaving none behind" \
+    "doorbell should require every record it lists to be acknowledged, not just one of them"
+  assert_contains "$doorbell" ", act." \
     "doorbell should direct the worker to act on each record after acknowledging it"
   case "$doorbell" in
     *$'\n'*) fail "the doorbell must be a single line" ;;
