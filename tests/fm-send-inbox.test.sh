@@ -161,7 +161,7 @@ test_deep_home_doorbell_stays_short() {
   typed=$(cat "$deep/send.log")
   [ "$typed" = "$shallow_typed" ] ||
     fail "the doorbell should not depend on the home's depth:"$'\n'"shallow: $shallow_typed"$'\n'"deep:    $typed"
-  [ "${#typed}" -le 250 ] || fail "the doorbell should stay under 250 characters, got ${#typed}: $typed"
+  [ "${#typed}" -le 200 ] || fail "the doorbell should stay under 200 characters, got ${#typed}: $typed"
   case "$typed" in
   *"$deep"* | *"$TMP_ROOT"*) fail "the doorbell should not carry the home's absolute path: $typed" ;;
   esac

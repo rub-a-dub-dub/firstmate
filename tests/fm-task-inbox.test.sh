@@ -174,10 +174,12 @@ test_write_is_durable_and_exact() {
   assert_contains "$doorbell" "numeric order" "doorbell should require ordered processing"
   assert_contains "$doorbell" "handled/" "doorbell should name the handled dir"
   assert_contains "$doorbell" "Firstmate instruction waiting" "doorbell should be self-describing"
-  assert_contains "$doorbell" "read and act on each" \
-    "doorbell should direct the worker to act on each record, not merely read it"
-  assert_contains "$doorbell" "only confirms receipt" \
+  assert_contains "$doorbell" "mv it to handled/ once understood" \
+    "doorbell should make the acknowledgement due as soon as the record is understood"
+  assert_contains "$doorbell" "as receipt, not completion" \
     "doorbell should say the move confirms receipt, not completion of the requested work"
+  assert_contains "$doorbell" "then act" \
+    "doorbell should direct the worker to act on each record after acknowledging it"
   case "$doorbell" in
     *$'\n'*) fail "the doorbell must be a single line" ;;
   esac
