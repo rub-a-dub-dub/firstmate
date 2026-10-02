@@ -5,8 +5,11 @@
 # The steering inbox's one behavioral assumption is that a real worker agent
 # follows the constant self-describing doorbell line: list the inbox, read and
 # acknowledge each record immediately after reading it, and then act on it.
-# The acknowledgement confirms receipt rather than completion.
-# The
+# The acknowledgement confirms receipt rather than completion. The steer below
+# is phrased in that shipped order (acknowledge first, then do the work), but
+# the verdict requires only that BOTH legs happen within the timeout - it does
+# not observe which landed first, so it proves comprehension of the doorbell,
+# not the relative ordering of the ack and the work. The
 # doorbell names the inbox as "$FM_TASK_INBOX", so each worker is launched the
 # way bin/fm-spawn.sh launches it, with FM_TASK_INBOX exported to its home's
 # state/<task>.inbox, and receives no brief at all: it must resolve the inbox
