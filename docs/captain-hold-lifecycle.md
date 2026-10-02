@@ -534,6 +534,7 @@ The suite does not test the accepted merge-to-cleanup re-hold window or asynchro
   An answered call pruned into the archive still satisfies `complete` and lets teardown finish.
   A pruned bare close does not.
   An earlier answered incarnation archived beside a later bare close of the same reused call id does not answer for it, regardless of archive order.
+- The archived origin binding holds per id: a pruned answered call completes for the origin its archived row records and is refused for one that id was never held for, and two archived incarnations each complete under their own recorded origin.
 
 ### Answers, stamps, and deferral
 
