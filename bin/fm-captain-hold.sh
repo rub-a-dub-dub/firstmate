@@ -478,8 +478,8 @@ body_has_resolution_record() {  # <task-body>
 # a reused id whatever order the append-only archive lists the two in. The rows
 # are handed to body_has_resolution_record, which stays the single definition of
 # what a record is.
-archive_has_resolution_record() {  # <task-id>
-  local id=$1 archive rows row matched=0
+archive_has_resolution_record() {  # <task-id>; prints each recorded hold origin
+  local id=$1 archive rows row body stored matched=0 origins=''
   archive=$(fm_backlog_archive_file "$DATA") || return 1
   [ -f "$archive" ] && [ ! -L "$archive" ] && [ -r "$archive" ] || return 1
   rows=$(LC_ALL=C awk -v id="$id" '
@@ -518,11 +518,16 @@ archive_has_resolution_record() {  # <task-id>
   while IFS= read -r row; do
     case "$row" in body=*) : ;; *) continue ;; esac
     matched=1
-    body_has_resolution_record "${row#body=}" || return 1
+    body=${row#body=}
+    body_has_resolution_record "$body" || return 1
+    stored=$(archived_row_hold_origin "$body")
+    [ -z "$stored" ] || origins="$origins$stored
+"
   done <<EOF
 $rows
 EOF
-  [ "$matched" = 1 ]
+  [ "$matched" = 1 ] || return 1
+  [ -z "$origins" ] || printf '%s' "$origins" | LC_ALL=C sort -u
 }
 
 # The recorded decision digest of either record format, from the show-escaped
@@ -862,6 +867,12 @@ body_hold_origin() {  # <decoded-task-body>
   printf '%s\n' "$1" | sed -n 's/^Captain hold origin: \(.*\)$/\1/p' | head -1
 }
 
+# An archived Done row carries its body as one line with `\n` escapes, so the
+# recorded origin is read back through the one body_hold_origin definition.
+archived_row_hold_origin() {  # <archived-row-body>
+  body_hold_origin "$(printf '%s' "$1" | LC_ALL=C awk '{ gsub(/\\n/, "\n"); print }')"
+}
+
 task_identity() {
   local id=$1
   if task_show "$id"; then
@@ -921,7 +932,7 @@ refuse_self_inventory() {
 # disclose the legacy fallback.
 verify_entry_durable() {  # <origin-or-empty> <entry>; prints "<id> <how> <origin-state>"
   local origin=$1 entry=$2 resolved resolve_status=0 id how stored origin_state=unrecorded
-  local origin_id stored_id legacy refusal
+  local origin_id stored_id legacy refusal archived_origins archive_status=0
   # The origin task is never its own captain-call inventory: it is the work the
   # calls were found in, so accepting it would let a refused hold look recorded.
   if [ -n "$origin" ] && [ "$origin" != "$BINDING_ANY" ] && [ "$entry" = "$origin" ]; then
@@ -957,8 +968,23 @@ verify_entry_durable() {  # <origin-or-empty> <entry>; prints "<id> <how> <origi
     124) fail "the backlog backend exceeded its read bound resolving $entry" ;;
     *) exit "$resolve_status" ;;
   esac
-  if archive_has_resolution_record "$entry"; then
-    printf '%s archived-answer unrecorded\n' "$entry"
+  archived_origins=$(archive_has_resolution_record "$entry") || archive_status=$?
+  if [ "$archive_status" -eq 0 ]; then
+    if [ -n "$origin" ] && [ "$origin" != "$BINDING_ANY" ]; then
+      origin_id=$(task_identity "$origin") || exit $?
+      [ "$entry" != "$origin_id" ] || refuse_self_inventory "$origin" "$entry"
+    fi
+    while IFS= read -r stored; do
+      [ -n "$stored" ] || continue
+      origin_state=recorded
+      [ -n "$origin" ] && [ "$origin" != "$BINDING_ANY" ] || continue
+      stored_id=$(task_identity "$stored") || exit $?
+      [ "$stored_id" = "$origin_id" ] \
+        || fail "captain-held task $entry was held for origin $stored, not $origin; hold a task for $origin or list the right one"
+    done <<EOF
+$archived_origins
+EOF
+    printf '%s archived-answer %s\n' "$entry" "$origin_state"
     return 0
   fi
   refusal="no captain-held task $entry and no migrated hold for it in this home's configured backlog (data directory $DATA), and either no archived Done row exists for $entry or not every archived Done row for $entry records an answer (a reused id needs a record on every archived row)"
