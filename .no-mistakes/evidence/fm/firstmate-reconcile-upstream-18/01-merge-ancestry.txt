@@ -1,0 +1,36 @@
+$ git log --oneline --merges -2 HEAD
+3817f1d6 Merge remote-tracking branch 'upstream/main' into fm/firstmate-reconcile-upstream-18
+ea5ce37f Merge commit 'a774c448' into fm/firstmate-reconcile-upstream-18
+
+# upstream main tip = 8690c411  (fix: reclaim orphaned watcher arms on the next park (#6335))
+
+$ git rev-list --count 8690c411 ^7a9cbcc8   # upstream commits the fork did NOT record, BEFORE
+238
+
+$ git rev-list --count 8690c411 ^c54677509   # upstream commits the fork does NOT record, AFTER
+0
+
+$ git rev-list 8690c411 ^a774c448   # the 18 new upstream commits since the last reconcile point
+8690c411 fix: reclaim orphaned watcher arms on the next park (#6335)            ancestor-of-merge=yes
+6af83310 fix(bin): preserve hold reasons and reject invalid completion inventories (#6331) ancestor-of-merge=yes
+349e189f test: preserve Pi calm transcript captures with Pi 1.0 (#6338)         ancestor-of-merge=yes
+8f756bbc fix(bin): recognize clone roots across path spelling differences (#6306) ancestor-of-merge=yes
+b5d90612 fix(bin): document accepted contribution verdict actors (#6307)        ancestor-of-merge=yes
+f5930603 fix(bin): exclude a remote mate's own parent channel from self-home status scans (#5263) ancestor-of-merge=yes
+589ccec8 fix(bin): load backend sibling libraries when sourced under zsh (#6221) ancestor-of-merge=yes
+549e07f3 fix: reduce remote-job and supervision polling churn (#6255)           ancestor-of-merge=yes
+aedb7bbf fix(bin): close Gerrit-landed backlog items with the change URL as a note (#6140) ancestor-of-merge=yes
+fd325b1b feat(bin): add opt-in config/wait-no-turns so a waiting worker spends no turns (#4859) ancestor-of-merge=yes
+23e55847 fix(bin): keep the steering doorbell short under deep homes (#6240)    ancestor-of-merge=yes
+65c75b0d fix(bin): let a stale record on a reassigned slot retire records-only (#6213) ancestor-of-merge=yes
+bd744684 fix(bin): run no repository hook when core.hooksPath is empty (#6216)  ancestor-of-merge=yes
+eb77f02b ci: rebalance portable test groups and enforce a packing budget (#6192) ancestor-of-merge=yes
+c35b9a69 fix: reduce supervision exit latency and stabilize host tests (#6179)  ancestor-of-merge=yes
+12e90e14 fix: inherit supervision host opt-out across secondmates (#6154)       ancestor-of-merge=yes
+b3d41332 fix: confirm Lavish board replies before worker handoff (#6169)        ancestor-of-merge=yes
+e2668de0 fix: restore portable CI behavior across Pi rendering and remote provisioning (#6162) ancestor-of-merge=yes
+
+$ git log -1 --format="%H %P" 3817f1d6   # real two-parent merge of upstream/main
+3817f1d6a42dcfbbea52e926f4e74386cdf7232b ea5ce37f1d0b1593c4578e8dfddb84e20d911d05 8690c4117a298ee870f0f72f571c72b846b4c5fb
+$ git log -1 --format="%H %P" ea5ce37f   # real two-parent merge of the prior reconcile point a774c448
+ea5ce37f1d0b1593c4578e8dfddb84e20d911d05 7a9cbcc8aefeae8914552647ea5ade4d776f9614 a774c44869dd35b6ca406ec291912e699973109c

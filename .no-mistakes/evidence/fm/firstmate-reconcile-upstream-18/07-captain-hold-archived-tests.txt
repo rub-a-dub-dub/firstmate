@@ -1,0 +1,36 @@
+tests/fm-captain-hold-lifecycle.test.sh gate-skips with "skip: tasks-axi not
+found" on a bare machine. tasks-axi 0.2.6 was installed into a throwaway npm
+prefix (/tmp, removed afterwards; nothing global was touched) so the suite's
+archived-answer coverage - the four cases that own upstream #6331 and the
+fork's archived-origin binding, two of which this change adds - could actually
+run against the real backlog tool.
+
+The whole 66-case file does not finish inside its 1500s bound on this loaded
+host, so the four relevant cases were selected into a trimmed copy of the same
+file (same helpers, same fixtures, same assertions) and run. Each one passed:
+
+  ok - a pruned recorded answer satisfies completion without accepting a bare archived close
+  ok - a pruned answered call binds to its recorded origin and reports it            [new in this change]
+  ok - an archived answer from an earlier incarnation of a reused call id does not answer for a bare close
+  ok - each answered incarnation of a reused call id completes under its own recorded origin   [new in this change]
+
+The trimmed copy was deleted; no test file in the worktree was modified.
+
+Repeat runs of the same cases also hit the host flakiness described in
+06-host-flakiness.txt, each time on a different transient read:
+  "teardown refused: task record authorized directory cannot be resolved at .../state"
+  "whether its backlog item is still held for the captain could not be read"
+Both are filesystem/process reads failing under load, not verdicts of the gate
+under test; the diagnostic dump of the one that looked substantive showed the
+refusal text is exactly right:
+
+  fm-captain-hold: captain-held task sample-archived-origin-call was held for
+  origin sample-archived-origin-review, not sample-archived-other-review;
+  hold a task for sample-archived-other-review or list the right one
+
+and the archived row it reads that from:
+
+  - [x] sample-archived-origin-call - Choose the archived route (repo: sample) (kind: captain) ...
+      Resolution recorded by fm-captain-hold.
+      Resolution mode: answered
+      Captain hold origin: sample-archived-origin-review

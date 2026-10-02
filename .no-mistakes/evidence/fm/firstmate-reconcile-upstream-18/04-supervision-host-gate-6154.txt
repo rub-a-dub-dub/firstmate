@@ -1,0 +1,24 @@
+Upstream #6154 rewrites the supervision-host home gate.
+Probe: fm_supervision_host_enabled <config-dir> <primary-harness>
+
+home config/                       primary   BEFORE merge   AFTER merge   
+---------------------------------- --------  -------------- --------------
+(no supervision files)             claude    host ON        host ON       
+(no supervision files)             codex     host off       host off      
+supervision-host (empty)           claude    host ON        host ON       
+supervision-host (empty)           codex     host ON        host ON       
+supervision-host containing off    claude    host off       host ON       
+supervision-host containing off    codex     host off       host ON       
+supervision-host-off (new file)    claude    host ON        host off      
+supervision-host-off (new file)    codex     host off       host off      
+
+The one behavior change for an existing home: the old spelling
+`config/supervision-host` holding the word "off" is no longer an opt-out;
+it now reads as opt-in. The new opt-out is the separate file
+`config/supervision-host-off`, which is also fleet-inheritable.
+
+Reachability for this fleet right now:
+  /Users/crossbow/git/firstmate/config/supervision-host     -> absent
+  /Users/crossbow/git/firstmate/config/supervision-host-off -> absent
+  any config/supervision-host under ~/git: 0 found
+  => no home on this machine flips state on this merge.

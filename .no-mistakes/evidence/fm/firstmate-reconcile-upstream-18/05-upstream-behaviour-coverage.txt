@@ -1,0 +1,43 @@
+Targeted behavior coverage for the eight upstream changes the captain's 'Yes' named.
+Runner: bin/fm-test-run.sh (firstmate's own behavior-test runner), this host, macOS arm64.
+
+#5263 exclude a remote mate's own parent channel from self-home status scans
+  tests/fm-parent-channel-scan-exclusion.test.sh
+    ok - only a remote mate home resolves its own parent channel for exclusion
+    ok - fm_parent_channel_outbound_status resolves only the remote route
+    ok - a remote mate's folds omit its channel and keep a genuine task
+    ok - the cursor-backed incremental fold omits a remote mate's channel
+    ok - the channel's resolution and note lines stay off the remote unread surface
+    ok - a parent-replies.status in a main home still folds
+    ok - a parent-replies.status in a local mate still folds
+    ok - scan_signals skips a remote mate's channel and still reports its tasks
+    ok - the heartbeat backstop skips a remote mate's channel and keeps its tasks
+    ok - scan_signals keeps parent-replies.status outside remote mate homes
+    ok - the daemon's catch-all scan skips a remote mate's channel and keeps its tasks
+    ok - the daemon's catch-all scan keeps parent-replies.status outside remote mate homes
+
+#6306 recognize clone roots across path spelling differences
+  tests/fm-fleet-sync.test.sh
+    ok - the single-project form also refuses a directory that is not its own clone root
+
+#6221 load backend sibling libraries when sourced under zsh
+  tests/fm-backend.test.sh
+    ok - zsh: fm_backend_source recognizes known backends and rejects unknown ones
+    ok - zsh: fm_backend_source keeps PATH intact while loading a backend adapter
+
+#6307 document accepted contribution verdict actors
+  tests/fm-contributions.test.sh
+    ok - replaced-head verdict is stale and cannot create a captain requirement
+    ok - newest check with no verdict is distinct from passing and pending
+    ok - verdict help and refusal name exactly the actors the command accepts
+    ok - a current forge observation refreshes a verdict after a replacement
+    ok - an unavailable current head leaves verdict freshness unknown
+
+#6255 reduce remote-job and supervision polling churn
+  tests/fm-remote-job.test.sh
+    ok - default queue and execution bounds independently cover long polls
+    ok - a queued short command preempts a running long poll instead of waiting its window
+    ok - a poll re-armed after preemption reads the same cursor with nothing lost
+    ok - sibling polls never preempt each other into a re-arm churn loop
+    ok - an idle worker sleeps out a second between passes instead of busy-polling
+    ok - eight 3-second PR reads complete fresh within one 20-second poll cycle

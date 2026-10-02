@@ -1,0 +1,51 @@
+The steering doorbell is the only thing fm-send types into a worker pane.
+Task id used throughout: fm-firstmate-reconcile-upstream-18-scout (40 characters, a realistic fleet id).
+
+--- shallow home (/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-db.oXjIJY/shallow) ---
+AFTER  this reconcile (198 chars):
+  : Firstmate instruction waiting: list "$FM_TASK_INBOX"/*.msg in 'fm-firstmate-reconcile-upstream-18-scout.inbox' steering inbox: read each in order, mv to handled/ on read, leaving none behind, act.
+
+BEFORE this reconcile (483 chars):
+  : Firstmate instruction waiting: list '/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-db.oXjIJY/shallow/state/fm-firstmate-reconcile-upstream-18-scout.inbox'/*.msg and, in numeric order, read and act on each, moving it to '/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-db.oXjIJY/shallow/state/fm-firstmate-reconcile-upstream-18-scout.inbox'/handled/ as soon as you have read it, leaving none behind - that move only confirms receipt, not that the work it asks for is done.
+
+--- deep home (/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-db.oXjIJY/a-fleet-of-many-homes/projects/acme-platform/worktrees/release-train/mate-07) ---
+AFTER  this reconcile (198 chars):
+  : Firstmate instruction waiting: list "$FM_TASK_INBOX"/*.msg in 'fm-firstmate-reconcile-upstream-18-scout.inbox' steering inbox: read each in order, mv to handled/ on read, leaving none behind, act.
+
+BEFORE this reconcile (621 chars):
+  : Firstmate instruction waiting: list '/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-db.oXjIJY/a-fleet-of-many-homes/projects/acme-platform/worktrees/release-train/mate-07/state/fm-firstmate-reconcile-upstream-18-scout.inbox'/*.msg and, in numeric order, read and act on each, moving it to '/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-db.oXjIJY/a-fleet-of-many-homes/projects/acme-platform/worktrees/release-train/mate-07/state/fm-firstmate-reconcile-upstream-18-scout.inbox'/handled/ as soon as you have read it, leaving none behind - that move only confirms receipt, not that the work it asks for is done.
+
+Upstream #6240 "keep the steering doorbell short under deep homes":
+  AFTER : shallow=198 deep=198  -> identical=yes, length grows with home depth=no
+  BEFORE: shallow=483 deep=621  -> identical=no, length grows with home depth=yes
+
+Fork fix rounds kept the acknowledge-on-read wording and restored the
+explicit drain-all clause while staying inside the 200-character bound:
+  "steering inbox"           present
+  "mv to handled/ on read"   present
+  "leaving none behind"      present
+  "$FM_TASK_INBOX"           present
+  emitted length 198 / bound 200 -> within
+
+=== real fm-send into a real tmux pane (tmux 3.6b, isolated socket) ===
+=== 1. operator sends a steer with the real fm-send ===
+$ bin/fm-send.sh fm-firstmate-reconcile-upstream-18-scout 'rebase onto main, then re-run the gate'
+  fm-send: doorbell not typed because the agent in evid:0 has exited; the steer is durably recorded at /var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-doorbell-evid.A26Bqt/home/state/fm-firstmate-reconcile-upstream-18-scout.inbox/001.msg for recovery (stuck-crewmate-recovery), and the watcher will not re-ring a dead pane
+
+=== 2. what the worker sees in its own pane (tmux capture-pane, 210 cols) ===
+  | worker-pane$
+
+=== 3. the durable record the doorbell points at ===
+$ ls state/fm-firstmate-reconcile-upstream-18-scout.inbox/
+  001.msg
+  handled
+$ cat state/fm-firstmate-reconcile-upstream-18-scout.inbox/001.msg
+  schema=fm-task-inbox.v1
+  at=2026-10-02T12:48:43Z
+  --
+  rebase onto main, then re-run the gate
+=== 4. the payload never crossed the terminal; only the doorbell did ===
+  OK: the instruction text 'rebase onto main, then re-run the gate' appears nowhere in the pane
+  doorbell length for this 40-character task id: 198 characters (test bound: 200)
+  same inbox, doorbell the fork emitted BEFORE this reconcile: 499 characters
+    : Firstmate instruction waiting: list '/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-doorbell-evid.A26Bqt/home/state/fm-firstmate-reconcile-upstream-18-scout.inbox'/*.msg and, in numeric order, read and act on each, moving it to '/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-doorbell-evid.A26Bqt/home/state/fm-firstmate-reconcile-upstream-18-scout.inbox'/handled/ as soon as you have read it, leaving none behind - that move only confirms receipt, not that the work it asks for is done.

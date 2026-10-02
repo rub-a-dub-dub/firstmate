@@ -1,0 +1,46 @@
+Host-level nondeterminism observed while validating this merge (macOS 27.0.0,
+arm64, 10 cores, load average 8-12 throughout from other work on the machine).
+
+Three watcher/supervision suites failed at a DIFFERENT assertion on nearly every
+run, and the same suites fail at the base commit (7a9cbcc8) in the same
+environment, so the behaviour is not introduced by this reconcile.
+
+tests/fm-watch-arm.test.sh  (`fail` exits the script, so each run stops at its
+first failing assertion; a later stop proves the earlier ones passed that run)
+  run 1 (concurrent) : stopped at line 464 "recovery successor did not stay live after the drain"
+  run 2 (serial)     : stopped at line 347 "could not identify the fake holder"
+  run 3 (serial)     : stopped at line 419 "baseline fold did not expose the remote decision"
+  base 7a9cbcc8      : stopped at "arm did not attach to the live watcher: watcher: already running pid 55242"
+
+tests/fm-wake-queue.test.sh
+  run 1 (concurrent) : "concurrent append/drain subprocess failed"
+  run 2 (serial)     : "the unanswered folded decision was not classified as actionable"
+  base 7a9cbcc8      : "could not prime the seen marker"
+
+tests/fm-task-inbox.test.sh
+  run 1 : "other pending text should skip the ring, got rc 2"
+  run 2 : "a dead agent should return 3 from the ring, got 2"
+  run 3 : "the watcher never re-rang the doorbell"
+  run 4 : "a composer holding our own stuck doorbell should be submitted, got rc 2"
+  run 5 : PASSED
+  base 7a9cbcc8 : fails too, at three further different assertions over three runs
+
+tests/fm-supervision-host.test.sh - isolated to one case and run four times:
+  attempt 1: not ok - the exit must name the captain outcome's store row ...
+  attempt 2: ok - host: an attended captain outcome wakes main once and stays in its drain ...
+  attempt 3: not ok - the exit must name the captain outcome's store row ...
+  attempt 4: ok - host: an attended captain outcome wakes main once and stays in its drain ...
+  The host's own log on a failing attempt gives the reason:
+    pass-through  attended  the main session could not be identified
+  which is bin/fm-supervision-host.sh:1023 -> fm_supervision_host_main_key ->
+  fm_pid_identity. That function is byte-identical at base and at HEAD.
+
+Underlying mechanism, measured directly: fm_pid_identity resolves a pid through
+`ps -p <pid> -o lstart= -o command=` on macOS, and on this loaded host `ps`
+intermittently returns NOTHING for a live, freshly forked process.
+
+  $ for i in 1..60: sleep 30 & ; fm_pid_identity $!
+  fm_pid_identity failures out of 60: 4      (~7%, all empty ps output)
+
+Every failure above is a consumer of that identity probe (watcher lock holder,
+main-session key, fixture temp-root owner in tests/lib.sh).

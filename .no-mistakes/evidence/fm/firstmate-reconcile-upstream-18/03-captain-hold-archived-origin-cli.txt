@@ -1,0 +1,47 @@
+SCENARIO: scout sample-archived-origin-review raises a captain call, the captain answers it, and
+retention later prunes the answered row out of the live backlog. A second
+scout, sample-archived-other-review, then tries to complete on that archived answer.
+
+--- the answered call is gone from the live backlog, archived with its origin ---
+$ grep -c sample-archived-origin-call data/backlog.md
+  0
+$ grep -A2 "sample-archived-origin-call" data/done-archive.md | head
+  - [x] sample-archived-origin-call - Choose the archived route (repo: sample) (kind: captain) (done 2026-10-02) (hold: fm-hold-v1:Y2FwdGFpbiBjaG9pY2Ugc
+  GVuZGluZw==) (hold-kind: captain)
+
+--- 1. the WRONG origin is refused, and the refusal names both origins ---
+
+$ captain complete sample-archived-other-review sample-archived-origin-call
+  fm-captain-hold: captain-held task sample-archived-origin-call was held for origin sample-archived-origin-review, not sample-archived-other-review; hold a task for sample-archived-other-review or list the right one
+  [exit 1]
+
+--- 2. scout teardown for that wrong origin is refused too (verify runs the same gate) ---
+
+$ teardown sample-archived-other-review
+  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ●  WATCHER DOWN - SUPERVISION IS OFF
+  ●  2 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+  ●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+  ●  This is a supervision warning only; the guarded operation WILL still run.
+  ●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  fm-captain-hold: origin sample-archived-other-review has no completed captain-call inventory
+  REFUSED: scout task sample-archived-other-review has not passed the captain-call completion gate.
+  Inventory its report and any visual review through bin/fm-captain-hold.sh before teardown.
+  [exit 1]
+$ ls state/sample-archived-other-review.meta   # the refused scout's metadata survives
+  /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-captain-evid.rRgu5l/home/state/sample-archived-other-review.meta
+
+--- 3. the origin the call was actually held for completes, origin reported as recorded ---
+
+$ captain complete sample-archived-origin-review --none
+  complete: sample-archived-origin-review captain-call inventory reviewed (sample-archived-origin-call)
+  [exit 0]
+
+--- 4. and its teardown is accepted ---
+
+$ teardown sample-archived-origin-review
+  WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+  teardown sample-archived-origin-review complete (window firstmate:fm-sample-archived-origin-review, worktree /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-captain-evid.rRgu5l/home/projects/missing-sample-archived-origin-review)
+  Backlog: sample-archived-origin-review is closed in /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-captain-evid.rRgu5l/home/data/backlog.md. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+  [exit 0]
