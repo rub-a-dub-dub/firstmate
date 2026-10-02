@@ -1297,6 +1297,66 @@ test_pruned_answered_call_satisfies_completion_gate() {
   pass "a pruned recorded answer satisfies completion without accepting a bare archived close"
 }
 
+# A pruned answered call stays bound to the origin `hold --origin` recorded for
+# it: the archived row's own `Captain hold origin:` line is the evidence, so an
+# unrelated scout cannot satisfy its gate with another origin's answered call,
+# and the origin it was held for is reported as recorded rather than absent.
+test_pruned_answered_call_binds_to_its_recorded_origin() {
+  local home id other call out o
+  home=$(make_home pruned-answer-origin)
+  id=sample-archived-origin-review
+  other=sample-archived-other-review
+  call=sample-archived-origin-call
+  for o in "$id" "$other"; do
+    mkdir -p "$home/data/$o"
+    tasks_in "$home" add "$o" "Investigate $o" --kind scout --repo sample --start >/dev/null \
+      || fail "could not create the $o fixture"
+    write_origin_meta "$home" "$o"
+    printf 'done: report complete\n' > "$home/state/$o.status"
+    printf '# %s\n\nOne captain choice remains.\n' "$o" > "$home/data/$o/report.md"
+  done
+  run_captain "$home" hold "$call" --title "Choose the archived route" \
+    --reason "captain choice pending" --repo sample --origin "$id" >/dev/null \
+    || fail "could not register the captain-held task for the first origin"
+  run_captain "$home" complete "$id" "$call" >/dev/null \
+    || fail "completion failed before the answer"
+  printf 'Choose the archived route.\n' > "$home/archived-origin.txt"
+  run_captain "$home" answer "$call" --decision-file "$home/archived-origin.txt" >/dev/null \
+    || fail "could not answer the captain-held task before pruning"
+  tasks_in "$home" prune --keep 0 --state "done" >/dev/null \
+    || fail "could not prune the answered captain-held task"
+  assert_no_grep "$call" "$home/data/backlog.md" \
+    "the answered captain-held task was not pruned from the active backlog"
+  assert_grep "$call" "$home/data/done-archive.md" \
+    "the pruned captain-held task did not reach the done archive"
+
+  # The archived answer belongs to $id, so it cannot close out $other's gate.
+  if run_captain "$home" complete "$other" "$call" \
+      > "$home/archived-mismatch.out" 2> "$home/archived-mismatch.err"; then
+    fail "an archived answer recorded for another origin satisfied completion"
+  fi
+  assert_grep "was held for origin $id, not $other" "$home/archived-mismatch.err" \
+    "the refusal does not name both origins of the archived answer"
+  assert_no_grep "decisions_reviewed=1" "$home/state/$other.meta" \
+    "the refused completion recorded an inventory attestation"
+  if run_teardown "$home" "$other" \
+      > "$home/archived-mismatch-teardown.out" 2> "$home/archived-mismatch-teardown.err"; then
+    fail "teardown accepted a scout whose only evidence was another origin's archived answer"
+  fi
+  assert_present "$home/state/$other.meta" \
+    "refused teardown removed the mismatched scout metadata"
+
+  # The origin it was actually held for still completes, and the recorded
+  # origin is reported as recorded rather than as absent.
+  out=$(run_captain "$home" complete "$id" --none) \
+    || fail "the archived recorded answer did not satisfy its own origin's completion"
+  assert_not_contains "$out" "no recorded origin" \
+    "the archived answer's recorded origin was reported as absent"
+  run_teardown "$home" "$id" >/dev/null 2> "$home/archived-origin-teardown.err" \
+    || fail "teardown refused the scout after its answered call was pruned: $(cat "$home/archived-origin-teardown.err")"
+  pass "a pruned answered call binds to its recorded origin and reports it"
+}
+
 # The Done archive is append-only, so one call id can hold both an earlier
 # answered incarnation and a later bare close once retention has pruned both
 # rows. The row a live gate would refuse must keep refusing: an archived answer
@@ -4824,6 +4884,7 @@ TESTS=(
   test_deferral_leaves_captains_call_until_due
   test_out_of_band_close_is_recordable
   test_pruned_answered_call_satisfies_completion_gate
+  test_pruned_answered_call_binds_to_its_recorded_origin
   test_reused_archived_call_id_refuses_a_bare_second_close
   test_keyed_intake_reports_a_pruned_answered_call_as_unheld
   test_visual_review_uses_shared_completion_owner

@@ -8,7 +8,7 @@
 # unacknowledged message before escalating once as an ordinary stale wake.
 # These tests pin the semantics with real processes:
 #   1. A message is written durably and appears in the inbox, byte-exact
-#      including newlines, with a doorbell naming the inbox glob, numeric order,
+#      including newlines, with a doorbell naming the inbox glob, record order,
 #      and handled/.
 #   2. Sequencing dedups per worker lifetime: the handled mv retires a record,
 #      re-acking it is a no-op, and an acknowledged sequence is never reissued.
@@ -171,12 +171,12 @@ test_write_is_durable_and_exact() {
     || fail "every record in one inbox should ring the same drain-all doorbell"
   assert_contains "$doorbell" "list \"\$FM_TASK_INBOX\"/*.msg" "doorbell should list all unhandled records through FM_TASK_INBOX"
   assert_contains "$doorbell" "'t1.inbox' steering inbox" "doorbell should quote and name the inbox"
-  assert_contains "$doorbell" "numeric order" "doorbell should require ordered processing"
+  assert_contains "$doorbell" "read each in order" "doorbell should require ordered processing"
   assert_contains "$doorbell" "handled/" "doorbell should name the handled dir"
   assert_contains "$doorbell" "Firstmate instruction waiting" "doorbell should be self-describing"
-  assert_contains "$doorbell" "mv it to handled/ once understood" \
-    "doorbell should make the acknowledgement due as soon as the record is understood"
-  assert_contains "$doorbell" "as receipt, not completion" \
+  assert_contains "$doorbell" "mv to handled/ on read" \
+    "doorbell should make the acknowledgement due as soon as the record is read"
+  assert_contains "$doorbell" "as receipt only" \
     "doorbell should say the move confirms receipt, not completion of the requested work"
   assert_contains "$doorbell" "then act" \
     "doorbell should direct the worker to act on each record after acknowledging it"
@@ -684,7 +684,7 @@ test_watcher_rerings_idle_pane_quietly() {
     sleep 0.1
     i=$((i + 1))
   done
-  grep -qF "Firstmate instruction waiting: list \"\$FM_TASK_INBOX\"/*.msg in your 't1.inbox' steering inbox" "$log" \
+  grep -qF "Firstmate instruction waiting: list \"\$FM_TASK_INBOX\"/*.msg in 't1.inbox' steering inbox" "$log" \
     || { kill "$pid" 2>/dev/null; fail "the watcher never re-rang the doorbell:"$'\n'"$(cat "$log")"; }
   kill -0 "$pid" 2>/dev/null \
     || fail "a healthy re-ring must not wake firstmate (watcher exited):"$'\n'"$(cat "$out")"
