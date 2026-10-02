@@ -973,7 +973,6 @@ verify_entry_durable() {  # <origin-or-empty> <entry>; prints "<id> <how> <origi
   if [ "$archive_status" -eq 0 ]; then
     if [ -n "$origin" ] && [ "$origin" != "$BINDING_ANY" ]; then
       origin_id=$(task_identity "$origin") || exit $?
-      [ "$entry" != "$origin_id" ] || refuse_self_inventory "$origin" "$entry"
     fi
     while IFS= read -r stored; do
       [ -n "$stored" ] || continue
