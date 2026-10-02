@@ -134,7 +134,8 @@ FM_BACKLOG_CLOSE_REPLAY_DELIVERABLE=
 # globals only, so it is sourced once rather than re-initialising a caller's
 # parsed identity.
 if ! declare -F fm_pr_url_parse >/dev/null 2>&1; then
-  # shellcheck source=bin/fm-pr-lib.sh disable=SC1091
+  # Canonical roots lint fm-pr-lib.sh directly; do not expand it twice here.
+  # shellcheck source=/dev/null disable=SC1091
   . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-pr-lib.sh"
 fi
 
