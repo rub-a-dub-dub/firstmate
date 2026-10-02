@@ -933,6 +933,7 @@ refuse_self_inventory() {
 verify_entry_durable() {  # <origin-or-empty> <entry>; prints "<id> <how> <origin-state>"
   local origin=$1 entry=$2 resolved resolve_status=0 id how stored origin_state=unrecorded
   local origin_id stored_id legacy refusal archived_origins archive_status=0
+  local matched_origin='' unmatched_origins=''
   # The origin task is never its own captain-call inventory: it is the work the
   # calls were found in, so accepting it would let a refused hold look recorded.
   if [ -n "$origin" ] && [ "$origin" != "$BINDING_ANY" ] && [ "$entry" = "$origin" ]; then
@@ -979,11 +980,18 @@ verify_entry_durable() {  # <origin-or-empty> <entry>; prints "<id> <how> <origi
       origin_state=recorded
       [ -n "$origin" ] && [ "$origin" != "$BINDING_ANY" ] || continue
       stored_id=$(task_identity "$stored") || exit $?
-      [ "$stored_id" = "$origin_id" ] \
-        || fail "captain-held task $entry was held for origin $stored, not $origin; hold a task for $origin or list the right one"
+      if [ "$stored_id" = "$origin_id" ]; then
+        matched_origin=$stored
+        break
+      fi
+      unmatched_origins="${unmatched_origins}${unmatched_origins:+, }$stored"
     done <<EOF
 $archived_origins
 EOF
+    if [ "$origin_state" = recorded ] && [ -z "$matched_origin" ] \
+      && [ -n "$origin" ] && [ "$origin" != "$BINDING_ANY" ]; then
+      fail "captain-held task $entry was held for origin $unmatched_origins, not $origin; hold a task for $origin or list the right one"
+    fi
     printf '%s archived-answer %s\n' "$entry" "$origin_state"
     return 0
   fi

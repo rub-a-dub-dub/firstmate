@@ -1426,6 +1426,73 @@ test_reused_archived_call_id_refuses_a_bare_second_close() {
   pass "an archived answer from an earlier incarnation of a reused call id does not answer for a bare close"
 }
 
+# Two incarnations of one call id can each be answered and pruned under their
+# own origin. The archive then records both origins for that id, and the gate
+# asks only that the completing origin be among them: each incarnation's own
+# origin completes and tears down, while an origin the id was never held for
+# is still refused.
+test_two_archived_incarnations_bind_to_their_own_origins() {
+  local home first second unrelated call rows out o
+  home=$(make_home reused-answered-origins)
+  first=sample-reanswer-first-review
+  second=sample-reanswer-second-review
+  unrelated=sample-reanswer-other-review
+  call=sample-reanswer-call
+  for o in "$first" "$second" "$unrelated"; do
+    mkdir -p "$home/data/$o"
+    tasks_in "$home" add "$o" "Investigate $o" --kind scout --repo sample --start >/dev/null \
+      || fail "could not create the $o fixture"
+    write_origin_meta "$home" "$o"
+    printf 'done: report complete\n' > "$home/state/$o.status"
+    printf '# %s\n\nOne captain choice remains.\n' "$o" > "$home/data/$o/report.md"
+  done
+  printf 'Choose the archived route.\n' > "$home/reanswer.txt"
+  for o in "$first" "$second"; do
+    run_captain "$home" hold "$call" --title "Choose the reused route" \
+      --reason "captain choice pending" --repo sample --origin "$o" >/dev/null \
+      || fail "could not hold the reused call id for $o"
+    run_captain "$home" complete "$o" "$call" >/dev/null \
+      || fail "completion failed before $o answered the reused call"
+    run_captain "$home" answer "$call" --decision-file "$home/reanswer.txt" >/dev/null \
+      || fail "could not answer the reused call held for $o"
+    tasks_in "$home" prune --keep 0 --state "done" >/dev/null \
+      || fail "could not prune the answered call held for $o"
+  done
+  rows=$(grep -c -F -- "- [x] $call - " "$home/data/done-archive.md" || true)
+  [ "$rows" = 2 ] \
+    || fail "the fixture did not archive both answered incarnations of the reused call id (rows: $rows)"
+
+  # Each incarnation's own origin is among the archived origins, so each one
+  # completes and tears down on the evidence of its own answered row.
+  for o in "$first" "$second"; do
+    out=$(run_captain "$home" complete "$o" --none) \
+      || fail "the archived answer held for $o did not satisfy its own origin's completion"
+    assert_not_contains "$out" "no recorded origin" \
+      "the archived answer's recorded origin was reported as absent for $o"
+    run_teardown "$home" "$o" >/dev/null 2> "$home/$o-teardown.err" \
+      || fail "teardown refused $o after its own answered call was pruned: $(cat "$home/$o-teardown.err")"
+  done
+
+  # An origin the call id was never held for is still refused.
+  if run_captain "$home" complete "$unrelated" "$call" \
+      > "$home/reanswer-mismatch.out" 2> "$home/reanswer-mismatch.err"; then
+    fail "an origin the reused call id was never held for satisfied completion"
+  fi
+  assert_grep "was held for origin" "$home/reanswer-mismatch.err" \
+    "the refusal does not name the origins the archived rows recorded"
+  assert_grep "not $unrelated; hold a task for $unrelated" "$home/reanswer-mismatch.err" \
+    "the refusal does not name the origin that was asking"
+  assert_no_grep "decisions_reviewed=1" "$home/state/$unrelated.meta" \
+    "the refused completion recorded an inventory attestation"
+  if run_teardown "$home" "$unrelated" \
+      > "$home/reanswer-mismatch-teardown.out" 2> "$home/reanswer-mismatch-teardown.err"; then
+    fail "teardown accepted a scout whose only evidence was another origin's archived answer"
+  fi
+  assert_present "$home/state/$unrelated.meta" \
+    "refused teardown removed the mismatched scout metadata"
+  pass "each answered incarnation of a reused call id completes under its own recorded origin"
+}
+
 # Done-history retention can prune an answered call before a late captured
 # answer for the same key reaches the keyed intake. That intake closes live
 # rows, so the archived answer is evidence only the durability gate can spend:
@@ -4886,6 +4953,7 @@ TESTS=(
   test_pruned_answered_call_satisfies_completion_gate
   test_pruned_answered_call_binds_to_its_recorded_origin
   test_reused_archived_call_id_refuses_a_bare_second_close
+  test_two_archived_incarnations_bind_to_their_own_origins
   test_keyed_intake_reports_a_pruned_answered_call_as_unheld
   test_visual_review_uses_shared_completion_owner
   test_none_inventory_and_resolved_prose_do_not_create_holds
