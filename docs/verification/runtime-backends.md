@@ -801,15 +801,16 @@ The guard also notes whether the starfield and the placeholder were actually dra
 
 ## Steering-inbox doorbell
 
-The steering channel's one behavioral assumption - a real worker agent follows the constant self-describing doorbell line (list the inbox, read each record in numeric order, `mv` it into `handled/` once understood as receipt rather than completion, then act on it) - was verified on 2026-10-03 for claude and codex and on 2026-08-23 for every other installed verified harness, on tmux 3.6a, macOS arm64, on an isolated private socket, driving the REAL `bin/fm-send.sh` end to end (durable record plus doorbell, with one mid-wait re-ring playing the watcher's role).
+The steering channel's one behavioral assumption - a real worker agent follows the constant self-describing doorbell line (list the inbox, read each record in numeric order, `mv` it into `handled/` once understood as receipt rather than completion, then act on it) - was verified on 2026-10-03 for claude and codex, on tmux 3.6b, macOS arm64, and on 2026-08-23 for every other installed verified harness, on tmux 3.6a, macOS arm64, each on an isolated private socket, driving the REAL `bin/fm-send.sh` end to end (durable record plus doorbell, with one mid-wait re-ring playing the watcher's role).
 That verdict requires both legs - the acknowledging `mv` and the requested work - within the timeout and does not observe which landed first, so the run evidences comprehension of the doorbell rather than the order of the two.
-The 2026-10-03 claude and codex refresh exercised the line `bin/fm-task-inbox-lib.sh` currently emits.
+The 2026-10-03 claude and codex refresh exercised the line `bin/fm-task-inbox-lib.sh` currently emits; the opencode, pi, grok and muse verdicts predate that wording change and are still owed a refresh against the current line.
+Each harness must already trust the checkout the guard launches it in: `wait_ready` deliberately never dismisses a first-run directory-trust prompt, so an untrusted checkout (a fresh pipeline worktree, for instance) dead-ends at `composer stayed visibly pending` or `acted=no acked=no` having verified nothing.
 
 ```sh
-FM_SEND_INBOX_LIVE_E2E=1 FM_SEND_INBOX_LIVE_HARNESSES="claude codex" bash tests/fm-send-inbox-doorbell-live-e2e.test.sh
+FM_SEND_INBOX_LIVE_E2E=1 bash tests/fm-send-inbox-doorbell-live-e2e.test.sh
 ```
 
-Observed output (claude and codex from the 2026-10-03 filtered refresh; every other harness remains from the 2026-08-23 full run and grok rerun after the advisory-skip narrowing landed):
+Observed output (claude and codex from the 2026-10-03 refresh, which narrowed the run to those two with `FM_SEND_INBOX_LIVE_HARNESSES="claude codex"`; every other harness remains from the 2026-08-23 full run and grok rerun after the advisory-skip narrowing landed):
 
 ```text
 ok - claude (2.1.289 (Claude Code)): the doorbell reached a real worker, which acted and acked with the mv
@@ -831,7 +832,7 @@ This guard is the refresh command after any harness upgrade; it spends a small n
 The doorbell no longer prints the inbox's absolute path, so its length no longer grows with the home's depth.
 It names the inbox as `"$FM_TASK_INBOX"`, which `bin/fm-spawn.sh` exports into every launch as the absolute `state/<task>.inbox` path, followed by the short `<task>.inbox` name; the brief's full path remains the fallback for a worker launched without that export.
 The guard now launches each worker with `FM_TASK_INBOX` exported and no brief, so the worker must resolve the inbox from the doorbell and its environment alone.
-It is the refresh command for that shape, which has not yet been recorded live here.
+It is the refresh command for that shape, which the 2026-10-03 claude and codex verdicts above now record live; opencode, pi, grok and muse have not yet been recorded against it.
 The run below, on 2026-09-30 on tmux 3.6, Linux (WSL2), with the same command, covered the earlier brief-primed shape, whose doorbell named only the short `<task>.inbox` name and whose guard gave each worker the brief's steering-inbox sentence before the steer:
 
 ```text
