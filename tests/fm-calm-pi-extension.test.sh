@@ -1662,8 +1662,12 @@ for (const { name, actual } of rows) {
 async function assertStockHtmlRendering(command, submitData) {
   editorText = command;
   terminalInputHandler(submitData);
+  // Pi 1.0.0 and older looked the renderers up through a getToolDefinition dep;
+  // Pi 1.0.1 renamed it to getToolRenderers so extensions can resolve them. The
+  // old name is silently ignored, which renders every row as having no custom
+  // renderer, so this proof has to pass the name the installed Pi reads.
   const htmlRenderer = createToolHtmlRenderer({
-    getToolDefinition: (name) => tools.find((tool) => tool.name === name),
+    getToolRenderers: (name) => tools.find((tool) => tool.name === name),
     theme,
     cwd: process.cwd(),
   });
@@ -1694,7 +1698,7 @@ getKeybindings().setUserBindings({ "tui.input.submit": "alt+s" });
 editorText = "/export remapped.html";
 terminalInputHandler("\r");
 const unmatchedRenderer = createToolHtmlRenderer({
-  getToolDefinition: (name) => tools.find((tool) => tool.name === name),
+  getToolRenderers: (name) => tools.find((tool) => tool.name === name),
   theme,
   cwd: process.cwd(),
 });
