@@ -1,0 +1,20 @@
+Doorbell line: what bin/fm-task-inbox-lib.sh EMITS NOW vs what each real worker RECEIVED on the recorded run
+======================================================================================================================
+
+[claude]
+  emitted now (fm_task_inbox_doorbell_line, executed): : Firstmate instruction waiting: list "$FM_TASK_INBOX"/*.msg in 'live-claude.inbox' steering inbox: read each in order, mv to handled/ on read, leaving none behind, act.
+  received 2026-10-04T06:19:53.695Z by the real worker:                    : Firstmate instruction waiting: list "$FM_TASK_INBOX"/*.msg in 'live-claude.inbox' steering inbox: read each in order, mv to handled/ on read, leaving none behind, act.
+  => byte-for-byte identical: True
+
+[codex]
+  emitted now (fm_task_inbox_doorbell_line, executed): : Firstmate instruction waiting: list "$FM_TASK_INBOX"/*.msg in 'live-codex.inbox' steering inbox: read each in order, mv to handled/ on read, leaving none behind, act.
+  received 2026-10-04T06:20:32.342Z by the real worker:                    : Firstmate instruction waiting: list "$FM_TASK_INBOX"/*.msg in 'live-codex.inbox' steering inbox: read each in order, mv to handled/ on read, leaving none behind, act.
+  => byte-for-byte identical: True
+
+VERDICT: the 2026-10-03 legs were steered with the line the current library emits: True
+
+Acknowledging mv + requested touch, as executed by each real worker
+======================================================================================================================
+  claude  2026-10-04T06:20:05.384Z  mv "$FM_TASK_INBOX"/001.msg "$FM_TASK_INBOX"/handled/ && touch /var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-inbox-live.6xgx2O/acted-claude && ls "$FM_TASK_INBOX" "$FM_TASK_INBOX"/handled
+  codex   2026-10-04T06:20:42.189Z  inbox="$FM_TASK_INBOX"; for msg in "$inbox"/*.msg(N); do;   print -- "===== ${msg:t} =====";   sed -n '1,240p' "$msg";   mv -- "$msg" "$inbox/handled/${msg:t}";
+  codex   2026-10-04T06:20:44.848Z  touch /var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-inbox-live.6xgx2O/acted-codex

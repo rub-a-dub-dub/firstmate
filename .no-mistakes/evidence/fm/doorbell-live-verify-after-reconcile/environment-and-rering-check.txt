@@ -1,0 +1,18 @@
+Environment and harness versions recorded by the 2026-10-03 doorbell entry, checked against this machine
+==============================================================================================================
+  tmux 3.6b (entry label for the 2026-10-03 leg)     installed -> tmux 3.6b                    match=True
+  claude 2.1.289 (Claude Code) (recorded ok line)    installed -> 2.1.289 (Claude Code)        match=True
+  codex-cli 0.154.0 (recorded ok line)               installed -> codex-cli 0.154.0            match=True
+  macOS arm64                                        installed -> Darwin arm64                 match=True
+
+  only tmux in the Cellar: 3.6b
+
+Re-ring claim: the guard re-rings only at TIMEOUT/2 = 120s (default TIMEOUT=240) while still unacknowledged
+==============================================================================================================
+  claude  doorbells delivered: 1  first=2026-10-04T06:19:53.695Z  acked+acted=2026-10-04T06:20:05.384Z  elapsed=11.7s  (re-ring threshold 120s)
+  codex   doorbells delivered: 1  first=2026-10-04T06:20:32.342Z  acked+acted=2026-10-04T06:20:44.848Z  elapsed=12.5s  (re-ring threshold 120s)
+
+  => no re-ring occurred on either 2026-10-03 leg; both finished ~12s in, consistent with the entry wording.
+
+Doc sentences this checks (verbatim from docs/verification/runtime-backends.md):
+  The steering channel's one behavioral assumption - a real worker agent follows the constant self-describing doorbell line (list the inbox, read each record in numeric order, `mv` it into `handled/` once understood as receipt rather than completion, then act on it) - was verified on 2026-10-03 for claude and codex, on tmux 3.6b, macOS arm64, and on 2026-08-23 for every other installed verified harn

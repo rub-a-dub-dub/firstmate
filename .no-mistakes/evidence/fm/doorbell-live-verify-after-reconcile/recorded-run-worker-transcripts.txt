@@ -1,0 +1,46 @@
+2026-10-03 live doorbell guard - what each REAL worker agent did, from its own session transcript
+(same guard run: both homes under TMPDIR/fm-inbox-live.6xgx2O; launched with no brief, FM_TASK_INBOX exported)
+========================================================================================================================
+
+--- claude 2.1.289 (Claude Code) -------------------------------------------------------------------
+    ~/.claude/projects/-Users-crossbow--treehouse-firstmate-cdae9f-1-firstmate/0b096387-611a-4122-a6ff-7221b8acbc63.jsonl
+  2026-10-04T06:19:53.695Z  DOORBELL DELIVERED -> : Firstmate instruction waiting: list "$FM_TASK_INBOX"/*.msg in 'live-claude.inbox' steering inbox: read each in order, mv to handled/ on read, leaving none behind, act.
+  2026-10-04T06:19:57.707Z  worker runs      -> echo "FM_TASK_INBOX=$FM_TASK_INBOX"; ls -la "$FM_TASK_INBOX" 2>&1 | head -30
+                            output           |  FM_TASK_INBOX=/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-inbox-live.6xgx2O/claude-home/state/live-claude.inbox
+                            output           |  drwxr-xr-x crossbow staff 128 B Sat Oct  3 23:19:53 2026 .
+                            output           |  drwxr-xr-x crossbow staff 160 B Sat Oct  3 23:19:53 2026 ..
+                            output           |  .rw------- crossbow staff 317 B Sat Oct  3 23:19:53 2026 001.msg
+                            output           |  drwxr-xr-x crossbow staff  64 B Sat Oct  3 23:19:52 2026 handled
+  2026-10-04T06:20:02.124Z  worker runs      -> cat "$FM_TASK_INBOX"/001.msg
+                            output           |  schema=fm-task-inbox.v1
+                            output           |  at=2026-10-04T06:19:53Z
+                            output           |  --
+                            output           |  Firstmate live check: acknowledge this message first by following the mv instruction you were given for it, then run exactly this shell command: touch /var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-inbox-live.6xgx2O/acted-claude - and reply with one short line.
+  2026-10-04T06:20:05.384Z  worker runs      -> mv "$FM_TASK_INBOX"/001.msg "$FM_TASK_INBOX"/handled/ && touch /var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-inbox-live.6xgx2O/acted-claude && ls "$FM_TASK_INBOX" "$FM_TASK_INBOX"/handled
+                            output           |  handled/
+                            output           |  001.msg  317B
+
+--- codex-cli 0.154.0 ------------------------------------------------------------------------------
+    ~/.codex/sessions/2026/10/03/rollout-2026-10-03T23-20-28-01a10592-2be6-75e2-b9e9-7239ca1e8f63.jsonl
+  2026-10-04T06:20:32.342Z  DOORBELL DELIVERED -> : Firstmate instruction waiting: list "$FM_TASK_INBOX"/*.msg in 'live-codex.inbox' steering inbox: read each in order, mv to handled/ on read, leaving none behind, act.
+  2026-10-04T06:20:37.413Z  worker runs      -> pwd && printenv FM_TASK_INBOX && find "$FM_TASK_INBOX" -maxdepth 2 -type f -print | sort
+                            output           |  /Users/crossbow/.treehouse/firstmate-cdae9f/1/firstmate
+                            output           |  /var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-inbox-live.6xgx2O/codex-home/state/live-codex.inbox
+                            output           |  /var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-inbox-live.6xgx2O/codex-home/state/live-codex.inbox/001.msg
+  2026-10-04T06:20:42.189Z  worker runs      -> inbox="$FM_TASK_INBOX"
+for msg in "$inbox"/*.msg(N); do
+  print -- "===== ${msg:t} ====="
+  sed -n '1,240p' "$msg"
+  mv -- "$msg" "$inbox/handled/${msg:t}"
+done
+print -- "===== remaining ====="
+find "$inbox" -maxdepth 1 -type f -name '*.msg' -print | sort
+print -- "===== handled ====="
+find "$inbox/
+                            output           |  ===== 001.msg =====
+                            output           |  schema=fm-task-inbox.v1
+                            output           |  at=2026-10-04T06:20:29Z
+                            output           |  --
+                            output           |  Firstmate live check: acknowledge this message first by following the mv instruction you were given for it, then run exactly this shell command: touch /var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-inbox-live.6xgx2O/acted-codex - and reply with one short line.===== remaining =====
+                            output           |  ===== handled =====
+  2026-10-04T06:20:44.848Z  worker runs      -> touch /var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-inbox-live.6xgx2O/acted-codex

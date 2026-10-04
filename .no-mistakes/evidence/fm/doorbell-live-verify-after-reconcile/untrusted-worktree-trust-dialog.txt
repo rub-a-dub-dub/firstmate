@@ -1,0 +1,11 @@
+=== pane after 18s, cwd=/Users/crossbow/.no-mistakes/worktrees/00644a303d6a/01M42SCRFQ1RE8WWZWR7S7V7Y2 ===
+2:────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+3: Accessing workspace:
+5: /Users/crossbow/.no-mistakes/worktrees/00644a303d6a/01M42SCRFQ1RE8WWZWR7S7V7Y2
+7: Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review what's in this
+8: folder first.
+10: Claude Code'll be able to read, edit, and execute files here.
+12: Security guide
+14: ❯ No, exit
+15:   Yes, I trust this folder
+17: Enter to confirm · Esc to cancel
