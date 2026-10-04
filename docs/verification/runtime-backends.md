@@ -801,20 +801,19 @@ The guard also notes whether the starfield and the placeholder were actually dra
 
 ## Steering-inbox doorbell
 
-The steering channel's one behavioral assumption - a real worker agent follows the constant self-describing doorbell line (list the inbox, read each record in numeric order, `mv` it into `handled/` once understood as receipt rather than completion, then act on it) - was verified on 2026-08-23 against every installed verified harness, on tmux 3.6a, macOS arm64, on an isolated private socket, driving the REAL `bin/fm-send.sh` end to end (durable record plus doorbell, with one mid-wait re-ring playing the watcher's role).
+The steering channel's one behavioral assumption - a real worker agent follows the constant self-describing doorbell line (list the inbox, read each record in numeric order, `mv` it into `handled/` once understood as receipt rather than completion, then act on it) - was verified on 2026-10-03 for claude and codex and on 2026-08-23 for every other installed verified harness, on tmux 3.6a, macOS arm64, on an isolated private socket, driving the REAL `bin/fm-send.sh` end to end (durable record plus doorbell, with one mid-wait re-ring playing the watcher's role).
 That verdict requires both legs - the acknowledging `mv` and the requested work - within the timeout and does not observe which landed first, so the run evidences comprehension of the doorbell rather than the order of the two.
-The wording the guard steers against has since changed; a refresh should re-date this entry against the line `bin/fm-task-inbox-lib.sh` currently emits.
-A 2026-10-02 attempt at that refresh with `FM_SEND_INBOX_LIVE_HARNESSES="claude codex"` verified nothing and is not recorded as evidence: both harnesses stopped at a first-run directory-trust prompt for the checkout the guard launches them in, which `wait_ready` deliberately never dismisses, so neither model ever read the doorbell (claude 2.1.287 reported `composer stayed visibly pending`; codex-cli 0.154.0 reached the steer but sat on its trust prompt, `acted=no acked=no`). Trust the checkout in each harness once before re-running.
+The 2026-10-03 claude and codex refresh exercised the line `bin/fm-task-inbox-lib.sh` currently emits.
 
 ```sh
-FM_SEND_INBOX_LIVE_E2E=1 tests/fm-send-inbox-doorbell-live-e2e.test.sh
+FM_SEND_INBOX_LIVE_E2E=1 FM_SEND_INBOX_LIVE_HARNESSES="claude codex" bash tests/fm-send-inbox-doorbell-live-e2e.test.sh
 ```
 
-Observed output (combined across the full run and the grok rerun after the advisory-skip narrowing landed):
+Observed output (claude and codex from the 2026-10-03 filtered refresh; every other harness remains from the 2026-08-23 full run and grok rerun after the advisory-skip narrowing landed):
 
 ```text
-ok - claude (2.1.241 (Claude Code)): the doorbell reached a real worker, which acted and acked with the mv
-ok - codex (codex-cli 0.147.0): the doorbell reached a real worker, which acted and acked with the mv
+ok - claude (2.1.289 (Claude Code)): the doorbell reached a real worker, which acted and acked with the mv
+ok - codex (codex-cli 0.154.0): the doorbell reached a real worker, which acted and acked with the mv
 ok - opencode (1.18.21): the doorbell reached a real worker, which acted and acked with the mv
 ok - pi (0.84.1): the doorbell reached a real worker, which acted and acked with the mv
 # grok (grok 1.0.5 (5115b46bc909) [stable]): idle composer never classified empty; proceeding as production does (advisory check skips only on pending)
