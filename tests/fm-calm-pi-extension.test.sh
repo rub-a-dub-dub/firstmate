@@ -1659,18 +1659,23 @@ for (const { name, actual } of rows) {
     throw new Error(`${name} was not hidden before export rendering`);
   }
 }
-async function assertStockHtmlRendering(command, submitData) {
-  editorText = command;
-  terminalInputHandler(submitData);
-  // Pi 1.0.0 and older looked the renderers up through a getToolDefinition dep;
-  // Pi 1.0.1 renamed it to getToolRenderers so extensions can resolve them. The
-  // old name is silently ignored, which renders every row as having no custom
-  // renderer, so this proof has to pass the name the installed Pi reads.
-  const htmlRenderer = createToolHtmlRenderer({
-    getToolRenderers: (name) => tools.find((tool) => tool.name === name),
+// Pi 1.0.0 resolves export HTML through getToolDefinition. Pi 1.0.1 renamed that
+// dependency to getToolRenderers and ignores the old key, so a fixture that
+// passes only the old key reports every tool as missing. Supply both; each
+// release reads the key it knows and renders the same wrapped definitions.
+function createInstalledToolHtmlRenderer() {
+  const lookup = (name) => tools.find((tool) => tool.name === name);
+  return createToolHtmlRenderer({
+    getToolDefinition: lookup,
+    getToolRenderers: lookup,
     theme,
     cwd: process.cwd(),
   });
+}
+async function assertStockHtmlRendering(command, submitData) {
+  editorText = command;
+  terminalInputHandler(submitData);
+  const htmlRenderer = createInstalledToolHtmlRenderer();
   const exportCases = [
     ...cases.filter(([toolName]) => toolName === "grep" || toolName === "find"),
     ["fm_watch_arm_pi", watchArgs, watchResult],
@@ -1697,11 +1702,7 @@ await assertStockHtmlRendering("/export calm.html", "\r");
 getKeybindings().setUserBindings({ "tui.input.submit": "alt+s" });
 editorText = "/export remapped.html";
 terminalInputHandler("\r");
-const unmatchedRenderer = createToolHtmlRenderer({
-  getToolRenderers: (name) => tools.find((tool) => tool.name === name),
-  theme,
-  cwd: process.cwd(),
-});
+const unmatchedRenderer = createInstalledToolHtmlRenderer();
 if (unmatchedRenderer.renderCall("unmatched-submit", "grep", { pattern: "alpha", path: "." })) {
   throw new Error("ordinary non-submit input activated HTML export rendering");
 }
