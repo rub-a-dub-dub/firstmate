@@ -424,9 +424,17 @@ if [ "$WAIVE_NO_CI_EVIDENCE" = true ] && [ "$WAIVE_NO_CI_EVIDENCE_URL" != "$URL"
   echo "error: --waive-no-ci-evidence must name the exact pull request being merged ($URL)" >&2
   exit 2
 fi
-if [ "$WAIVE_NO_CI_EVIDENCE" = true ] && [ "$PROVIDER" = gitlab ]; then
-  echo "error: --waive-no-ci-evidence does not apply to GitLab, where a merge already requires the head pipeline to have succeeded" >&2
-  exit 2
+if [ "$WAIVE_NO_CI_EVIDENCE" = true ]; then
+  case "$PROVIDER" in
+    gitlab)
+      echo "error: --waive-no-ci-evidence does not apply to GitLab, where a merge already requires the head pipeline to have succeeded" >&2
+      exit 2
+      ;;
+    forgejo)
+      echo "error: --waive-no-ci-evidence does not apply to Forgejo, where a merge already requires the head's combined commit status to have succeeded" >&2
+      exit 2
+      ;;
+  esac
 fi
 
 caller_has_merge_method() {

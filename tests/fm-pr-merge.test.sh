@@ -6054,6 +6054,21 @@ test_allow_missing_refused_on_forgejo() {
   pass "fm-pr-merge refuses --allow-missing on Forgejo"
 }
 
+test_waive_no_ci_evidence_refused_on_forgejo() {
+  local case_dir rc
+  case_dir=$(make_forgejo_case forgejo-waive-ci)
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$FJ_URL" --waive-no-ci-evidence "$FJ_URL" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "forgejo-waive-ci: --waive-no-ci-evidence must not apply on Forgejo"
+  assert_grep '--waive-no-ci-evidence does not apply to Forgejo' "$case_dir/stderr" \
+    "forgejo-waive-ci: refusal did not name Forgejo"
+  [ ! -s "$case_dir/tea.log" ] || fail "forgejo-waive-ci: tea ran despite --waive-no-ci-evidence"
+  pass "fm-pr-merge refuses --waive-no-ci-evidence on Forgejo"
+}
+
 test_gitlab_head_override_args_refuse_before_recording
 test_secondmate_merge_reports_upward_once
 test_secondmate_merge_reports_on_the_local_route
@@ -6152,3 +6167,4 @@ test_app_bound_required_status_context_matches_by_name
 test_required_partial_reads_report_all_failures
 test_allow_red_refused_on_forgejo
 test_allow_missing_refused_on_forgejo
+test_waive_no_ci_evidence_refused_on_forgejo
