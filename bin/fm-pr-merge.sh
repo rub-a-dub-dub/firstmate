@@ -145,9 +145,10 @@
 # copied flag can never carry over onto a different pull request. Like
 # --allow-red it is refused while the away-posture record exists and never
 # applies on GitLab, where a merge already requires the head pipeline to have
-# succeeded. When it actually waives a refusal that would otherwise have
-# fired, the merge's persisted authority is recorded as attended-ci-waived
-# instead of attended, so the waiver survives in
+# succeeded, or on Forgejo, where a merge already requires the head's combined
+# commit status to have succeeded. When it actually waives a refusal that
+# would otherwise have fired, the merge's persisted authority is recorded as
+# attended-ci-waived instead of attended, so the waiver survives in
 # state/<task-id>.merge-authority and in the captain-facing merge outcome
 # (bin/fm-merge-authority-lib.sh, bin/fm-merge-outcome-lib.sh); passing it
 # when no such refusal actually fires leaves the ordinary attended authority
