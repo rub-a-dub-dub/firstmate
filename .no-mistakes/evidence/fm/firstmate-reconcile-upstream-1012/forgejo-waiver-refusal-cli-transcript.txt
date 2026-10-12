@@ -1,0 +1,98 @@
+================================================================
+A. BEFORE the fix (bin/fm-pr-merge.sh at merge commit 2766743f):
+   the fork-only waiver flag is accepted on the new Forgejo
+   provider and silently dropped - the merge goes through.
+================================================================
+
+$ fm-pr-merge.sh task-x1 https://forgejo.example/fixture/fixture-repo/pulls/9 --waive-no-ci-evidence https://forgejo.example/fixture/fixture-repo/pulls/9
+-- exit status: 0
+-- stderr:
+   ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   ●  WATCHER DOWN - SUPERVISION IS OFF
+   ●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+   ●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+   ●  This is a supervision warning only; the guarded operation WILL still run.
+   ●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+   ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   verified: https://forgejo.example/fixture/fixture-repo/pulls/9 is open and mergeable, with a successful combined status at head cccccccccccccccccccccccccccccccccccccccc
+-- stdout:
+   armed: state/task-x1.check.sh
+-- commands sent to the Forgejo forge (tea):
+   login list --output json
+   login list --output json
+   api --login fm-fixture --repo fixture/fixture-repo /repos/{owner}/{repo}
+   api --login fm-fixture --repo fixture/fixture-repo /repos/{owner}/{repo}/pulls/9
+   api --login fm-fixture --repo fixture/fixture-repo /repos/{owner}/{repo}/commits/cccccccccccccccccccccccccccccccccccccccc/status?limit=50&page=1
+   api --login fm-fixture --repo fixture/fixture-repo /repos/{owner}/{repo}/commits/cccccccccccccccccccccccccccccccccccccccc/status?limit=50&page=2
+   api --login fm-fixture --repo fixture/fixture-repo -X POST /repos/{owner}/{repo}/pulls/9/merge -f Do=merge -f head_commit_id=cccccccccccccccccccccccccccccccccccccccc
+   api --login fm-fixture --repo fixture/fixture-repo /repos/{owner}/{repo}/pulls/9
+-- persisted state/task-x1.merge-authority:
+   fm-merge-authority-v1
+   forgejo
+   forgejo.example
+   fixture/fixture-repo
+   9
+   attended
+
+================================================================
+B. AFTER the fix (bin/fm-pr-merge.sh at this change): the flag is
+   refused up front, nothing is sent to the forge.
+================================================================
+
+$ fm-pr-merge.sh task-x1 https://forgejo.example/fixture/fixture-repo/pulls/9 --waive-no-ci-evidence https://forgejo.example/fixture/fixture-repo/pulls/9
+-- exit status: 2
+-- stderr:
+   error: --waive-no-ci-evidence does not apply to Forgejo, where a merge already requires the head's combined commit status to have succeeded
+-- commands sent to the Forgejo forge (tea): none
+-- persisted state/task-x1.merge-authority: absent
+
+   For comparison, the two refusals upstream already worded for
+   Forgejo, and the GitLab arm of the same waiver flag:
+
+$ fm-pr-merge.sh task-x1 https://forgejo.example/fixture/fixture-repo/pulls/9 --allow-red lint
+-- exit status: 2
+   error: --allow-red does not apply to Forgejo, where a merge already requires the head's combined commit status to have succeeded
+
+$ fm-pr-merge.sh task-x1 https://forgejo.example/fixture/fixture-repo/pulls/9 --allow-missing validate
+-- exit status: 2
+   error: --allow-missing does not apply to Forgejo, where a merge already requires the head's combined commit status to have succeeded
+
+$ fm-pr-merge.sh task-x1 https://gitlab.example/group/subgroup/project/-/merge_requests/7 --waive-no-ci-evidence https://gitlab.example/group/subgroup/project/-/merge_requests/7
+-- exit status: 2
+   error: --waive-no-ci-evidence does not apply to GitLab, where a merge already requires the head pipeline to have succeeded
+
+================================================================
+C. The refusal is narrow: an ordinary Forgejo merge (no waiver
+   flag) still merges through tea, exactly as upstream #4395
+   delivers it.
+================================================================
+
+$ fm-pr-merge.sh task-x1 https://forgejo.example/fixture/fixture-repo/pulls/9
+-- exit status: 0
+-- stderr:
+   ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   ●  WATCHER DOWN - SUPERVISION IS OFF
+   ●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+   ●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+   ●  This is a supervision warning only; the guarded operation WILL still run.
+   ●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+   ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   verified: https://forgejo.example/fixture/fixture-repo/pulls/9 is open and mergeable, with a successful combined status at head cccccccccccccccccccccccccccccccccccccccc
+-- stdout:
+   armed: state/task-x1.check.sh
+-- commands sent to the Forgejo forge (tea):
+   login list --output json
+   login list --output json
+   api --login fm-fixture --repo fixture/fixture-repo /repos/{owner}/{repo}
+   api --login fm-fixture --repo fixture/fixture-repo /repos/{owner}/{repo}/pulls/9
+   api --login fm-fixture --repo fixture/fixture-repo /repos/{owner}/{repo}/commits/cccccccccccccccccccccccccccccccccccccccc/status?limit=50&page=1
+   api --login fm-fixture --repo fixture/fixture-repo /repos/{owner}/{repo}/commits/cccccccccccccccccccccccccccccccccccccccc/status?limit=50&page=2
+   api --login fm-fixture --repo fixture/fixture-repo -X POST /repos/{owner}/{repo}/pulls/9/merge -f Do=merge -f head_commit_id=cccccccccccccccccccccccccccccccccccccccc
+   api --login fm-fixture --repo fixture/fixture-repo /repos/{owner}/{repo}/pulls/9
+-- persisted state/task-x1.merge-authority:
+   fm-merge-authority-v1
+   forgejo
+   forgejo.example
+   fixture/fixture-repo
+   9
+   attended
