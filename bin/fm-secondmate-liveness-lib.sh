@@ -330,10 +330,13 @@ fm_secondmate_liveness_probe() {  # <meta> <id> <full|poll>
 # The header owns the lock-wait bounds. A positive timeout separately
 # wraps the spawn in fm_run_timed so a watcher poll stays bounded; 124/137 mean
 # the bound fired. Returns the spawn exit status; combined spawn output is in
-# FM_SM_LIVE_OUT and the status in FM_SM_LIVE_RC. When the lock wait expires,
-# the ledger cannot be read, or the attempt row cannot be appended, nothing is
-# killed or spawned and no attempt is recorded: the verdict becomes
+# FM_SM_LIVE_OUT and the status in FM_SM_LIVE_RC. When the relaunch lock cannot
+# be taken, the ledger cannot be read, or the attempt row cannot be appended,
+# nothing is killed or spawned and no attempt is recorded: the verdict becomes
 # FM_SM_LIVE_STATUS=skipped with FM_SM_LIVE_REASON set and this returns 1.
+# That reason blames another in-flight relaunch only on the bounded wait's own
+# 124 with a live holder pid, so an acquire that failed for any other cause
+# reports the lock it could not take rather than inventing a holder.
 # Caller holds the liveness lock and owns reporting.
 fm_secondmate_liveness_relaunch() {  # <meta> <id> [timeout-secs]
   local meta=$1 id=$2 timeout=${3:-} relaunch_lock wait_seconds rc=0 lock_rc=0
