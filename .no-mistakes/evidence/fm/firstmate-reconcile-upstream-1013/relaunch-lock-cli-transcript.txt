@@ -1,0 +1,50 @@
+
+==================== 1. watcher tick: another mate's relaunch already owns the per-home lock ====================
+[setup] a concurrent relaunch (pid 28455) holds /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-reconcile-evidence.86jDQB/watcher-contended/home/state/.secondmate-relaunch.lock
+watcher: secondmate sm1 liveness: another secondmate relaunch still owns the per-home relaunch lock after 1s (live process 28455); endpoint left dead
+[watcher] secondmate_liveness_tick exit status: 1
+--- endpoint calls made (tmux kill-window/new-window): ---
+(none: the dead endpoint was left exactly as found)
+--- durable attempt ledger state/.secondmate-relaunch-sm1: ---
+(absent: a relaunch that never ran did not consume one of the 3 attempts)
+
+==================== 2. watcher tick: the same dead mate with the per-home lock free ====================
+(the spawn itself still warns because this fixture's primary home is not a
+ git repo; the point of the contrast is that the endpoint IS killed and
+ respawned and an attempt IS ledgered once the lock is available.)
+check: secondmate sm1 auto-relaunch failed after confirmed agent absence on existing endpoint: warning: secondmate sm1 sync skipped before launch: primary default-branch commit cannot be resolved
+--- endpoint calls made: ---
+kill-window -t =firstmate:=fm-sm1
+new-window -dP -F #{window_id} -t firstmate: -n fm-sm1 -c /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-reconcile-evidence.86jDQB/watcher-free/sm1
+--- durable attempt ledger state/.secondmate-relaunch-sm1: ---
+1791920935	attempt
+1791920937	failed
+--- queued captain wake rows (state/.wake-queue): ---
+1791920937	1	check	secondmate-relaunch-failed-sm1-1791920935	check: secondmate sm1 auto-relaunch failed after confirmed agent absence on existing endpoint: warning: secondmate sm1 sync skipped before launch: primary default-branch commit cannot be resolved
+
+==================== 3. session-start sweep: two distinct dead mates whose spawns overlap ====================
+(bootstrap printed no SECONDMATE_LIVENESS line: every mate recovered silently)
+--- fresh spawns reaching the backend: ---
+new-window calls: 2
+--- state/.secondmate-relaunch-sm1: ---
+1791920943	attempt
+1791920948	relaunched
+--- state/.secondmate-relaunch-sm2: ---
+1791920938	attempt
+1791920943	relaunched
+
+==================== 4. fm-spawn.sh task-set refusal names the holder it actually found ====================
+--- recorded lock holder role: task-spawn ---
+$ fm-spawn.sh newtask /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-reconcile-evidence.86jDQB/spawn-home/projects/alpha --scout
+error: this home's task set is locked by another spawn; refusing to create task newtask rather than racing it
+published task meta: no (refused before publication)
+--- recorded lock holder role: forced-teardown ---
+$ fm-spawn.sh newtask /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-reconcile-evidence.86jDQB/spawn-home/projects/alpha --scout
+error: this home's task set is locked by a forced teardown; refusing to create task newtask rather than racing it
+published task meta: no (refused before publication)
+--- recorded lock holder role: (unrecorded) ---
+$ fm-spawn.sh newtask /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-reconcile-evidence.86jDQB/spawn-home/projects/alpha --scout
+error: this home's task set is locked by another operation; refusing to create task newtask rather than racing it
+published task meta: no (refused before publication)
+
+==================== end of evidence run ====================

@@ -1,0 +1,31 @@
+# Regression contrast for the reconcile of upstream 6407052f into
+# rub-a-dub-dub/firstmate (branch fm/firstmate-reconcile-upstream-1013).
+#
+# How this was produced: the three lock-focused cases from
+# tests/fm-secondmate-liveness.test.sh at branch head were run as a filtered
+# subset (a temporary copy of that file whose trailing invocation list kept only
+# test_sweep_serializes_distinct_secondmate_relaunches,
+# test_relaunch_waits_for_other_mates_relaunch_lock and
+# test_relaunch_refusal_without_a_proven_holder_names_no_relaunch; the copy was
+# deleted afterwards) against three versions of
+# bin/fm-secondmate-liveness-lib.sh, swapped in with `git checkout <rev> --`.
+
+=== A) pre-merge baseline: bin/fm-secondmate-liveness-lib.sh from 634eeb85 (before upstream 6407052f) ===
+not ok - both distinct mates should relaunch without task-set contention (unexpected: 'SECONDMATE_LIVENESS: secondmate sm')
+--- output ---
+SECONDMATE_LIVENESS: secondmate sm1: respawn failed after recorded endpoint confidently missing: error: this home's task set is locked by another operation; refusing to create task sm1 rather than racing it
+SECONDMATE_SYNC: secondmate sm1: skipped: primary default-branch commit cannot be resolved
+SECONDMATE_SYNC: secondmate sm2: skipped: primary default-branch commit cannot be resolved
+
+=== B) upstream merge only: lib from bb8a9de2 (upstream fix + docs, before the fork review fix e32050ea) ===
+ok - sweep: distinct secondmate relaunches serialize across the task-set lock
+ok - relaunch: the spawn timeout bounds the lock wait before touching the endpoint
+not ok - a refusal with no proven holder must not blame a relaunch that is not running (unexpected: 'another secondmate relaunch still owns')
+--- output ---
+rc=1 status=skipped reason=another secondmate relaunch still owns the per-home relaunch lock after 1s; endpoint left dead
+
+=== C) reconciled branch head e32050ea ===
+ok - sweep: distinct secondmate relaunches serialize across the task-set lock
+ok - relaunch: the spawn timeout bounds the lock wait before touching the endpoint
+ok - relaunch: a lock refusal with no proven holder reports a generic skip
+# filtered evidence subset passed
