@@ -2124,6 +2124,25 @@ if (openedByRequest?.messages?.some((message) => message.customType === "fm-bran
   throw new Error(`dedicated processing with history was not stripped: ${JSON.stringify(openedByRequest)}`);
 }
 await fire("agent_end", {});
+// Pi 0.84-era builds report the run the triggerTurn presentation opened as a
+// prompt carrying its content, as above; Pi 1.x reports that custom message
+// itself instead. A captain prompt in between clears what the shape above
+// recorded, so the abort below can only come from the custom shape.
+aborted = false;
+await fire("before_agent_start", { prompt: "captain typed a later request" }, abortCtx);
+await fire("agent_start", {}, defaultSessionCtx);
+await fire("context", { messages: [...history, processingMsg] }, abortCtx);
+if (aborted) throw new Error("a captain-opened run was aborted after the preceding dedicated processing turn");
+await fire("agent_end", {});
+aborted = false;
+await fire("before_agent_start", { messageType: "custom", message: processingMsg }, abortCtx);
+await fire("agent_start", {}, defaultSessionCtx);
+const openedAsCustom = await fire("context", { messages: [...history, processingMsg] }, abortCtx);
+if (!aborted) throw new Error("a processing turn Pi reported as its custom message was not aborted under the record");
+if (openedAsCustom?.messages?.some((message) => message.customType === "fm-branch-process")) {
+  throw new Error(`custom-reported processing was not stripped: ${JSON.stringify(openedAsCustom)}`);
+}
+await fire("agent_end", {});
 await fire("agent_settled", {});
 if (requests().length !== 1) throw new Error("a request pending when the record appeared was re-presented to the parked main");
 if (JSON.stringify(unprocessedSeqs()) !== JSON.stringify([seq1])) throw new Error(`the record moved the processed marker: ${unprocessedSeqs()}`);

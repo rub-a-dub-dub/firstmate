@@ -1681,9 +1681,17 @@ ${context.command}
     // getEntries() here loses the captain request that the next wake may answer.
     // Stage it verbatim and remember the future persisted index for turn_end's
     // duplicate suppression. Operational extension injections are not dialog.
-    const prompt = event.prompt;
-    processingOpenedThisRun = queuedProcessingContent !== null && prompt === queuedProcessingContent;
-    const trimmed = prompt.trim();
+    //
+    // Pi reports the content that opened the run as `prompt` through Pi 1.1,
+    // while Pi 1.2 reports a run that this extension's own triggerTurn
+    // presentation opened as that custom message instead. Both generations are
+    // in the field, so read either shape without binding to one of them: the
+    // presentation is machinery and only records which run it opened.
+    const opening = event as { prompt?: string; message?: { content?: unknown } };
+    const openingText = typeof opening.prompt === "string" ? opening.prompt : textOfContent(opening.message?.content);
+    processingOpenedThisRun = queuedProcessingContent !== null && openingText === queuedProcessingContent;
+    if (typeof opening.prompt !== "string") return;
+    const trimmed = opening.prompt.trim();
     if (!trimmed || isOperationalUserText(trimmed)) return;
     const file = currentMainSession.getSessionFile() ?? "";
     const index = mirrorCollection.collectAnchor?.index ?? currentMainSession.getEntries().length;
