@@ -563,6 +563,44 @@ test_relaunch_waits_for_other_mates_relaunch_lock() {
   pass "relaunch: the spawn timeout bounds the lock wait before touching the endpoint"
 }
 
+# fm_lock_acquire_wait_bounded only proves a live holder when it returns 124
+# with FM_LOCK_HELD_PID set; every other refusal means no holder was proven, so
+# the skip reason must not name a relaunch that is not running.
+test_relaunch_refusal_without_a_proven_holder_names_no_relaunch() {
+  local w fb tmuxfb log out
+  if [ "$(id -u)" -eq 0 ]; then
+    pass "relaunch: unprovable lock refusal skipped (root ignores directory modes)"
+    return 0
+  fi
+  w=$(new_world sweep-relaunch-lock-unprovable)
+  add_sm_home "$w" sm1 firstmate:fm-sm1
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+
+  out=$(PATH="$tmuxfb:$fb:$BASE_PATH" FM_HOME="$w/home" FM_BACKEND=tmux \
+    FM_ROOT="$ROOT" FM_TEST_PANE_CMD=zsh FM_TMUX_CALL_LOG="$log" \
+    STATE="$w/home/state" bash -c '
+      . "$1/bin/fm-secondmate-liveness-lib.sh"
+      fm_secondmate_liveness_probe "$2" sm1 poll
+      chmod 500 "$STATE"
+      rc=0
+      fm_secondmate_liveness_relaunch "$2" sm1 1 || rc=$?
+      chmod 755 "$STATE"
+      printf "rc=%s status=%s reason=%s\n" "$rc" "$FM_SM_LIVE_STATUS" "$FM_SM_LIVE_REASON"
+    ' _ "$ROOT" "$w/home/state/sm1.meta")
+
+  assert_contains "$out" "rc=1 status=skipped" \
+    "a relaunch that cannot take the per-home lock must return a skipped failure"
+  assert_not_contains "$out" "another secondmate relaunch still owns" \
+    "a refusal with no proven holder must not blame a relaunch that is not running"
+  assert_contains "$out" "could not take the per-home relaunch lock $w/home/state/.secondmate-relaunch.lock within 1s" \
+    "an unproven lock refusal should report the lock it could not take"
+  [ ! -e "$w/home/state/.secondmate-relaunch-sm1" ] \
+    || fail "a refused relaunch was counted as an attempt"
+  [ ! -s "$log" ] || fail "a refused relaunch touched the endpoint: $(cat "$log")"
+  pass "relaunch: a lock refusal with no proven holder reports a generic skip"
+}
+
 test_sweep_refuses_relaunch_on_ledger_errors() {
   local w fb tmuxfb log out mode ledger word
   if [ "$(id -u)" -eq 0 ]; then
@@ -1071,6 +1109,7 @@ test_sweep_skipped_under_detect_only
 test_sweep_noop_with_no_secondmate_meta
 test_sweep_skips_mate_whose_liveness_lock_is_held
 test_relaunch_waits_for_other_mates_relaunch_lock
+test_relaunch_refusal_without_a_proven_holder_names_no_relaunch
 test_sweep_refuses_relaunch_on_ledger_errors
 test_remote_poll_probe_maps_states
 test_remote_poll_probe_unreachable_preserves_route

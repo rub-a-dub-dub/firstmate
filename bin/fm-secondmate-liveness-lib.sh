@@ -336,7 +336,7 @@ fm_secondmate_liveness_probe() {  # <meta> <id> <full|poll>
 # FM_SM_LIVE_STATUS=skipped with FM_SM_LIVE_REASON set and this returns 1.
 # Caller holds the liveness lock and owns reporting.
 fm_secondmate_liveness_relaunch() {  # <meta> <id> [timeout-secs]
-  local meta=$1 id=$2 timeout=${3:-} relaunch_lock wait_seconds rc=0
+  local meta=$1 id=$2 timeout=${3:-} relaunch_lock wait_seconds rc=0 lock_rc=0
   FM_SM_LIVE_OUT='' FM_SM_LIVE_RC=0
   if ! fm_secondmate_liveness_recent_attempts "$id" 0 >/dev/null; then
     FM_SM_LIVE_STATUS=skipped
@@ -347,9 +347,14 @@ fm_secondmate_liveness_relaunch() {  # <meta> <id> [timeout-secs]
   fm_sm_live_require_locks || return 1
   relaunch_lock="$STATE/.secondmate-relaunch.lock"
   wait_seconds=${timeout:-600}
-  if ! fm_lock_acquire_wait_bounded "$relaunch_lock" "$wait_seconds"; then
+  fm_lock_acquire_wait_bounded "$relaunch_lock" "$wait_seconds" || lock_rc=$?
+  if [ "$lock_rc" -ne 0 ]; then
     FM_SM_LIVE_STATUS=skipped
-    FM_SM_LIVE_REASON="another secondmate relaunch still owns the per-home relaunch lock after ${wait_seconds}s; endpoint left $FM_SM_LIVE_STATE"
+    if [ "$lock_rc" -eq 124 ] && [ -n "${FM_LOCK_HELD_PID:-}" ]; then
+      FM_SM_LIVE_REASON="another secondmate relaunch still owns the per-home relaunch lock after ${wait_seconds}s (live process $FM_LOCK_HELD_PID); endpoint left $FM_SM_LIVE_STATE"
+    else
+      FM_SM_LIVE_REASON="could not take the per-home relaunch lock $relaunch_lock within ${wait_seconds}s; endpoint left $FM_SM_LIVE_STATE"
+    fi
     FM_SM_LIVE_RC=1
     return 1
   fi
