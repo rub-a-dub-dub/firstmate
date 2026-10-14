@@ -306,6 +306,9 @@ case "${1:-}" in
     ;;
   new-window|kill-window)
     printf '%s\n' "$*" >> "${FM_TMUX_CALL_LOG:?}"
+    if [ "${1:-}" = new-window ] && [ -n "${FM_TEST_NEW_WINDOW_PAUSE:-}" ]; then
+      sleep "$FM_TEST_NEW_WINDOW_PAUSE"
+    fi
     [ "${1:-}" = kill-window ] && : > "${FM_TMUX_CALL_LOG}.killed"
     [ "${FM_TEST_FAIL_NEW_WINDOW:-0}" = 1 ] && [ "${1:-}" = new-window ] && exit 1
     [ "${1:-}" = new-window ] && rm -f "${FM_TMUX_CALL_LOG}.killed"
@@ -468,6 +471,29 @@ test_sweep_respawns_confirmed_dead_secondmate() {
   pass "sweep: a confirmed-dead secondmate endpoint is killed and respawned"
 }
 
+test_sweep_serializes_distinct_secondmate_relaunches() {
+  local w fb tmuxfb log out id
+  w=$(new_world sweep-concurrent-relaunch)
+  add_sm_home "$w" sm1 firstmate:fm-sm1
+  add_sm_home "$w" sm2 firstmate:fm-sm2
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+
+  # Keep the first fresh spawn inside new-window with its task-set lock held.
+  # A parallel sweep races the second spawn into that lock and loses it.
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" missing "$log" FM_TEST_NEW_WINDOW_PAUSE=2)
+
+  assert_not_contains "$out" 'SECONDMATE_LIVENESS: secondmate sm' \
+    "both distinct mates should relaunch without task-set contention"
+  for id in sm1 sm2; do
+    assert_grep 'relaunched' "$w/home/state/.secondmate-relaunch-$id" \
+      "$id did not complete its relaunch"
+  done
+  [ "$(grep -c '^new-window ' "$log")" -eq 2 ] \
+    || fail "both mates should reach a fresh spawn: $(cat "$log")"
+  pass "sweep: distinct secondmate relaunches serialize across the task-set lock"
+}
+
 test_sweep_skips_mate_whose_liveness_lock_is_held() {
   local w fb tmuxfb log out holder i=0
   w=$(new_world sweep-lock-held)
@@ -495,6 +521,84 @@ test_sweep_skips_mate_whose_liveness_lock_is_held() {
   kill "$holder" 2>/dev/null || true
   wait "$holder" 2>/dev/null || true
   pass "sweep: a mate mid-episode under the shared liveness lock is skipped entirely"
+}
+
+test_relaunch_waits_for_other_mates_relaunch_lock() {
+  local w fb tmuxfb log out holder i=0 lock
+  w=$(new_world sweep-relaunch-lock-held)
+  add_sm_home "$w" sm1 firstmate:fm-sm1
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+  lock="$w/home/state/.secondmate-relaunch.lock"
+
+  ( STATE="$w/home/state" bash -c \
+      '. "$1" && fm_lock_try_acquire "$2" && trap '\''fm_lock_release "$2"'\'' EXIT && sleep 5' \
+      _ "$ROOT/bin/fm-wake-lib.sh" "$lock" ) &
+  holder=$!
+  while [ ! -e "$lock" ] && [ "$i" -lt 100 ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  [ -e "$lock" ] || fail "the fixture never acquired the per-home relaunch lock"
+
+  out=$(PATH="$tmuxfb:$fb:$BASE_PATH" FM_HOME="$w/home" FM_BACKEND=tmux \
+    FM_ROOT="$ROOT" FM_TEST_PANE_CMD=zsh FM_TMUX_CALL_LOG="$log" \
+    STATE="$w/home/state" bash -c '
+      . "$1/bin/fm-secondmate-liveness-lib.sh"
+      fm_secondmate_liveness_probe "$2" sm1 poll
+      rc=0
+      fm_secondmate_liveness_relaunch "$2" sm1 1 || rc=$?
+      printf "rc=%s status=%s reason=%s\n" "$rc" "$FM_SM_LIVE_STATUS" "$FM_SM_LIVE_REASON"
+    ' _ "$ROOT" "$w/home/state/sm1.meta")
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+
+  assert_contains "$out" "rc=1 status=skipped" \
+    "a relaunch blocked on another mate must return a skipped failure"
+  assert_contains "$out" "another secondmate relaunch still owns the per-home relaunch lock after 1s" \
+    "a liveness relaunch must bound its lock wait by the spawn timeout"
+  [ ! -e "$w/home/state/.secondmate-relaunch-sm1" ] \
+    || fail "a relaunch blocked on another mate was counted as an attempt"
+  [ ! -s "$log" ] || fail "a blocked relaunch touched the endpoint: $(cat "$log")"
+  pass "relaunch: the spawn timeout bounds the lock wait before touching the endpoint"
+}
+
+# fm_lock_acquire_wait_bounded only proves a live holder when it returns 124
+# with FM_LOCK_HELD_PID set; every other refusal means no holder was proven, so
+# the skip reason must not name a relaunch that is not running.
+test_relaunch_refusal_without_a_proven_holder_names_no_relaunch() {
+  local w fb tmuxfb log out
+  if [ "$(id -u)" -eq 0 ]; then
+    pass "relaunch: unprovable lock refusal skipped (root ignores directory modes)"
+    return 0
+  fi
+  w=$(new_world sweep-relaunch-lock-unprovable)
+  add_sm_home "$w" sm1 firstmate:fm-sm1
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+
+  out=$(PATH="$tmuxfb:$fb:$BASE_PATH" FM_HOME="$w/home" FM_BACKEND=tmux \
+    FM_ROOT="$ROOT" FM_TEST_PANE_CMD=zsh FM_TMUX_CALL_LOG="$log" \
+    STATE="$w/home/state" bash -c '
+      . "$1/bin/fm-secondmate-liveness-lib.sh"
+      fm_secondmate_liveness_probe "$2" sm1 poll
+      chmod 500 "$STATE"
+      rc=0
+      fm_secondmate_liveness_relaunch "$2" sm1 1 || rc=$?
+      chmod 755 "$STATE"
+      printf "rc=%s status=%s reason=%s\n" "$rc" "$FM_SM_LIVE_STATUS" "$FM_SM_LIVE_REASON"
+    ' _ "$ROOT" "$w/home/state/sm1.meta")
+
+  assert_contains "$out" "rc=1 status=skipped" \
+    "a relaunch that cannot take the per-home lock must return a skipped failure"
+  assert_not_contains "$out" "another secondmate relaunch still owns" \
+    "a refusal with no proven holder must not blame a relaunch that is not running"
+  assert_contains "$out" "could not take the per-home relaunch lock $w/home/state/.secondmate-relaunch.lock within 1s" \
+    "an unproven lock refusal should report the lock it could not take"
+  [ ! -e "$w/home/state/.secondmate-relaunch-sm1" ] \
+    || fail "a refused relaunch was counted as an attempt"
+  [ ! -s "$log" ] || fail "a refused relaunch touched the endpoint: $(cat "$log")"
+  pass "relaunch: a lock refusal with no proven holder reports a generic skip"
 }
 
 test_sweep_refuses_relaunch_on_ledger_errors() {
@@ -988,6 +1092,7 @@ test_tmux_agent_state_rejects_malformed_targets_before_probe
 test_herdr_agent_state_preserves_husk_classifier
 test_agent_state_dispatcher_and_compatibility
 test_sweep_respawns_confirmed_dead_secondmate
+test_sweep_serializes_distinct_secondmate_relaunches
 test_sweep_leaves_alive_secondmate_untouched
 test_sweep_respawns_authoritatively_missing_pi_secondmate
 test_sweep_respawns_authoritatively_missing_pi_signed_secondmate
@@ -1003,6 +1108,8 @@ test_sweep_moved_window_found_in_another_session_refuses_relaunch
 test_sweep_skipped_under_detect_only
 test_sweep_noop_with_no_secondmate_meta
 test_sweep_skips_mate_whose_liveness_lock_is_held
+test_relaunch_waits_for_other_mates_relaunch_lock
+test_relaunch_refusal_without_a_proven_holder_names_no_relaunch
 test_sweep_refuses_relaunch_on_ledger_errors
 test_remote_poll_probe_maps_states
 test_remote_poll_probe_unreachable_preserves_route

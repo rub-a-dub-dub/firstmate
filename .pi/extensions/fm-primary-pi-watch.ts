@@ -1200,7 +1200,12 @@ export default function (pi: ExtensionAPI) {
   }
 
   pi.on?.("before_agent_start", (event) => {
-    consumeWake(generation, event.prompt);
+    // Wakes ride sendUserMessage, so only a run a user message opened carries
+    // wake text. Pi 1.2 reports a run opened by an extension's custom message
+    // without a prompt at all, and both generations are in the field.
+    const prompt = (event as { prompt?: string }).prompt;
+    if (typeof prompt !== "string") return;
+    consumeWake(generation, prompt);
   });
   pi.on?.("message_start", (event) => {
     if (event.message.role !== "user") return;
