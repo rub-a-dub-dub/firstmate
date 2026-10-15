@@ -1,0 +1,25 @@
+### scenario: secondmate sm1 endpoint is dead; a sibling relaunch already holds
+###           $STATE/.secondmate-relaunch.lock; watcher bounded wait = 1s
+
+lock holder pid 79010 owns /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-wake-tests.pXckuX/demo-after/state/.secondmate-relaunch.lock
+
+watcher pid 79031 launched
+watcher after the contended tick: STILL RUNNING (supervision continues)
+
+--- watcher stderr (bin/fm-watch.sh) ---
+  (empty - no error reported)
+
+--- $STATE/.watch-triage.log ---
+  [2026-10-16T00:22:49+0200] secondmate sm1 liveness: another secondmate relaunch still owns the per-home relaunch lock after 1s (live process 79010); endpoint left dead
+  [2026-10-16T00:22:55+0200] secondmate sm1 liveness: another secondmate relaunch still owns the per-home relaunch lock after 1s (live process 79010); endpoint left dead
+
+--- $STATE/.wake-queue (durable wake rows raised) ---
+  (empty - no wake raised)
+
+--- $STATE/.secondmate-relaunch-sm1 (attempt ledger) ---
+  (absent - no attempt recorded)
+
+--- tmux calls made (kill-window / new-window = endpoint mutation) ---
+  (none - endpoint untouched)
+
+watcher_alive=yes
