@@ -3522,7 +3522,8 @@ test_secondmate_liveness_tick_relaunch_lock_contention_is_a_skip() {
   lock="$state/.secondmate-relaunch.lock"
 
   ( STATE="$state" bash -c \
-      '. "$1" && fm_lock_try_acquire "$2" && trap '\''fm_lock_release "$2"'\'' EXIT && sleep 30' \
+      '. "$1" && fm_lock_try_acquire "$2" && trap '\''fm_lock_release "$2"'\'' EXIT \
+         && while [ "$SECONDS" -lt 120 ]; do sleep 0.2; done' \
       _ "$ROOT/bin/fm-wake-lib.sh" "$lock" ) &
   holder=$!
   while [ ! -e "$lock" ] && [ "$i" -lt 100 ]; do
@@ -3532,7 +3533,19 @@ test_secondmate_liveness_tick_relaunch_lock_contention_is_a_skip() {
   [ -e "$lock" ] || fail "the fixture never acquired the per-home relaunch lock"
 
   run_liveness_leg "$dir" relaunch-locked FM_FAKE_TMUX_CURRENT_COMMAND=zsh FM_SECONDMATE_LIVENESS_TIMEOUT=1; pid=$LIVENESS_PID
-  sleep 5
+  # Wait for the tick's verdict rather than a fixed sleep: the first liveness
+  # tick lands a watcher startup plus one cadence plus the bounded lock wait
+  # after launch, so a fixed window either races a slow host or pads a fast
+  # one. A watcher that treats contention as a failure exits, which ends the
+  # poll immediately on the liveness check below.
+  i=0
+  while [ "$i" -lt 600 ]; do
+    grep -F 'secondmate sm1 liveness: another secondmate relaunch still owns the per-home relaunch lock' \
+      "$state/.watch-triage.log" >/dev/null 2>&1 && break
+    is_live_non_zombie "$pid" || break
+    sleep 0.1
+    i=$((i + 1))
+  done
   if ! is_live_non_zombie "$pid"; then
     kill "$holder" 2>/dev/null || true
     wait "$holder" 2>/dev/null || true
