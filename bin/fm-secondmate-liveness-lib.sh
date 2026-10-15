@@ -337,10 +337,13 @@ fm_secondmate_liveness_probe() {  # <meta> <id> <full|poll>
 # That reason blames another in-flight relaunch only on the bounded wait's own
 # 124 with a live holder pid, so an acquire that failed for any other cause
 # reports the lock it could not take rather than inventing a holder.
+# FM_SM_LIVE_SKIP is set to relaunch-lock-busy on exactly that proven-holder
+# skip and empty otherwise, so a caller can treat contention as the harmless
+# wait-and-retry it is while every other skip keeps its own handling.
 # Caller holds the liveness lock and owns reporting.
 fm_secondmate_liveness_relaunch() {  # <meta> <id> [timeout-secs]
   local meta=$1 id=$2 timeout=${3:-} relaunch_lock wait_seconds rc=0 lock_rc=0
-  FM_SM_LIVE_OUT='' FM_SM_LIVE_RC=0
+  FM_SM_LIVE_OUT='' FM_SM_LIVE_RC=0 FM_SM_LIVE_SKIP=''
   if ! fm_secondmate_liveness_recent_attempts "$id" 0 >/dev/null; then
     FM_SM_LIVE_STATUS=skipped
     FM_SM_LIVE_REASON="relaunch ledger $STATE/.secondmate-relaunch-$id is unreadable; endpoint left $FM_SM_LIVE_STATE"
@@ -354,6 +357,7 @@ fm_secondmate_liveness_relaunch() {  # <meta> <id> [timeout-secs]
   if [ "$lock_rc" -ne 0 ]; then
     FM_SM_LIVE_STATUS=skipped
     if [ "$lock_rc" -eq 124 ] && [ -n "${FM_LOCK_HELD_PID:-}" ]; then
+      FM_SM_LIVE_SKIP=relaunch-lock-busy
       FM_SM_LIVE_REASON="another secondmate relaunch still owns the per-home relaunch lock after ${wait_seconds}s (live process $FM_LOCK_HELD_PID); endpoint left $FM_SM_LIVE_STATE"
     else
       FM_SM_LIVE_REASON="could not take the per-home relaunch lock $relaunch_lock within ${wait_seconds}s; endpoint left $FM_SM_LIVE_STATE"

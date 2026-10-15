@@ -3510,6 +3510,49 @@ test_secondmate_liveness_tick_skips_mate_whose_lock_is_held() {
   pass "watch liveness: a mate mid-episode under the shared liveness lock is skipped entirely"
 }
 
+# Another mate's relaunch owns the per-home relaunch lock for longer than this
+# tick's bounded wait. The relaunch library already classifies that as a skip
+# (nothing killed, spawned or ledgered), so the watcher must treat it as the
+# harmless triage-only skip it is, not as a failed liveness check that exits
+# the watcher and loops recovery.
+test_secondmate_liveness_tick_relaunch_lock_contention_is_a_skip() {
+  local dir state pid holder i=0 lock
+  dir=$(make_secondmate_liveness_case liveness-relaunch-lock-held)
+  state="$dir/state"
+  lock="$state/.secondmate-relaunch.lock"
+
+  ( STATE="$state" bash -c \
+      '. "$1" && fm_lock_try_acquire "$2" && trap '\''fm_lock_release "$2"'\'' EXIT && sleep 30' \
+      _ "$ROOT/bin/fm-wake-lib.sh" "$lock" ) &
+  holder=$!
+  while [ ! -e "$lock" ] && [ "$i" -lt 100 ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  [ -e "$lock" ] || fail "the fixture never acquired the per-home relaunch lock"
+
+  run_liveness_leg "$dir" relaunch-locked FM_FAKE_TMUX_CURRENT_COMMAND=zsh FM_SECONDMATE_LIVENESS_TIMEOUT=1; pid=$LIVENESS_PID
+  sleep 5
+  if ! is_live_non_zombie "$pid"; then
+    kill "$holder" 2>/dev/null || true
+    wait "$holder" 2>/dev/null || true
+    fail "a contended relaunch lock exited the watcher instead of skipping: $(cat "$dir/watch-relaunch-locked.out" "$dir/watch-relaunch-locked.err")"
+  fi
+  kill_liveness_leg "$pid"
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  ! grep -F 'secondmate liveness check failed' "$dir/watch-relaunch-locked.err" >/dev/null 2>&1 \
+    || fail "a contended relaunch lock was reported as a failed liveness check: $(cat "$dir/watch-relaunch-locked.err")"
+  [ ! -s "$dir/tmux.log" ] || fail "a contended relaunch lock still killed or spawned: $(cat "$dir/tmux.log")"
+  [ ! -e "$state/.secondmate-relaunch-sm1" ] \
+    || fail "a contended relaunch lock was counted as a relaunch attempt: $(cat "$state/.secondmate-relaunch-sm1")"
+  [ ! -s "$state/.wake-queue" ] || fail "a contended relaunch lock queued a wake: $(cat "$state/.wake-queue")"
+  grep -F 'secondmate sm1 liveness: another secondmate relaunch still owns the per-home relaunch lock' \
+    "$state/.watch-triage.log" >/dev/null \
+    || fail "the contended relaunch was not triage-logged as a skip: $(cat "$state/.watch-triage.log" 2>/dev/null)"
+  pass "watch liveness: a contended per-home relaunch lock is a triage-only skip, never a failed check"
+}
+
 test_secondmate_liveness_tick_preserves_unreachable_remote() {
   local dir state
   dir=$(make_secondmate_liveness_case liveness-remote-down)
@@ -3940,6 +3983,7 @@ test_secondmate_liveness_tick_fails_closed_on_ledger_errors
 test_secondmate_liveness_tick_error_keeps_scanning_and_wakes
 test_secondmate_liveness_tick_unqueued_outcome_is_an_error_not_a_wake
 test_secondmate_liveness_tick_skips_mate_whose_lock_is_held
+test_secondmate_liveness_tick_relaunch_lock_contention_is_a_skip
 test_secondmate_liveness_tick_preserves_unreachable_remote
 test_annotation_cursor_failure_is_reported_on_stdout
 test_annotation_failure_holds_sibling_cursors_too
