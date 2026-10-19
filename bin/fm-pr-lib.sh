@@ -106,11 +106,10 @@ FM_PR_RETIRE_RECEIPT_IDENTITY=
 FM_PR_RECORD_STATE=
 FM_PR_RECORD_MERGED=
 FM_PR_POLL_RETIREMENT_REJECTED=
-# Which class of mismatch refused the last poll-artifact validation - content,
-# inode, or an unreadable file - so the captain-facing rejection names it
-# rather than only the path. Empty whenever the refusal was not one of those
-# three, including every refusal of a check that has no poll artifacts at all,
-# so no rejection is labelled a poll-artifact failure it was not.
+# Which artifact or metadata mismatch refused the last poll-artifact validation
+# so the captain-facing rejection names it rather than only the path.
+# Empty whenever the refusal was not attributable to an authenticated PR poll,
+# including every refusal of a check that has no poll artifacts at all.
 # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
 FM_PR_POLL_REJECT_REASON=
 
@@ -807,12 +806,14 @@ fm_pr_poll_artifacts_content_valid() {
   [ "$FM_PR_REG_TEMPLATE_HASH" = "$template_hash" ] || {
     # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
     FM_PR_POLL_REJECT_REASON="check file content"; return 1; }
+  FM_PR_POLL_REJECT_REASON="task metadata"
   fm_pr_metadata_identity_parse "$meta" || return 1
   [ "$FM_PR_META_PROVIDER" = "$FM_PR_DATA_PROVIDER" ] || return 1
   [ "$FM_PR_META_URL" = "$FM_PR_DATA_URL" ] || return 1
   [ "$FM_PR_META_HOST" = "$FM_PR_DATA_HOST" ] || return 1
   [ "$FM_PR_META_PATH" = "$FM_PR_DATA_PATH" ] || return 1
-  [ "$FM_PR_META_NUMBER" = "$FM_PR_DATA_NUMBER" ]
+  [ "$FM_PR_META_NUMBER" = "$FM_PR_DATA_NUMBER" ] || return 1
+  FM_PR_POLL_REJECT_REASON=
 }
 
 # A registration armed before a volume remount can name a device number the
