@@ -544,7 +544,7 @@ test_secondmate_claude_spawn_arms_busy_for_the_stall_gate() {
 
 run_secondmate_stop_guard() { # <sm-home>
   printf '{"stop_hook_active":false,"session_id":"sm-guard"}' \
-    | CLAUDECODE=1 FM_ROOT_OVERRIDE="$1" FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100 \
+    | CLAUDECODE=1 FM_ROOT_OVERRIDE="$1" FM_HOME="$1" FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100 \
       bash "$ROOT/bin/fm-turnend-guard.sh" --claude >/dev/null 2>&1
 }
 
