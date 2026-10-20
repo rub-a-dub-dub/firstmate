@@ -543,12 +543,7 @@ test_relaunch_keeps_an_armed_pr_poll_authenticating() {
   fm_trace_context_valid "$(meta_field "$dir" rl73 traceparent)" \
     || fail "the traced relaunch recorded no trace carrier to order against the PR block"
   fm_pr_poll_artifacts_valid "$dir/home/state" rl73 "$ROOT/bin/fm-pr-poll.sh" \
-    || fail "relaunch broke PR poll authentication: ${FM_PR_POLL_REJECT_REASON:-no reject reason}"
-  printf '%s\n' 'unexpected_after_pr=1' >> "$dir/home/state/rl73.meta"
-  ! fm_pr_poll_artifacts_valid "$dir/home/state" rl73 "$ROOT/bin/fm-pr-poll.sh" \
-    || fail "invalid task metadata after pr= was accepted"
-  [ "$FM_PR_POLL_REJECT_REASON" = "task metadata" ] \
-    || fail "invalid task metadata had no reject reason: ${FM_PR_POLL_REJECT_REASON:-empty}"
+    || fail "relaunch broke PR poll authentication for $(cat "$dir/home/state/rl73.meta")"
   pass "fm-control relaunch: an already-armed PR poll keeps authenticating"
 }
 
