@@ -17,6 +17,8 @@
 #   6. fm-spawn --relaunch refuses on its own: a live agent, a contradicting
 #      flag, an extra positional, or a backend that cannot prove the previous
 #      agent exited.
+#   7. A task with an authenticated PR poll keeps that poll valid across the
+#      relaunch transaction's metadata publication.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -27,6 +29,8 @@ set -u
 . "$ROOT/bin/fm-trace-context-lib.sh"
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-tasks-axi-lib.sh"
+# shellcheck source=/dev/null
+. "$ROOT/bin/fm-pr-lib.sh"
 
 CONTROL="$ROOT/bin/fm-control.sh"
 SPAWN="$ROOT/bin/fm-spawn.sh"
@@ -513,6 +517,34 @@ test_relaunch_preserves_durable_task_metadata() {
   [ "$(meta_field "$dir" rl19 decisions_reviewed)" = 1 ] \
     || fail "the task decision state must survive relaunch"
   pass "fm-control relaunch: durable task metadata survives replacement launch publication"
+}
+
+test_relaunch_keeps_an_armed_pr_poll_authenticating() {
+  local dir out rc head=0123456789abcdef0123456789abcdef01234567
+  dir=$(new_case pr-poll rl73)
+  add_ship_task "$dir" rl73 claude
+  {
+    printf '%s\n' 'pr=https://github.com/example/repo/pull/73'
+    printf 'pr_head=%s\n' "$head"
+  } >> "$dir/home/state/rl73.meta"
+  fm_pr_poll_prepare "$dir/home/state" rl73 github \
+    https://github.com/example/repo/pull/73 github.com example/repo 73 \
+    "$ROOT/bin/fm-pr-poll.sh" \
+    || fail "could not prepare the PR poll fixture before relaunch"
+  fm_pr_poll_publish_prepared \
+    || fail "could not publish the PR poll fixture before relaunch"
+  fm_pr_poll_artifacts_valid "$dir/home/state" rl73 "$ROOT/bin/fm-pr-poll.sh" \
+    || fail "the PR poll fixture did not authenticate before relaunch"
+  printf '%s\n' "$$" > "$dir/home/state/.lock"
+  printf '%s on\n' "$$" > "$dir/home/state/.trace-context-effective"
+
+  out=$(run_control "$dir" rl73 relaunch --note "continuing PR review"); rc=$?
+  expect_code 0 "$rc" "relaunch should succeed with an armed PR poll"$'\n'"$out"
+  fm_trace_context_valid "$(meta_field "$dir" rl73 traceparent)" \
+    || fail "the traced relaunch recorded no trace carrier to order against the PR block"
+  fm_pr_poll_artifacts_valid "$dir/home/state" rl73 "$ROOT/bin/fm-pr-poll.sh" \
+    || fail "relaunch broke PR poll authentication for $(cat "$dir/home/state/rl73.meta")"
+  pass "fm-control relaunch: an already-armed PR poll keeps authenticating"
 }
 
 test_relaunch_serializes_concurrent_durable_metadata_publication() {
@@ -2845,6 +2877,7 @@ test_relaunch_refuses_before_exit_when_the_composer_holds_pending_text
 test_relaunch_refuses_before_exit_when_the_composer_state_is_unproven
 test_relaunch_from_linked_home_preserves_recorded_worktree
 test_relaunch_preserves_durable_task_metadata
+test_relaunch_keeps_an_armed_pr_poll_authenticating
 test_relaunch_serializes_concurrent_durable_metadata_publication
 test_disabled_relaunch_clears_prior_trace_context
 test_relaunch_appends_the_progress_note_to_the_instructions
