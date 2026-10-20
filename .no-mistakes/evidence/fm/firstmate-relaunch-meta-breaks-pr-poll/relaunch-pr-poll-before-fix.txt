@@ -1,0 +1,56 @@
+===== before-fix: task rl73 has an open PR and an armed merge poll =====
+
+--- task record before relaunch (state/rl73.meta) ---
+window=fmses:fm-rl73
+endpoint_task_id=rl73
+worktree=<case>/wt
+project=<case>/proj
+harness=claude
+kind=ship
+mode=no-mistakes
+yolo=off
+tasktmp=/tmp/fm-rl73
+model=default
+effort=default
+pr=https://github.com/example/repo/pull/73
+pr_head=0123456789abcdef0123456789abcdef01234567
+
+--- merge poll authentication before relaunch ---
+poll authenticates: YES
+
+--- captain relaunches the task: fm-control.sh rl73 relaunch --note "continuing PR review" ---
+warning: <case>/home/data/rl73/launch-brief.md records no ship branch; defaulting to legacy branch fm/rl73
+warning: <case>/home/data/rl73/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+relaunched rl73 harness=claude from=claude model=default effort=default backend=tmux endpoint=fmses:fm-rl73 worktree=<case>/wt
+exit status: 0
+
+--- task record after relaunch (state/rl73.meta) ---
+window=fmses:fm-rl73
+endpoint_task_id=rl73
+worktree=<case>/wt
+project=<case>/proj
+harness=claude
+kind=ship
+mode=no-mistakes
+yolo=off
+branch=fm/rl73
+tasktmp=/tmp/fm-rl73
+model=default
+effort=default
+busy_gen=g1792524560.74297.20630
+spawn_gen=s1792524562.65388.3297
+pr=https://github.com/example/repo/pull/73
+pr_head=0123456789abcdef0123456789abcdef01234567
+control_relaunch_tx=57398.20261020T192907Z.23090
+traceparent=00-68753c963819ba4c977e717db6cc95d3-d43332f98186a7ff-01
+
+--- merge poll authentication after relaunch ---
+poll authenticates: NO (reason: unreported)
+
+--- the supervising watcher runs a check cycle (bin/fm-watch.sh) ---
+check: rejected unauthenticated state checks: <case>/home/state/rl73.check.sh
+watcher exit status: 0
+
+--- did the watcher actually reach GitHub for the merge state? (gh invocations) ---
+(none - the poll never ran)
+
