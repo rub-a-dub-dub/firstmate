@@ -535,9 +535,13 @@ test_relaunch_keeps_an_armed_pr_poll_authenticating() {
     || fail "could not publish the PR poll fixture before relaunch"
   fm_pr_poll_artifacts_valid "$dir/home/state" rl73 "$ROOT/bin/fm-pr-poll.sh" \
     || fail "the PR poll fixture did not authenticate before relaunch"
+  printf '%s\n' "$$" > "$dir/home/state/.lock"
+  printf '%s on\n' "$$" > "$dir/home/state/.trace-context-effective"
 
   out=$(run_control "$dir" rl73 relaunch --note "continuing PR review"); rc=$?
   expect_code 0 "$rc" "relaunch should succeed with an armed PR poll"$'\n'"$out"
+  fm_trace_context_valid "$(meta_field "$dir" rl73 traceparent)" \
+    || fail "the traced relaunch recorded no trace carrier to order against the PR block"
   fm_pr_poll_artifacts_valid "$dir/home/state" rl73 "$ROOT/bin/fm-pr-poll.sh" \
     || fail "relaunch broke PR poll authentication: ${FM_PR_POLL_REJECT_REASON:-no reject reason}"
   printf '%s\n' 'unexpected_after_pr=1' >> "$dir/home/state/rl73.meta"
