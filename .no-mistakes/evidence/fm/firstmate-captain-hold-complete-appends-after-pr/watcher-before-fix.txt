@@ -1,0 +1,52 @@
+
+=== 1. hold the review origin and one captain call (operator CLI) ===
+pr-review-origin
+pr-review-call
+
+=== 2. arm the merge poll on the origin (bin/fm-pr-check.sh) ===
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+armed: state/pr-review-origin.check.sh
+
+=== 3. the armed task record ===
+window=firstmate:fm-pr-review-origin
+worktree=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-captain-hold-pr-evidence.AouKwY/case/wt
+project=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-captain-hold-pr-evidence.AouKwY/case/projects/sample
+harness=codex
+kind=scout
+mode=scout
+spawn_gen=evidence-pr-review-origin
+pr=https://github.com/example/sample/pull/7
+
+=== 4. watcher cycle BEFORE completion ===
+
+
+=== 5. record the reviewed inventory (fm-captain-hold.sh complete) ===
+complete: pr-review-origin captain-call inventory reviewed (pr-review-call)
+
+=== 6. the task record AFTER completion ===
+window=firstmate:fm-pr-review-origin
+worktree=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-captain-hold-pr-evidence.AouKwY/case/wt
+project=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-captain-hold-pr-evidence.AouKwY/case/projects/sample
+harness=codex
+kind=scout
+mode=scout
+spawn_gen=evidence-pr-review-origin
+pr=https://github.com/example/sample/pull/7
+decisions_reviewed=1
+decision_keys=pr-review-call
+
+=== 7. watcher cycle AFTER completion ===
+check: rejected unauthenticated state checks: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-captain-hold-pr-evidence.AouKwY/case/state/pr-review-origin.check.sh
+
+=== 8. verdict ===
+WEDGED: the watcher rejects the completed origin on every cycle.
+
+=== 9. the republished record still satisfies the re-arm precondition ===
+mode=600 links=1 symlink=no
+fm_pr_private_file_valid: accepted
