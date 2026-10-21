@@ -30,7 +30,7 @@
 # After those gates pass and task processes are reaped, teardown delegates
 # regenerable build-cache cleanup to bin/fm-disk-sweep.sh --cleanup-task. That
 # script owns the allowed roots, structure and WorkspacePath provenance,
-# per-project idle-slot opt-in, in-use refusal, and one-line freed-space report.
+# in-use refusal, and one-line freed-space report.
 # The close - and only the close - is replaced by `tasks-axi reopen` with the
 # deliverable recorded while the backlog item is still an open captain call
 # (bin/fm-captain-hold.sh `open` owns that predicate), because the policy holds
@@ -3651,18 +3651,16 @@ if [ "$KIND" != secondmate ] && teardown_owns_worktree; then
 elif [ "$KIND" != secondmate ]; then
   reap_task_worktree_processes tasktmp "$TASK_TMP"
 fi
-# Every kind stages its launch command under /tmp/fm-<id>+<home-hash>
-# (bin/fm-spawn.sh), and only this delegation retires it. A secondmate's
-# worktree= is its own Firstmate home rather than a task slot, so it is handed
-# no worktree here: that confines its cleanup to the launch namespace.
-DISK_CLEANUP_WORKTREE=
-if [ "$KIND" != secondmate ] && teardown_owns_worktree && [ -d "$WT" ]; then
-  DISK_CLEANUP_WORKTREE=$WT
+if [ "$KIND" != secondmate ]; then
+  DISK_CLEANUP_WORKTREE=
+  if teardown_owns_worktree && [ -d "$WT" ]; then
+    DISK_CLEANUP_WORKTREE=$WT
+  fi
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+    FM_CONFIG_OVERRIDE="$CONFIG" FM_DISK_TASK_TMP="$TASK_TMP" \
+    "$SCRIPT_DIR/fm-disk-sweep.sh" --cleanup-task "$ID" "$DISK_CLEANUP_WORKTREE" \
+    || echo "warning: task cache cleanup could not complete for $ID; teardown continues conservatively" >&2
 fi
-FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
-  FM_CONFIG_OVERRIDE="$CONFIG" FM_DISK_TASK_TMP="$TASK_TMP" \
-  "$SCRIPT_DIR/fm-disk-sweep.sh" --cleanup-task "$ID" "$DISK_CLEANUP_WORKTREE" "$PROJ" \
-  || echo "warning: task cache cleanup could not complete for $ID; teardown continues conservatively" >&2
 if [ "$KIND" = ship ] && teardown_owns_worktree && [ -e "$CONFIG/pipeline-spend" ]; then
   FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_CONFIG_OVERRIDE="$CONFIG" \
     "$SCRIPT_DIR/fm-pipeline-spend.sh" record "$ID" >/dev/null \
@@ -3855,6 +3853,15 @@ fi
 remove_grok_turnend_auth "$STATE" "$ID" || exit 1
 remove_kimi_turnend_auth "$STATE" "$ID" || exit 1
 fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
+# A secondmate's spawn stages a launch namespace and a task temp root under
+# /tmp like any other kind, but its agent owns both until the endpoint is
+# closed and every refusal above has passed, so its cleanup runs only here.
+if [ "$KIND" = secondmate ]; then
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+    FM_CONFIG_OVERRIDE="$CONFIG" FM_DISK_TASK_TMP="$TASK_TMP" \
+    "$SCRIPT_DIR/fm-disk-sweep.sh" --cleanup-task "$ID" "" \
+    || echo "warning: task cache cleanup could not complete for $ID; teardown continues conservatively" >&2
+fi
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 # Opt-in fleet activity ledger (docs/fleet-ledger.md), before the status log is

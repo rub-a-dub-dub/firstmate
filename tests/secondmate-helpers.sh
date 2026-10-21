@@ -26,7 +26,13 @@ make_fake_tmux() {
 #!/usr/bin/env bash
 set -u
 case "${1:-}" in
-  has-session|new-session|new-window|kill-window)
+  kill-window)
+    printf '%s\n' "$*" >> "$FM_FAKE_TMUX_LOG"
+    # Opt-in endpoint-close failure, for teardown refusal paths.
+    [ -z "${FM_FAKE_TMUX_KILL_FAIL:-}" ] || exit 1
+    exit 0
+    ;;
+  has-session|new-session|new-window)
     printf '%s\n' "$*" >> "$FM_FAKE_TMUX_LOG"
     exit 0
     ;;

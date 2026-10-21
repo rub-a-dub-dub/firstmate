@@ -39,6 +39,7 @@ PANE="$TMP_ROOT/pane.txt"
 ALPHA_ORIGIN=
 BETA_ORIGIN=
 LAUNCH_NS=
+TASK_TMP_NS="/tmp/fm-design"
 
 # --- shared world + seed ----------------------------------------------------
 setup_world() {
@@ -127,8 +128,9 @@ phase_spawn() {
   else
     LAUNCH_NS="/tmp/fm-design+$(printf '%s' "$home_real" | sha256sum | awk '{print $1}')"
   fi
-  FM_TEST_CLEANUP_DIRS+=("$LAUNCH_NS")
+  FM_TEST_CLEANUP_DIRS+=("$LAUNCH_NS" "$TASK_TMP_NS")
   assert_present "$LAUNCH_NS" "spawn did not stage the secondmate launch command in a per-home temp namespace"
+  assert_present "$TASK_TMP_NS/gotmp" "spawn did not create the secondmate's task temp root"
 
   local meta="$HOME_DIR/state/design.meta"
   assert_grep 'kind=secondmate' "$meta" "spawn meta did not record kind=secondmate"
@@ -318,6 +320,21 @@ phase_teardown() {
   printf 'confirmed:%s\n' "$corr" > "$HOME_DIR/state/.backlog-handoff-design.wake-pending"
   printf '%s\tattempt\n' "$(date +%s)" > "$HOME_DIR/state/.secondmate-relaunch-design"
   printf '%s\tdead\n' "$(date +%s)" > "$HOME_DIR/state/.secondmate-relaunch-bound-design"
+  # A refused endpoint close promises the home and route are preserved for a
+  # retry, so the still-running agent keeps both of its temp roots.
+  : > "$LOG"
+  if teardown_out=$(PATH="$FAKEBIN:$PATH" FM_HOME="$HOME_DIR" FM_FAKE_TMUX_LOG="$LOG" \
+    FM_FAKE_TMUX_CAPTURE="$PANE" FM_FAKE_TMUX_KILL_FAIL=1 \
+    FM_FAKE_TMUX_WINDOW="fm-design" \
+    "$ROOT/bin/fm-teardown.sh" design 2>&1); then
+    fail "teardown reported success although the endpoint close failed: $teardown_out"
+  fi
+  assert_present "$TASK_TMP_NS/gotmp" \
+    "a refused teardown removed the still-running secondmate's task temp root"
+  assert_present "$LAUNCH_NS" \
+    "a refused teardown removed the still-running secondmate's launch namespace"
+  assert_present "$SUB" "a refused teardown removed the secondmate home it promised to preserve"
+
   : > "$LOG"
   teardown_out=$(PATH="$FAKEBIN:$PATH" FM_HOME="$HOME_DIR" FM_FAKE_TMUX_LOG="$LOG" FM_FAKE_TMUX_CAPTURE="$PANE" \
     "$ROOT/bin/fm-teardown.sh" design 2>&1) \
@@ -337,6 +354,7 @@ phase_teardown() {
     "teardown left the liveness lock it took to retire relaunch state"
   assert_absent "$leftover_rec" "teardown left a resolved pending-reply for the retired secondmate"
   assert_absent "$LAUNCH_NS" "teardown left the secondmate's staged launch temp namespace"
+  assert_absent "$TASK_TMP_NS" "teardown left the secondmate's task temp root"
   assert_no_grep '- design ' "$HOME_DIR/data/secondmates.md" "teardown did not remove the registry route"
   # The parent's source projects are untouched (no write through a parent home).
   assert_present "$HOME_DIR/projects/alpha" "teardown disturbed a parent project"

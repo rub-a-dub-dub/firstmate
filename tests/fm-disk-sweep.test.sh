@@ -2,10 +2,12 @@
 # Behavior tests for bin/fm-disk-sweep.sh.
 #
 # Covers task teardown cleanup, orphan-sweep age/live-state rules, process-use
-# refusal, wrong-root and malformed-glob refusal, Xcode cache structure and
-# WorkspacePath provenance, DerivedData matching, default-off idle-slot output,
-# explicit idle-slot globs, low-space thresholds and wake throttling, dry-run-by-default,
-# and the watcher's critical wake plus detached daily-sweep collection.
+# refusal, wrong-root refusal, Xcode cache structure and WorkspacePath
+# provenance (including a WorkspacePath equal to the worktree root),
+# DerivedData matching, refusal to touch anything inside a worktree, Treehouse
+# pool-root attribution of orphan and consumer rows, low-space thresholds and
+# wake throttling, dry-run-by-default, and the watcher's critical wake plus
+# detached daily-sweep collection.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -46,7 +48,19 @@ SH
   cat > "$dir/fakebin/treehouse" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = status ] && [ "${2:-}" = --json ]; then
-  if [ -n "${FM_FAKE_AVAILABLE_WORKTREE:-}" ]; then
+  if [ -n "${FM_FAKE_SLOTS:-}" ]; then
+    # <path>|<status> entries separated by ';', as one pool's slot list.
+    printf '['
+    sep=''
+    IFS=';' read -r -a slots <<< "$FM_FAKE_SLOTS"
+    for slot in "${slots[@]}"; do
+      [ -n "$slot" ] || continue
+      printf '%s{"name":"s","path":"%s","status":"%s","processes":[]}' \
+        "$sep" "${slot%%|*}" "${slot#*|}"
+      sep=','
+    done
+    printf ']\n'
+  elif [ -n "${FM_FAKE_AVAILABLE_WORKTREE:-}" ]; then
     printf '[{"name":"1","path":"%s","status":"available","processes":[]}]\n' "$FM_FAKE_AVAILABLE_WORKTREE"
   else
     printf '[]\n'
@@ -120,12 +134,16 @@ test_task_cleanup_rules() {
   plist "$dir/derived/Demo-task-a" "$wt/App.xcodeproj"
   mkdir -p "$dir/derived/Other/Build"
   plist "$dir/derived/Other" "$dir/another/App.xcodeproj"
+  # Xcode records the package directory itself for a Swift package opened as a
+  # folder, so the worktree root is a WorkspacePath this cleanup must match.
+  mkdir -p "$dir/derived/Package-task-a/Build"
+  plist "$dir/derived/Package-task-a" "$wt"
 
   task_tmp="$dir/temp/fm-task-a"
   mkdir -p "$task_tmp"
   printf 'temporary\n' > "$task_tmp/file"
 
-  out=$(FM_FAKE_LSOF_FAIL=1 run_sweep "$dir" --cleanup-task task-a "$wt" "$dir/home/projects/demo" 2>&1)
+  out=$(FM_FAKE_LSOF_FAIL=1 run_sweep "$dir" --cleanup-task task-a "$wt" 2>&1)
   [ -e "$dir/temp/attempt-task-a" ] || fail "cache was deleted although open files could not be listed"
   assert_contains "$out" "skip unprovable-open-state" "failed open-file listing was not reported as a refusal"
 
@@ -133,7 +151,7 @@ test_task_cleanup_rules() {
     FM_DISK_TEMP_ROOTS="$dir/temp" FM_DISK_DERIVED_DATA_ROOT="$dir/derived" \
     FM_DISK_TASK_TMP="$task_tmp" \
     FM_FAKE_PS_PATH="$dir/temp/cmdline-task-a" \
-    "$SWEEP" --cleanup-task task-a "$wt" "$dir/home/projects/demo" 2>&1)
+    "$SWEEP" --cleanup-task task-a "$wt" 2>&1)
 
   [ ! -e "$dir/temp/attempt-task-a" ] || fail "recognized task DerivedData temp cache was retained"
   [ ! -e "$dir/temp/result-task-a.xcresult" ] || fail "task xcresult was retained"
@@ -143,6 +161,7 @@ test_task_cleanup_rules() {
   [ -e "$dir/temp/task-a-ui-Run.xcresult" ] || fail "a live sibling task's bundle was deleted"
   assert_contains "$out" "skip cache also named for live task task-a-ui" "live sibling refusal was not reported"
   [ ! -e "$dir/derived/Demo-task-a" ] || fail "matching global DerivedData was retained"
+  [ ! -e "$dir/derived/Package-task-a" ] || fail "DerivedData whose WorkspacePath is the worktree root was retained"
   [ ! -e "$task_tmp" ] || fail "recorded task temp root was retained"
   [ -e "$dir/temp/name-only-task-a" ] || fail "bare task-name match was deleted"
   [ -e "$dir/temp/in-use-task-a" ] || fail "lsof-held cache was deleted"
@@ -150,7 +169,7 @@ test_task_cleanup_rules() {
   [ -e "$dir/temp/other-task" ] || fail "another task's cache was deleted"
   [ -e "$dir/outside/linked/Build" ] || fail "symlinked temp candidate escaped to a cache outside the temp root"
   [ -e "$dir/derived/Other" ] || fail "nonmatching DerivedData was deleted"
-  [ -e "$wt/build-cache/a" ] || fail "worktree output was deleted without opt-in"
+  [ -e "$wt/build-cache/a" ] || fail "build output inside the worktree was deleted"
   [ -e "$wt/.env" ] || fail "golden local file was deleted"
   assert_contains "$out" "disk cleanup task-a: freed" "cleanup did not print one freed-space summary"
   assert_contains "$out" "skip in-use task temp cache" "in-use refusal was not reported"
@@ -158,26 +177,28 @@ test_task_cleanup_rules() {
   assert_grep 'removed=task temp cache' "$dir/home/state/disk-sweep.log" "removed paths were not logged durably"
 
   printf 'demo\tbuild-cache/* ../outside/*\n' > "$dir/home/config/idle-slot-clean"
-  out=$(run_sweep "$dir" --cleanup-task task-a "$wt" "$dir/home/projects/demo" 2>&1)
-  [ ! -e "$wt/build-cache/a" ] || fail "opted-in idle-slot glob was not removed"
-  [ -e "$dir/outside/precious/key" ] || fail "unsafe relative glob escaped the worktree"
-  [ -e "$wt/.env" ] || fail "idle-slot cleanup deleted an unselected golden file"
-  assert_contains "$out" "skip unsafe idle-slot glob" "wrong-root glob was not refused"
-  pass "task cleanup requires structure, WorkspacePath, allowed roots, process safety, and idle-slot opt-in"
+  out=$(run_sweep "$dir" --cleanup-task task-a "$wt" 2>&1)
+  [ -e "$wt/build-cache/a" ] || fail "a stale idle-slot-clean config deleted build output inside the worktree"
+  [ -e "$wt/.env" ] || fail "a stale idle-slot-clean config deleted a golden local file"
+  [ -e "$dir/outside/precious/key" ] || fail "a stale idle-slot-clean config reached outside every allowed root"
+  pass "task cleanup requires structure, WorkspacePath, allowed roots, and process safety, and never deletes inside the worktree"
 }
 
 test_orphan_sweep_rules_and_default_dry_run() {
-  local dir missing idle live_wt out
+  local dir missing idle live_wt lookalike out
   dir=$(make_case orphan)
   git init -q "$dir/home/projects/demo"
   printf 'done [at=1]: old\n' > "$dir/home/state/old-task.status"
   printf 'working [at=1]: live\n' > "$dir/home/state/live-task.status"
-  live_wt="$dir/live/1/demo"
+  # Every slot of this project shares one Treehouse pool root; slot 9 is gone.
+  idle="$dir/pool/1/demo"
+  live_wt="$dir/pool/2/demo"
+  missing="$dir/pool/9/demo/App.xcodeproj"
   mkdir -p "$live_wt"
   git init -q "$live_wt"
   printf 'worktree=%s\n' "$live_wt" > "$dir/home/state/live-task.meta"
-
-  missing="$dir/missing/1/demo/App.xcodeproj"
+  # A digit-leading ancestor plus a project name is not this home's layout.
+  lookalike="$dir/Dropbox/2024/demo/App.xcodeproj"
   mkdir -p "$dir/temp/cache-old-task/Build"
   plist "$dir/temp/cache-old-task" "$missing"
   old "$dir/temp/cache-old-task"
@@ -213,6 +234,9 @@ test_orphan_sweep_rules_and_default_dry_run() {
   mkdir -p "$dir/temp/cache-queued-task/Build"
   plist "$dir/temp/cache-queued-task" "$missing"
   old "$dir/temp/cache-queued-task"
+  mkdir -p "$dir/temp/lookalike-old-task/Build"
+  plist "$dir/temp/lookalike-old-task" "$lookalike"
+  old "$dir/temp/lookalike-old-task"
 
   mkdir -p "$dir/derived/Dead/Build"
   plist "$dir/derived/Dead" "$missing"
@@ -222,8 +246,10 @@ test_orphan_sweep_rules_and_default_dry_run() {
   old "$dir/derived/Live"
   mkdir -p "$dir/derived/Young/Build"
   plist "$dir/derived/Young" "$missing"
+  mkdir -p "$dir/derived/Lookalike/Build"
+  plist "$dir/derived/Lookalike" "$lookalike"
+  old "$dir/derived/Lookalike"
 
-  idle="$dir/pool/1/demo"
   mkdir -p "$idle"
   git init -q "$idle"
   mkdir -p "$dir/derived/Idle/Build"
@@ -251,9 +277,52 @@ test_orphan_sweep_rules_and_default_dry_run() {
   [ -e "$dir/temp/in-use-old-task" ] || fail "in-use orphan temp cache was deleted"
   [ -e "$dir/derived/Live" ] || fail "live-worktree DerivedData was deleted"
   [ -e "$dir/derived/Young" ] || fail "young DerivedData was deleted"
+  [ -e "$dir/temp/lookalike-old-task" ] || fail "a temp cache whose workspace only ends in a project name was deleted"
+  [ -e "$dir/derived/Lookalike" ] || fail "DerivedData whose workspace only ends in a project name was deleted"
   assert_contains "$out" "disk sweep:" "applied sweep did not report totals"
   assert_grep 'mode=orphan-sweep' "$dir/home/state/disk-sweep.log" "durable sweep log omitted totals"
-  pass "orphan sweep is dry-run by default and enforces age, live-task, backlog, structure, workspace, and in-use rules"
+  pass "orphan sweep is dry-run by default and enforces age, live-task, backlog, structure, pool-root workspace, and in-use rules"
+}
+
+# state/disk-usage.cache is this script's documented durable record: one
+# `bytes<TAB>kind<TAB>label` row per attributed consumer.
+usage_row_bytes() {  # <cache> <kind> <label>
+  awk -F '\t' -v k="$2" -v l="$3" '$2 == k && $3 == l { print $1; found = 1 }
+    END { exit found ? 0 : 1 }' "$1"
+}
+
+test_usage_cache_attributes_each_slot_to_its_own_project() {
+  local dir cache app_bytes demo_bytes
+  dir=$(make_case usage)
+  mkdir -p "$dir/home/projects/app"
+  git init -q "$dir/home/projects/demo"
+  git init -q "$dir/home/projects/app"
+  # Two of this home's projects share one pool root, and the first-sorted slot
+  # of that root belongs to no project here.
+  mkdir -p "$dir/pool/0/ghost" "$dir/pool/1/app" "$dir/pool/2/demo"
+  mkdir -p "$dir/pool/0/ghost/junk"
+  dd if=/dev/zero of="$dir/pool/0/ghost/junk/blob" bs=1024 count=700 2>/dev/null
+  dd if=/dev/zero of="$dir/pool/1/app/blob" bs=1024 count=400 2>/dev/null
+  dd if=/dev/zero of="$dir/pool/2/demo/blob" bs=1024 count=8 2>/dev/null
+
+  FM_FAKE_SLOTS="$dir/pool/0/ghost|busy;$dir/pool/1/app|busy;$dir/pool/2/demo|busy" \
+    run_sweep "$dir" --apply >/dev/null 2>&1
+
+  cache="$dir/home/state/disk-usage.cache"
+  [ -f "$cache" ] || fail "the sweep published no consumer attribution record"
+  app_bytes=$(usage_row_bytes "$cache" treehouse app) \
+    || fail "no treehouse row for app: $(cat "$cache")"
+  demo_bytes=$(usage_row_bytes "$cache" treehouse demo) \
+    || fail "a project sharing a pool root was dropped from the record: $(cat "$cache")"
+  usage_row_bytes "$cache" treehouse ghost >/dev/null \
+    && fail "a slot belonging to no project here was attributed to this home"
+  [ "$app_bytes" -gt $((300 * 1024)) ] \
+    || fail "app's slot was not sized on its own: $app_bytes"
+  [ "$demo_bytes" -lt $((200 * 1024)) ] \
+    || fail "demo's row carried a sibling slot's bytes: $demo_bytes"
+  [ "$app_bytes" -lt $((700 * 1024)) ] \
+    || fail "app's row carried the whole pool root's bytes: $app_bytes"
+  pass "each Treehouse slot is sized and attributed to its own project"
 }
 
 test_low_disk_thresholds() {
@@ -280,10 +349,8 @@ test_low_disk_thresholds() {
 
   printf 'warn_gb=30\nwake_gb=12\n' > "$dir/home/config/disk-space-thresholds"
   out=$(FM_FAKE_FREE_KIB=$((15 * 1024 * 1024)) run_sweep "$dir" --check --watcher 2>&1)
-  assert_contains "$out" "warn below 30 GiB" "custom warning threshold was ignored"
-  assert_not_contains "$out" "wake:" "custom critical threshold escalated too early"
-  out=$(FM_FAKE_FREE_KIB=$((11 * 1024 * 1024)) run_sweep "$dir" --check --watcher 2>&1)
-  assert_contains "$out" "wake: disk space is below the 12 GiB critical threshold" "custom critical threshold was ignored"
+  assert_contains "$out" "warn below 20 GiB" "a thresholds config changed the fixed warning threshold"
+  assert_not_contains "$out" "wake:" "a thresholds config escalated the wake at 15 GiB free"
   pass "disk checks stay quiet when healthy and separate warning from wake thresholds"
 }
 
@@ -360,5 +427,6 @@ test_watcher_wakes_once_and_collects_detached_sweep() {
 
 test_task_cleanup_rules
 test_orphan_sweep_rules_and_default_dry_run
+test_usage_cache_attributes_each_slot_to_its_own_project
 test_low_disk_thresholds
 test_watcher_wakes_once_and_collects_detached_sweep

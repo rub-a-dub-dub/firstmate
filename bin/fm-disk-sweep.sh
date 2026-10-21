@@ -5,7 +5,7 @@
 #   fm-disk-sweep.sh                         Dry-run the orphan sweep.
 #   fm-disk-sweep.sh --apply                 Apply the orphan sweep.
 #   fm-disk-sweep.sh --check [--watcher]     Print only a low-disk warning.
-#   fm-disk-sweep.sh --cleanup-task <id> <worktree> <project>
+#   fm-disk-sweep.sh --cleanup-task <id> <worktree>
 #                                             Remove one landed task's caches.
 #
 # The orphan sweep removes only two categories:
@@ -13,15 +13,16 @@
 #     system temporary roots, older than 24 hours, whose task is known to this
 #     home but is no longer live; and
 #   - Xcode DerivedData entries older than seven days whose WorkspacePath is
-#     attributable to a project in this home and is missing or is a Treehouse
+#     attributable to a project in this home - below `projects/<name>`, or at
+#     `<treehouse-pool-root>/<slot>/<name>` - and is missing or is a Treehouse
 #     slot that Treehouse reports available.
 # It is a dry run unless --apply is present.
 #
 # Task cleanup is called only after fm-teardown.sh's landed-work gates and
 # process reap. It removes recognized task-named temp caches, the exact recorded
-# task temp root, this home's per-launch temp namespace, DerivedData whose
-# WorkspacePath lies inside the returned worktree, and worktree-relative globs
-# explicitly opted in through config/idle-slot-clean.
+# task temp root, this home's per-launch temp namespace, and DerivedData whose
+# WorkspacePath is the returned worktree or lies inside it. Nothing inside a
+# task worktree is ever removed.
 #
 # Safety contract:
 #   - every candidate is re-proved below an allowed root immediately before rm;
@@ -42,16 +43,6 @@
 #     Info.plist or Staging/), which carries no WorkspacePath and is attributed
 #     by its task-id-bearing name alone;
 #   - simulator runtimes and Treehouse pool slots are never deleted here.
-#
-# Local config:
-#   config/disk-space-thresholds
-#       Optional key/value lines `warn_gb=<positive integer>` and
-#       `wake_gb=<positive integer>`. Defaults are 20 and 10; wake_gb must not
-#       exceed warn_gb or both values fall back to their defaults.
-#   config/idle-slot-clean
-#       Optional tab-separated rows: `<project><TAB><relative-glob> [...]`.
-#       Project names may contain spaces; globs may not. Absolute paths, `.`,
-#       and any `..` segment are refused. No file is removed without this opt-in.
 #
 # Durable local records:
 #   state/disk-sweep.log      One totals row per sweep or task cleanup.
@@ -87,7 +78,6 @@ WATCHER=0
 MODE=sweep
 TASK_ID=
 TASK_WORKTREE=
-TASK_PROJECT=
 TASK_TMP=${FM_DISK_TASK_TMP:-}
 SAFE_FREED=0
 SAFE_REMOVED=0
@@ -100,17 +90,21 @@ LIVE_IDS=
 OPEN_FILES=
 OPEN_FILES_AT=0
 USAGE_CACHE_TMP=
-USAGE_POOLS_TMP=
 
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 
 cleanup_scratch() {
   rm -f "$OPEN_FILES" "$KNOWN_IDS" "$LIVE_IDS" "$AVAILABLE_WORKTREES" "$ALL_WORKTREES" \
-    "$USAGE_POOLS_TMP" "$USAGE_CACHE_TMP" "${USAGE_CACHE_TMP:+$USAGE_CACHE_TMP.sum}" \
+    "$USAGE_CACHE_TMP" "${USAGE_CACHE_TMP:+$USAGE_CACHE_TMP.sum}" \
     2>/dev/null || true
 }
+# The watcher's detached sweep is bounded by a process-group TERM then KILL
+# (bin/fm-timeout-lib.sh), so the scratch cleanup cannot rely on EXIT alone.
 trap cleanup_scratch EXIT
+trap 'cleanup_scratch; exit 130' INT
+trap 'cleanup_scratch; exit 143' TERM
+trap 'cleanup_scratch; exit 129' HUP
 
 usage() {
   sed -n '2,/^set -u$/p' "$0" | sed 's/^# \{0,1\}//; $d'
@@ -125,8 +119,7 @@ case "${1:-}" in
     shift
     TASK_ID=${1:-}
     TASK_WORKTREE=${2:-}
-    TASK_PROJECT=${3:-}
-    shift "$(( $# < 3 ? $# : 3 ))"
+    shift "$(( $# < 2 ? $# : 2 ))"
     ;;
   -h|--help) usage; exit 0 ;;
   *) echo "fm-disk-sweep: unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -149,6 +142,13 @@ path_under() {  # <path> <root>, strict descendant
   [ -n "$path" ] && [ -n "$root" ] || return 1
   case "$path" in "$root"/*) return 0 ;; esac
   return 1
+}
+
+path_at_or_under() {  # <path> <root>, the root itself or a descendant
+  local path=$1 root=$2
+  [ -n "$path" ] && [ -n "$root" ] || return 1
+  [ "$path" = "$root" ] && return 0
+  path_under "$path" "$root"
 }
 
 stat_mtime() {
@@ -240,29 +240,42 @@ temp_cache_candidates() {  # <real-temp-root>; prints outermost recognized cache
 }
 
 workspace_project() {  # <WorkspacePath>; prints a current-home project name
-  local workspace=$1 project name root
+  local workspace=$1 project name root slot pool rest
+  [ -n "$workspace" ] || return 1
   root=$(real_dir "$PROJECTS" 2>/dev/null || true)
-  for project in "$PROJECTS"/*; do
-    [ -d "$project" ] && [ ! -L "$project" ] || continue
-    name=$(basename "$project")
-    if [ -n "$root" ] && path_under "$workspace" "$root/$name"; then
-      printf '%s\n' "$name"
-      return 0
-    fi
-    case "$workspace" in
-      */[0-9]*/"$name"|*/[0-9]*/"$name"/*)
+  if [ -n "$root" ]; then
+    for project in "$PROJECTS"/*; do
+      [ -d "$project" ] && [ ! -L "$project" ] || continue
+      name=$(basename "$project")
+      if path_under "$workspace" "$root/$name"; then
         printf '%s\n' "$name"
         return 0
-        ;;
-    esac
-  done
+      fi
+    done
+  fi
+  # A Treehouse slot path this home knows proves its own pool root; only
+  # <pool-root>/<slot>/<project> below one of those roots is attributable.
+  [ -n "$ALL_WORKTREES" ] && [ -f "$ALL_WORKTREES" ] || return 1
+  while IFS= read -r slot; do
+    [ -n "$slot" ] || continue
+    pool=$(dirname "$(dirname "$slot")")
+    case "$pool" in ''|.|/) continue ;; esac
+    path_under "$workspace" "$pool" || continue
+    rest=${workspace#"$pool"/}
+    case "$rest" in */*) ;; *) continue ;; esac
+    name=${rest#*/}; name=${name%%/*}
+    [ -n "$name" ] || continue
+    [ -d "$PROJECTS/$name" ] && [ ! -L "$PROJECTS/$name" ] || continue
+    printf '%s\n' "$name"
+    return 0
+  done < "$ALL_WORKTREES"
   return 1
 }
 
 cache_matches_worktree() {  # <cache> <worktree>
   local workspace
   workspace=$(plist_workspace "$1") || return 1
-  path_under "$workspace" "$2"
+  path_at_or_under "$workspace" "$2"
 }
 
 command_line_uses_path() {  # <path> [alias]; 0 means in use, 1 means clean, 2 unknown
@@ -387,33 +400,12 @@ safe_remove() {  # <path> <allowed-roots> <label>
   return 1
 }
 
-load_thresholds() {
-  local file="$CONFIG/disk-space-thresholds" line key value warn=20 wake=10 valid=1
-  [ -f "$file" ] && [ ! -L "$file" ] || { WARN_GB=$warn; WAKE_GB=$wake; return 0; }
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in ''|'#'*) continue ;; esac
-    key=${line%%=*}; value=${line#*=}
-    case "$key:$value" in
-      warn_gb:*[!0-9]*|wake_gb:*[!0-9]*|warn_gb:|wake_gb:) valid=0 ;;
-      warn_gb:*) warn=$value ;;
-      wake_gb:*) wake=$value ;;
-      *) valid=0 ;;
-    esac
-  done < "$file"
-  if [ "$valid" -ne 1 ] || [ "$warn" -le 0 ] || [ "$wake" -le 0 ] || [ "$wake" -gt "$warn" ]; then
-    printf 'warning: invalid %s; using warn_gb=20 and wake_gb=10\n' "$file" >&2
-    warn=20; wake=10
-  fi
-  WARN_GB=$warn
-  WAKE_GB=$wake
-}
-
 df_free_record() {  # <path> -> device<TAB>free-kib
   df -Pk "$1" 2>/dev/null | awk 'NR == 2 { print $1 "\t" $4 }'
 }
 
 print_cached_consumers() {
-  local cache="$STATE/disk-usage.cache" line bytes kind label shown=0
+  local cache="$STATE/disk-usage.cache" bytes kind label shown=0
   [ -f "$cache" ] && [ ! -L "$cache" ] || return 0
   while IFS=$'\t' read -r bytes kind label; do
     case "$bytes" in ''|*[!0-9]*) continue ;; esac
@@ -429,7 +421,6 @@ shell_quote() { printf '%q' "$1"; }
 
 check_space() {
   local seen_devices='' record device free_kib free_bytes warn_bytes wake_bytes path label low=0 critical=0
-  load_thresholds
   warn_bytes=$((WARN_GB * 1024 * 1024 * 1024))
   wake_bytes=$((WAKE_GB * 1024 * 1024 * 1024))
   for label in home temp; do
@@ -587,41 +578,11 @@ cleanup_derived_for_task() {  # <worktree>
     # only after its bytes mention this exact worktree.
     grep -Fq -- "$worktree" "$plist" 2>/dev/null || continue
     workspace=$(plist_workspace "$entry" 2>/dev/null || true)
-    if [ -z "$workspace" ] || ! path_under "$workspace" "$worktree"; then
+    if [ -z "$workspace" ] || ! path_at_or_under "$workspace" "$worktree"; then
       continue
     fi
     safe_remove "$entry" "$derived_real" "task DerivedData" || true
   done
-}
-
-valid_relative_glob() {
-  case "$1" in
-    ''|.|/*|../*|*/../*|*/..|..) return 1 ;;
-  esac
-  return 0
-}
-
-cleanup_idle_slot_outputs() {  # <worktree> <project>
-  local worktree=$1 project=$2 config="$CONFIG/idle-slot-clean" line name patterns pattern match
-  [ -n "$worktree" ] && [ -d "$worktree" ] && [ ! -L "$worktree" ] || return 0
-  [ -f "$config" ] && [ ! -L "$config" ] || return 0
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in ''|'#'*) continue ;; esac
-    case "$line" in *$'\t'*) ;; *) printf 'skip malformed idle-slot-clean row (tab required): %s\n' "$line" >&2; SAFE_SKIPPED=$((SAFE_SKIPPED + 1)); continue ;; esac
-    name=${line%%$'\t'*}; patterns=${line#*$'\t'}
-    [ "$name" = "$project" ] || continue
-    for pattern in $patterns; do
-      if ! valid_relative_glob "$pattern"; then
-        printf 'skip unsafe idle-slot glob for %s: %s\n' "$project" "$pattern" >&2
-        SAFE_SKIPPED=$((SAFE_SKIPPED + 1))
-        continue
-      fi
-      while IFS= read -r match; do
-        [ -e "$match" ] || continue
-        safe_remove "$match" "$worktree" "opted-in idle-slot output" || true
-      done < <(compgen -G "$worktree/$pattern" || true)
-    done
-  done < "$config"
 }
 
 log_totals() {  # <mode>
@@ -632,14 +593,12 @@ log_totals() {  # <mode>
 }
 
 cleanup_task() {
-  local project_name worktree_real
+  local worktree_real
   case "$TASK_ID" in ''|*[!A-Za-z0-9._-]*) echo "fm-disk-sweep: invalid task id" >&2; exit 2 ;; esac
   APPLY=1
   worktree_real=$(real_dir "$TASK_WORKTREE" 2>/dev/null || true)
-  project_name=$(basename "${TASK_PROJECT:-unknown}")
   cleanup_temp_for_task "$TASK_ID" "$worktree_real"
   cleanup_derived_for_task "$worktree_real"
-  cleanup_idle_slot_outputs "$worktree_real" "$project_name"
   log_totals cleanup-task
   printf 'disk cleanup %s: freed %s from %s cache path(s); skipped %s\n' \
     "$TASK_ID" "$(human_bytes "$SAFE_FREED")" "$SAFE_REMOVED" "$SAFE_SKIPPED"
@@ -730,7 +689,7 @@ workspace_has_live_task() {  # <WorkspacePath>
     [ -f "$meta" ] || continue
     wt=$(sed -n 's/^worktree=//p' "$meta" | tail -n 1)
     [ -n "$wt" ] || continue
-    path_under "$workspace" "$wt" && return 0
+    path_at_or_under "$workspace" "$wt" && return 0
   done
   return 1
 }
@@ -789,13 +748,10 @@ cache_add() {  # <file> <bytes> <kind> <label>
 }
 
 refresh_usage_cache() {
-  local tmp root candidate bytes id entry workspace project pool pools
+  local tmp root candidate bytes id entry workspace project
   mkdir -p "$STATE" 2>/dev/null || return 0
   USAGE_CACHE_TMP=$(mktemp "$STATE/.disk-usage.cache.XXXXXX" 2>/dev/null) || return 0
-  USAGE_POOLS_TMP=$(mktemp "${TMPDIR:-/tmp}/fm-disk-pools.XXXXXX") \
-    || { rm -f "$USAGE_CACHE_TMP"; USAGE_CACHE_TMP=; return 0; }
   tmp=$USAGE_CACHE_TMP
-  pools=$USAGE_POOLS_TMP
   while IFS= read -r root; do
     while IFS= read -r candidate; do
       [ -n "$candidate" ] || continue
@@ -818,14 +774,13 @@ refresh_usage_cache() {
     done
   fi
   if [ -n "$ALL_WORKTREES" ] && [ -f "$ALL_WORKTREES" ]; then
+    # Each slot is sized and attributed on its own, so projects sharing a pool
+    # root each keep their own row and one unattributable slot hides nobody.
     while IFS= read -r entry; do
       [ -n "$entry" ] || continue
-      pool=$(dirname "$(dirname "$entry")")
-      grep -Fxq -- "$pool" "$pools" 2>/dev/null && continue
-      printf '%s\n' "$pool" >> "$pools"
-      project=$(basename "$entry")
-      workspace_project "$entry" >/dev/null 2>&1 || continue
-      bytes=$(size_bytes "$pool" 2>/dev/null || printf '0')
+      project=$(workspace_project "$entry" 2>/dev/null || true)
+      [ -n "$project" ] || continue
+      bytes=$(size_bytes "$entry" 2>/dev/null || printf '0')
       cache_add "$tmp" "$bytes" treehouse "$project"
     done < "$ALL_WORKTREES"
   fi
@@ -834,9 +789,8 @@ refresh_usage_cache() {
     END { for (key in total) print total[key] FS key }
   ' "$tmp" | sort -t $'\t' -k1,1nr > "$tmp.sum"
   mv "$tmp.sum" "$STATE/disk-usage.cache"
-  rm -f "$tmp" "$tmp.sum" "$pools"
+  rm -f "$tmp" "$tmp.sum"
   USAGE_CACHE_TMP=
-  USAGE_POOLS_TMP=
 }
 
 free_bytes_for_home() {
@@ -849,7 +803,6 @@ free_bytes_for_home() {
 orphan_sweep() {
   local before after warn_bytes
   mkdir -p "$STATE" "$DATA" "$CONFIG" 2>/dev/null || true
-  load_thresholds
   before=$(free_bytes_for_home)
   collect_task_ids
   collect_available_worktrees

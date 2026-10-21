@@ -11,7 +11,7 @@ Start with the directory layout, then use the setting reference for the behavior
 | Task windows and worker tools | [Runtime backend](#runtime-backend-configbackend--fm_backend) and [harness support](#harness-support) |
 | Worker permissions, accounts, or environment | [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [worker account pin](#worker-account-pin-configclaude-account-configpi-account), [worker tool exclusions](#worker-tool-exclusions-configcrew-exclude-tools), and [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist) |
 | Backlog, preferences, and memory | [Backlog backend](#backlog-backend-taskstoml--configbacklog-backend), [captain preferences](#captain-preferences-datacaptainmd--datacaptain-sharedmd), and [startup memory budget](#startup-memory-budget-configstartup-memory-budget) |
-| Disk warnings and build-cache cleanup | [Disk hygiene](#disk-hygiene-configdisk-space-thresholds--configidle-slot-clean) |
+| Disk warnings and build-cache cleanup | [Disk hygiene](#disk-hygiene) |
 | Supervision and presentation | [Pi supervision branch](#pi-supervision-branch), [supervision host](#supervision-host-configsupervision-host), and [Calm preference](#calm-preference-configcalm) |
 | Persistent secondmates | [Secondmate routes](#secondmate-routes-datasecondmatesmd) |
 | Per-run overrides and tuning | [Environment variables](#environment-variables) |
@@ -587,7 +587,7 @@ The optional local, gitignored `config/pipeline-spend` presence flag opts this h
 When the flag is absent, teardown skips recording and the recorder exits before reading task metadata, no-mistakes state, or the spend ledger.
 An existing ledger is left untouched while recording is disabled.
 
-## Disk hygiene (config/disk-space-thresholds / config/idle-slot-clean)
+## Disk hygiene
 
 `bin/fm-disk-sweep.sh` owns low-space reporting, task-cache cleanup, and the conservative orphan sweep.
 The session-start digest runs its read-only space check with a two-second bound, and the watcher repeats that check every five minutes by default.
@@ -595,43 +595,29 @@ Healthy checks are silent.
 Below the warning threshold the digest names each affected volume, prints the largest cached consumers attributable to this home, and prints the safe apply command.
 Below the critical threshold the watcher also emits a durable `check: disk-space` wake, repeated at most every six hours while space stays critical.
 
-`config/disk-space-thresholds` is optional and accepts exactly these key/value lines in either order:
-
-```text
-warn_gb=20
-wake_gb=10
-```
-
-Both values are positive integer GiB thresholds, and `wake_gb` may not exceed `warn_gb`.
-The defaults are 20 GiB and 10 GiB.
-A malformed file falls back to both defaults and is reported rather than silently changing the safety posture.
+The warning threshold is 20 GiB free and the critical threshold is 10 GiB free.
+Neither is configurable, so every home reports low space on the same terms.
 
 The watcher starts `bin/fm-disk-sweep.sh --apply --watcher` once per day by default as a detached job bounded by `FM_DISK_SWEEP_TIMEOUT`, and a later watcher pass collects its report, so a slow size walk never delays wakes.
 The standalone command is a dry run unless `--apply` is present.
 The periodic apply mode deletes only two orphan categories.
 The first is structurally recognized temp Xcode caches older than 24 hours whose name, or parent directory name, carries a task id this home knows from `state/` or the backlog as a whole dash-, dot-, underscore-, or plus-delimited token, where no task the name carries is still live; a DerivedData layout must also record a WorkspacePath in one of this home's projects.
 The second is DerivedData entries older than seven days whose recorded WorkspacePath belongs to this home's projects, lies in no live task's worktree, and is missing or belongs to a Treehouse slot that Treehouse reports available.
+A WorkspacePath belongs to this home only when it lies below `projects/<name>`, or at `<pool-root>/<slot>/<name>` for a Treehouse pool root this home's own slot paths prove, so an unrelated path that merely happens to end in a project name is never attributed here.
 It never removes simulator runtimes or Treehouse pool slots.
 Every run appends totals to `state/disk-sweep.log`; warning attribution is cached in `state/disk-usage.cache` so session start never performs an unbounded size walk.
+Each Treehouse slot is sized and attributed to its own project, so projects sharing one pool root each keep their own row.
 A daily sweep wakes the firstmate only when it frees at least 10 GiB and the home volume remains below its warning threshold.
 
 Successful task teardown calls the same owner after landed-work checks and process reaping.
-It cleans structurally recognized task-named caches under `/tmp` and `/private/tmp` (a DerivedData layout whose `WorkspacePath` lies inside the task's worktree, or an `.xcresult` bundle layout), the task's recorded temporary root and home-bound launch namespace, global DerivedData whose `WorkspacePath` lies inside that task's worktree, and explicitly opted-in build output inside the worktree being returned.
+It cleans structurally recognized task-named caches under `/tmp` and `/private/tmp` (a DerivedData layout whose `WorkspacePath` is the task's worktree or lies inside it, or an `.xcresult` bundle layout), the task's recorded temporary root and home-bound launch namespace, and global DerivedData whose `WorkspacePath` is that task's worktree or lies inside it.
+Nothing inside a task worktree is ever removed.
 Task-named temp caches match the same delimited-token rule, and a cache whose name also carries another live task's id is left for that task.
 It prints one totals line and never changes `--force` authority or landed-work checks.
 
-Worktree build output is disabled by default.
-`config/idle-slot-clean` opts in one project per tab-separated line:
+A secondmate keeps both its launch namespace and its task temporary root until its endpoint is closed and every teardown refusal has passed, so a retry that preserves the secondmate home and route leaves a still-running agent's temporary root intact.
 
-```text
-hattie	.build/* DerivedData
-```
-
-The project name is the full field before the tab and may contain spaces.
-Each remaining whitespace-separated token is a glob relative to that project's worktree and may not contain whitespace.
-Absolute globs, `.`, and every `..` segment are refused, so a project-local key, `.env`, or other golden file is untouched unless a narrow project glob explicitly selects it.
-
-Immediately before every removal, the command re-proves that the candidate is a strict descendant of one of three allowed roots: a configured system temp root, the global Xcode DerivedData root, or the task worktree for an opted-in project glob.
+Immediately before every removal, the command re-proves that the candidate is a strict descendant of one of two allowed roots: a configured system temp root, or the global Xcode DerivedData root.
 It refuses symlinks and skips a candidate unless bounded whole-system `lsof` and `ps` listings both prove that no running process has the path, or anything below it, open or in its command line.
 Missing tools, timeouts, malformed plist provenance, ambiguous task ids, unreadable Treehouse state, and any path outside those roots all fail closed by retaining the candidate.
 
