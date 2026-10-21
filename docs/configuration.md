@@ -599,7 +599,7 @@ The warning threshold is 20 GiB free and the critical threshold is 10 GiB free.
 Neither is configurable, so every home reports low space on the same terms.
 
 The watcher starts `bin/fm-disk-sweep.sh --apply --watcher` once per day by default as a detached job bounded by `FM_DISK_SWEEP_TIMEOUT`, and a later watcher pass collects its report, so a slow size walk never delays wakes.
-The standalone command is a dry run unless `--apply` is present.
+The standalone sweep is a dry run unless `--apply` is present, while `--cleanup-task` always applies.
 The periodic apply mode deletes only two orphan categories.
 The first is structurally recognized temp Xcode caches older than 24 hours whose name, or parent directory name, carries a task id this home knows from `state/` or the backlog as a whole dash-, dot-, underscore-, or plus-delimited token, where no task the name carries is still live; a DerivedData layout must also record a WorkspacePath in one of this home's projects.
 The second is DerivedData entries older than seven days whose recorded WorkspacePath belongs to this home's projects, lies in no live task's worktree, and is missing or belongs to a Treehouse slot that Treehouse reports available.
@@ -608,7 +608,7 @@ It never removes simulator runtimes or Treehouse pool slots.
 Every run appends totals to `state/disk-sweep.log`; warning attribution is cached in `state/disk-usage.cache` so session start never performs an unbounded size walk.
 Each Treehouse slot is sized and attributed to its own project, so projects sharing one pool root each keep their own row.
 Sizing a candidate is bounded like every other probe here, so a walk that cannot finish reports that path's size as unknown and counts it apart from the freed total rather than as zero bytes.
-For the same reason the attribution record names itself partial when any probe could not finish, and a refresh whose probes all failed is discarded rather than published over the last good record.
+For the same reason the attribution record names itself partial when a size probe could not finish, and a refresh that attributed nothing is discarded rather than published over the last good record.
 A sweep never wakes the firstmate; the five-minute space check is the one owner of low-disk warnings and the critical wake.
 
 Successful task teardown calls the same owner after landed-work checks and process reaping.
