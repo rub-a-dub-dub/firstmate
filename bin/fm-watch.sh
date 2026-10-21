@@ -1520,8 +1520,6 @@ EOF
   return 0
 }
 
-# Drop each deferral chain independently so one active deferral can retire the
-# other chains without erasing its own re-surface throttle.
 # Drop a window's write-deferral chain wherever its stale bookkeeping resets, so
 # the bounded re-surface cadence is measured from the CURRENT quiet stretch and a
 # long-finished one cannot make the next deferral resurface immediately. The
