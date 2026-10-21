@@ -27,6 +27,10 @@
 # automatic backend without compatible tasks-axi refuses before cleanup.
 # None of this loosens the landed-work gates below: the transition runs only on
 # the paths that already proceed to remove the record.
+# After those gates pass and task processes are reaped, teardown delegates
+# regenerable build-cache cleanup to bin/fm-disk-sweep.sh --cleanup-task. That
+# script owns the allowed roots, structure and WorkspacePath provenance,
+# in-use refusal, and one-line freed-space report.
 # The close - and only the close - is replaced by `tasks-axi reopen` with the
 # deliverable recorded while the backlog item is still an open captain call
 # (bin/fm-captain-hold.sh `open` owns that predicate), because the policy holds
@@ -3647,6 +3651,16 @@ if [ "$KIND" != secondmate ] && teardown_owns_worktree; then
 elif [ "$KIND" != secondmate ]; then
   reap_task_worktree_processes tasktmp "$TASK_TMP"
 fi
+if [ "$KIND" != secondmate ]; then
+  DISK_CLEANUP_WORKTREE=
+  if teardown_owns_worktree && [ -d "$WT" ]; then
+    DISK_CLEANUP_WORKTREE=$WT
+  fi
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+    FM_DISK_TASK_TMP="$TASK_TMP" \
+    "$SCRIPT_DIR/fm-disk-sweep.sh" --cleanup-task "$ID" "$DISK_CLEANUP_WORKTREE" \
+    || echo "warning: task cache cleanup could not complete for $ID; teardown continues conservatively" >&2
+fi
 if [ "$KIND" = ship ] && teardown_owns_worktree && [ -e "$CONFIG/pipeline-spend" ]; then
   FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_CONFIG_OVERRIDE="$CONFIG" \
     "$SCRIPT_DIR/fm-pipeline-spend.sh" record "$ID" >/dev/null \
@@ -3839,29 +3853,14 @@ fi
 remove_grok_turnend_auth "$STATE" "$ID" || exit 1
 remove_kimi_turnend_auth "$STATE" "$ID" || exit 1
 fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
-# Remove the per-task temp root (/tmp/fm-<id>/, incl. its gotmp/) recorded by spawn.
-# Read before the state-file rm below; empty (pre-fix tasks without tasktmp=) is a no-op.
-[ -n "$TASK_TMP" ] && rm -rf "$TASK_TMP"
-# Retire only this Firstmate home's launch namespace. Its never-reused per-spawn
-# files leave the equal task-id namespace of every other home untouched.
-teardown_launch_home_token() {
-  local home=$1 root hash
-  root=$(cd "$home" 2>/dev/null && pwd -P) || root=$home
-  if command -v shasum >/dev/null 2>&1; then
-    hash=$(printf '%s' "$root" | shasum -a 256 | awk '{print $1}')
-  elif command -v sha256sum >/dev/null 2>&1; then
-    hash=$(printf '%s' "$root" | sha256sum | awk '{print $1}')
-  else
-    return 1
-  fi
-  case "$hash" in
-    *[!0-9a-fA-F]*|'') return 1 ;;
-  esac
-  printf '%s' "$hash"
-}
-LAUNCH_HOME_TOKEN=$(teardown_launch_home_token "$FM_HOME") || LAUNCH_HOME_TOKEN=
-if [ -n "$LAUNCH_HOME_TOKEN" ]; then
-  rm -rf "/tmp/fm-$ID+$LAUNCH_HOME_TOKEN"
+# A secondmate's spawn stages a launch namespace and a task temp root under
+# /tmp like any other kind, but its agent owns both until the endpoint is
+# closed and every refusal above has passed, so its cleanup runs only here.
+if [ "$KIND" = secondmate ]; then
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+    FM_DISK_TASK_TMP="$TASK_TMP" \
+    "$SCRIPT_DIR/fm-disk-sweep.sh" --cleanup-task "$ID" "" \
+    || echo "warning: task cache cleanup could not complete for $ID; teardown continues conservatively" >&2
 fi
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
