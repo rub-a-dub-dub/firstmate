@@ -42,12 +42,9 @@ trap cleanup EXIT
 
 TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/fm-gotmp-tests.XXXXXX")
 
-# The removal owner re-proves every candidate below an allowed temp root, so this
-# fixture's root (under $TMPDIR, not /tmp) has to be the allowed root here. Its
-# in-use proof runs whole-system lsof and ps listings, whose latency on a loaded
-# host must not be mistaken for an unprovable open state.
+# The removal owner re-proves the recorded temp root below an allowed temp root,
+# so this fixture's root (under $TMPDIR, not /tmp) has to be the allowed root.
 export FM_DISK_TEMP_ROOTS="$TMP_ROOT"
-export FM_DISK_IN_USE_TIMEOUT=120
 
 # Build a fake FM_HOME/FM_ROOT so the real fm-teardown.sh (symlinked in) resolves
 # state and helper scripts inside it. Stub the helper scripts fm-teardown calls so no

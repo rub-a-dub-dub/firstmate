@@ -610,7 +610,7 @@ Each Treehouse slot is sized and attributed to its own project, so projects shar
 A daily sweep wakes the firstmate only when it frees at least 10 GiB and the home volume remains below its warning threshold.
 
 Successful task teardown calls the same owner after landed-work checks and process reaping.
-It cleans structurally recognized task-named caches under `/tmp` and `/private/tmp` (a DerivedData layout whose `WorkspacePath` is the task's worktree or lies inside it, or an `.xcresult` bundle layout), the task's recorded temporary root and home-bound launch namespace, and global DerivedData whose `WorkspacePath` is that task's worktree or lies inside it.
+It cleans structurally recognized task-named caches under `/tmp` and `/private/tmp` (a DerivedData layout whose `WorkspacePath` is the task's worktree or lies inside it), the task's recorded temporary root and home-bound launch namespace, and global DerivedData whose `WorkspacePath` is that task's worktree or lies inside it.
 Nothing inside a task worktree is ever removed.
 Task-named temp caches match the same delimited-token rule, and a cache whose name also carries another live task's id is left for that task.
 It prints one totals line and never changes `--force` authority or landed-work checks.
@@ -618,8 +618,10 @@ It prints one totals line and never changes `--force` authority or landed-work c
 A secondmate keeps both its launch namespace and its task temporary root until its endpoint is closed and every teardown refusal has passed, so a retry that preserves the secondmate home and route leaves a still-running agent's temporary root intact.
 
 Immediately before every removal, the command re-proves that the candidate is a strict descendant of one of two allowed roots: a configured system temp root, or the global Xcode DerivedData root.
-It refuses symlinks and skips a candidate unless bounded whole-system `lsof` and `ps` listings both prove that no running process has the path, or anything below it, open or in its command line.
+It refuses symlinks and skips an inferred candidate unless bounded whole-system `lsof` and `ps` listings both prove that no running process has the path, or anything below it, open or in its command line.
 Missing tools, timeouts, malformed plist provenance, ambiguous task ids, unreadable Treehouse state, and any path outside those roots all fail closed by retaining the candidate.
+The task's recorded temporary root and its home-bound launch namespace are the exception, because this fleet created each of them for that one task and teardown's landed-work gates and process reap are the authority to retire them.
+They carry the allowed-root and symlink re-proof, and teardown removes them whether or not the in-use listings complete, so a loaded machine cannot leak them permanently.
 
 ## Turn-end pane-churn absorb (config/turnend-churn-absorb)
 

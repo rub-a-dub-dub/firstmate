@@ -22,7 +22,10 @@
 # process reap. It removes recognized task-named temp caches, the exact recorded
 # task temp root, this home's per-launch temp namespace, and DerivedData whose
 # WorkspacePath is the returned worktree or lies inside it. Nothing inside a
-# task worktree is ever removed.
+# task worktree is ever removed. The temp root and the launch namespace are
+# created by this fleet for this task alone and are named exactly, so teardown
+# removes them on its own authority; every other candidate is inferred from a
+# path this script did not create and carries the full proof below.
 #
 # Safety contract:
 #   - every candidate is re-proved below an allowed root immediately before rm;
@@ -32,16 +35,15 @@
 #     the name carries to be known here and not live;
 #   - symlinks, root directories, malformed globs, and candidates without
 #     structural or plist provenance are skipped;
-#   - lsof and ps must both complete and prove no running process has the path
-#     (or anything below it) open or in its command line; a missing tool,
-#     timeout, or read error skips. One whole-system lsof listing is reused for
-#     at most ten seconds, because a per-tree `lsof +D` walk of a multi-GiB
-#     DerivedData entry is slower than any useful bound;
+#   - for an inferred candidate, lsof and ps must both complete and prove no
+#     running process has the path (or anything below it) open or in its
+#     command line; a missing tool, timeout, or read error skips. One
+#     whole-system lsof listing is reused for at most ten seconds, because a
+#     per-tree `lsof +D` walk of a multi-GiB DerivedData entry is slower than
+#     any useful bound;
 #   - temp candidates require a DerivedData layout (Build/ plus info.plist),
 #     whose WorkspacePath must identify the task worktree (teardown) or one of
-#     this home's projects (sweep), or an .xcresult bundle layout (Data/ plus
-#     Info.plist or Staging/), which carries no WorkspacePath and is attributed
-#     by its task-id-bearing name alone;
+#     this home's projects (sweep);
 #   - simulator runtimes and Treehouse pool slots are never deleted here.
 #
 # Durable local records:
@@ -205,29 +207,18 @@ plist_workspace() {  # <entry>
 recognized_xcode_cache() {  # <directory>
   local dir=$1
   [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
-  case "$dir" in
-    *.xcresult)
-      # A finished bundle has Info.plist; one still being written has Staging/.
-      [ -d "$dir/Data" ] && [ ! -L "$dir/Data" ] || return 1
-      { [ -f "$dir/Info.plist" ] && [ ! -L "$dir/Info.plist" ]; } \
-        || { [ -d "$dir/Staging" ] && [ ! -L "$dir/Staging" ]; }
-      ;;
-    *)
-      [ -d "$dir/Build" ] && [ ! -L "$dir/Build" ] \
-        && [ -f "$dir/info.plist" ] && [ ! -L "$dir/info.plist" ]
-      ;;
-  esac
+  [ -d "$dir/Build" ] && [ ! -L "$dir/Build" ] \
+    && [ -f "$dir/info.plist" ] && [ ! -L "$dir/info.plist" ]
 }
 
 temp_cache_candidates() {  # <real-temp-root>; prints outermost recognized caches
   local root=$1 hit dir
   # Locate cache structure directly instead of testing every temp directory.
   find "$root" -xdev -mindepth 1 -maxdepth 5 \
-    \( -type d -name '*.xcresult' -print0 -prune \) -o \
-    \( -type d -name Build -prune -print0 \) 2>/dev/null \
+    -type d -name Build -prune -print0 2>/dev/null \
     | while IFS= read -r -d '' hit; do
         case "$hit" in *$'\n'*|*$'\r'*) continue ;; esac
-        case "$hit" in */Build) dir=${hit%/Build} ;; *) dir=$hit ;; esac
+        dir=${hit%/Build}
         recognized_xcode_cache "$dir" && printf '%s\n' "$dir"
       done \
     | LC_ALL=C sort -u \
@@ -378,6 +369,11 @@ safe_remove() {  # <path> <allowed-roots> <label>
       return 1
     fi
   fi
+  commit_remove "$path" "$label"
+}
+
+commit_remove() {  # <path> <label>; the candidate is already proved
+  local path=$1 label=$2 bytes
   bytes=$(size_bytes "$path" 2>/dev/null || printf '0')
   case "$bytes" in ''|*[!0-9]*) bytes=0 ;; esac
   SWEEP_CANDIDATES=$((SWEEP_CANDIDATES + 1))
@@ -396,6 +392,21 @@ safe_remove() {  # <path> <allowed-roots> <label>
   printf 'skip removal-failed %s: %s\n' "$label" "$path" >&2
   SAFE_SKIPPED=$((SAFE_SKIPPED + 1))
   return 1
+}
+
+# A path this fleet created for exactly this task, named exactly, and handed to
+# teardown to retire. Teardown's landed-work gates and process reap are its
+# authority, so it carries the allowed-root and symlink re-proof but not the
+# whole-system in-use listings, which fail closed and would leak it forever.
+remove_owned_root() {  # <path> <allowed-roots> <label>
+  local path=$1 roots=$2 label=$3
+  [ -e "$path" ] || return 0
+  if ! allowed_candidate "$path" "$roots"; then
+    printf 'skip unsafe path outside allowed roots: %s\n' "$path" >&2
+    SAFE_SKIPPED=$((SAFE_SKIPPED + 1))
+    return 1
+  fi
+  commit_remove "$path" "$label"
 }
 
 df_free_record() {  # <path> -> device<TAB>free-kib
@@ -530,14 +541,9 @@ cleanup_temp_for_task() {  # <id> <worktree>
       done <<EOF
 $others
 EOF
-      case "$candidate" in
-        *.xcresult) ;;
-        *)
-          if [ -z "$worktree" ] || ! cache_matches_worktree "$candidate" "$worktree"; then
-            continue
-          fi
-          ;;
-      esac
+      if [ -z "$worktree" ] || ! cache_matches_worktree "$candidate" "$worktree"; then
+        continue
+      fi
       safe_remove "$candidate" "$TEMP_ROOTS" "task temp cache" || true
     done < <(
       compgen -G "$root/*$id*" || true
@@ -546,14 +552,14 @@ EOF
   done < <(unique_temp_roots)
 
   if [ -n "$TASK_TMP" ]; then
-    case "$TASK_TMP" in *"$id"*) safe_remove "$TASK_TMP" "$TEMP_ROOTS" "recorded task temp root" || true ;; esac
+    case "$TASK_TMP" in *"$id"*) remove_owned_root "$TASK_TMP" "$TEMP_ROOTS" "recorded task temp root" || true ;; esac
   fi
   hash=$(home_hash 2>/dev/null || true)
   if [ -n "$hash" ]; then
     while IFS= read -r root; do
       launch="$root/fm-$id+$hash"
       [ -e "$launch" ] || continue
-      safe_remove "$launch" "$TEMP_ROOTS" "task launch temp root" || true
+      remove_owned_root "$launch" "$TEMP_ROOTS" "task launch temp root" || true
     done < <(unique_temp_roots)
   fi
 }
@@ -706,16 +712,11 @@ $ids
 EOF
       [ "$live" -eq 0 ] || continue
       id=$(printf '%s\n' "$ids" | awk '{ print length($0) "\t" $0 }' | sort -rn | head -n 1 | cut -f2)
-      # A DerivedData layout must also record a workspace in one of this
-      # home's projects; its slot may since serve another task, so slot state
-      # is not consulted. A result bundle records no workspace.
-      case "$candidate" in
-        *.xcresult) ;;
-        *)
-          workspace=$(plist_workspace "$candidate" 2>/dev/null || true)
-          [ -n "$workspace" ] && workspace_project "$workspace" >/dev/null || continue
-          ;;
-      esac
+      # The layout must also record a workspace in one of this home's
+      # projects; its slot may since serve another task, so slot state is not
+      # consulted.
+      workspace=$(plist_workspace "$candidate" 2>/dev/null || true)
+      [ -n "$workspace" ] && workspace_project "$workspace" >/dev/null || continue
       safe_remove "$candidate" "$TEMP_ROOTS" "orphan task temp cache ($id)" || true
     done < <(temp_cache_candidates "$root")
   done < <(unique_temp_roots)

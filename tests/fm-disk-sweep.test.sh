@@ -3,7 +3,8 @@
 #
 # Covers task teardown cleanup for a task that owns a worktree and for a
 # secondmate that owns none, orphan-sweep age/live-state rules, process-use
-# refusal, wrong-root refusal, Xcode cache structure and WorkspacePath
+# refusal for inferred candidates, unconditional removal of the two temp roots
+# teardown owns, wrong-root refusal, Xcode cache structure and WorkspacePath
 # provenance (including a WorkspacePath equal to the worktree root),
 # DerivedData matching, refusal to touch anything inside a worktree, Treehouse
 # pool-root attribution of orphan and consumer rows, the available-versus-busy
@@ -82,9 +83,9 @@ plist() {  # <entry> <workspace> [capitalized]
     "<string>$workspace</string></dict></plist>" > "$entry/$file"
 }
 
-xcresult() {  # <bundle> [staging]
+xcresult() {  # <bundle>; an Xcode result bundle, which records no WorkspacePath
   mkdir -p "$1/Data"
-  if [ "${2:-}" = staging ]; then mkdir -p "$1/Staging"; else printf '<plist/>\n' > "$1/Info.plist"; fi
+  printf '<plist/>\n' > "$1/Info.plist"
 }
 
 old() {
@@ -103,7 +104,7 @@ run_sweep() {  # <case> [args...]
 }
 
 test_task_cleanup_rules() {
-  local dir wt out task_tmp
+  local dir wt out task_tmp launch
   dir=$(make_case cleanup)
   wt="$dir/wt"
   mkdir -p "$wt/build-cache/a" "$wt/keep"
@@ -112,11 +113,9 @@ test_task_cleanup_rules() {
   mkdir -p "$dir/temp/attempt-task-a/Build"
   plist "$dir/temp/attempt-task-a" "$wt/App.xcodeproj"
   xcresult "$dir/temp/result-task-a.xcresult"
-  xcresult "$dir/temp/run-task-a.xcresult" staging
-  mkdir -p "$dir/temp/fake-task-a.xcresult"
-  xcresult "$dir/temp/mytask-abc.xcresult"
   printf 'worktree=%s\n' "$dir/sibling-wt" > "$dir/home/state/task-a-ui.meta"
-  xcresult "$dir/temp/task-a-ui-Run.xcresult"
+  mkdir -p "$dir/temp/task-a-ui-Run/Build"
+  plist "$dir/temp/task-a-ui-Run" "$wt/App.xcodeproj"
   mkdir -p "$dir/temp/name-only-task-a"
   printf 'not a cache\n' > "$dir/temp/name-only-task-a/file"
   mkdir -p "$dir/temp/in-use-task-a/Build"
@@ -141,27 +140,34 @@ test_task_cleanup_rules() {
   task_tmp="$dir/temp/fm-task-a"
   mkdir -p "$task_tmp"
   printf 'temporary\n' > "$task_tmp/file"
+  launch="$dir/temp/fm-task-a+$(home_hash_for "$dir/home")"
+  mkdir -p "$launch"
+  printf 'launch\n' > "$launch/command"
 
-  out=$(FM_FAKE_LSOF_FAIL=1 run_sweep "$dir" --cleanup-task task-a "$wt" 2>&1)
+  # A whole-system listing that cannot complete must retain every inferred
+  # candidate, and must not strand the two roots teardown created itself.
+  out=$(PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_FAKE_LSOF_ROOT="$dir" \
+    FM_DISK_TEMP_ROOTS="$dir/temp" FM_DISK_DERIVED_DATA_ROOT="$dir/derived" \
+    FM_DISK_TASK_TMP="$task_tmp" FM_FAKE_LSOF_FAIL=1 \
+    "$SWEEP" --cleanup-task task-a "$wt" 2>&1)
   [ -e "$dir/temp/attempt-task-a" ] || fail "cache was deleted although open files could not be listed"
+  [ -e "$dir/derived/Demo-task-a" ] || fail "DerivedData was deleted although open files could not be listed"
   assert_contains "$out" "skip unprovable-open-state" "failed open-file listing was not reported as a refusal"
+  [ ! -e "$task_tmp" ] || fail "recorded task temp root was stranded by a failed open-file listing"
+  [ ! -e "$launch" ] || fail "launch temp namespace was stranded by a failed open-file listing"
 
   out=$(PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_FAKE_LSOF_ROOT="$dir" \
     FM_DISK_TEMP_ROOTS="$dir/temp" FM_DISK_DERIVED_DATA_ROOT="$dir/derived" \
-    FM_DISK_TASK_TMP="$task_tmp" \
     FM_FAKE_PS_PATH="$dir/temp/cmdline-task-a" \
     "$SWEEP" --cleanup-task task-a "$wt" 2>&1)
 
   [ ! -e "$dir/temp/attempt-task-a" ] || fail "recognized task DerivedData temp cache was retained"
-  [ ! -e "$dir/temp/result-task-a.xcresult" ] || fail "task xcresult was retained"
-  [ ! -e "$dir/temp/run-task-a.xcresult" ] || fail "in-progress task xcresult was retained"
-  [ -e "$dir/temp/fake-task-a.xcresult" ] || fail "xcresult-named directory without bundle layout was deleted"
-  [ -e "$dir/temp/mytask-abc.xcresult" ] || fail "a bundle whose name only embeds the id inside another word was deleted"
-  [ -e "$dir/temp/task-a-ui-Run.xcresult" ] || fail "a live sibling task's bundle was deleted"
+  [ -e "$dir/temp/result-task-a.xcresult" ] \
+    || fail "a result bundle was deleted on its task-id-bearing name, with no WorkspacePath to prove whose it is"
+  [ -e "$dir/temp/task-a-ui-Run" ] || fail "a live sibling task's cache was deleted"
   assert_contains "$out" "skip cache also named for live task task-a-ui" "live sibling refusal was not reported"
   [ ! -e "$dir/derived/Demo-task-a" ] || fail "matching global DerivedData was retained"
   [ ! -e "$dir/derived/Package-task-a" ] || fail "DerivedData whose WorkspacePath is the worktree root was retained"
-  [ ! -e "$task_tmp" ] || fail "recorded task temp root was retained"
   [ -e "$dir/temp/name-only-task-a" ] || fail "bare task-name match was deleted"
   [ -e "$dir/temp/in-use-task-a" ] || fail "lsof-held cache was deleted"
   [ -e "$dir/temp/cmdline-task-a" ] || fail "command-line-held cache was deleted"
@@ -209,7 +215,8 @@ test_secondmate_cleanup_without_a_worktree() {
 
   [ ! -e "$task_tmp" ] || fail "secondmate cleanup retained the recorded task temp root"
   [ ! -e "$launch" ] || fail "secondmate cleanup retained this home's launch namespace"
-  [ ! -e "$dir/temp/run-design.xcresult" ] || fail "secondmate cleanup retained the task's result bundle"
+  [ -e "$dir/temp/run-design.xcresult" ] \
+    || fail "secondmate cleanup deleted a result bundle on its name alone"
   [ -e "$dir/temp/attempt-design" ] \
     || fail "a DerivedData-layout temp cache was deleted with no worktree to prove its WorkspacePath"
   [ -e "$dir/derived/Demo-design" ] || fail "global DerivedData was deleted with no worktree to match"
@@ -250,8 +257,6 @@ test_orphan_sweep_rules_and_default_dry_run() {
   mkdir -p "$dir/temp/reused-slot-old-task/Build"
   plist "$dir/temp/reused-slot-old-task" "$live_wt/App.xcodeproj"
   old "$dir/temp/reused-slot-old-task"
-  xcresult "$dir/temp/old-task-Run.xcresult"
-  old "$dir/temp/old-task-Run.xcresult"
   mkdir -p "$dir/temp/foreign-old-task/Build"
   plist "$dir/temp/foreign-old-task" "$dir/elsewhere/App.xcodeproj"
   old "$dir/temp/foreign-old-task"
@@ -306,7 +311,6 @@ test_orphan_sweep_rules_and_default_dry_run() {
   out=$(FM_FAKE_SLOTS="$slots" run_sweep "$dir" --apply 2>&1)
   [ ! -e "$dir/temp/cache-old-task" ] || fail "old orphan temp cache was retained"
   [ ! -e "$dir/temp/reused-slot-old-task" ] || fail "done task's cache was retained because its slot was reused"
-  [ ! -e "$dir/temp/old-task-Run.xcresult" ] || fail "old done-task xcresult was retained"
   [ -e "$dir/temp/foreign-old-task" ] || fail "cache recording another home's workspace was deleted"
   [ -e "$dir/temp/cache-unknown-task" ] || fail "cache for a task id unknown to this home was deleted"
   [ -e "$dir/temp/cache-backlog-task" ] || fail "cache for a task the backlog lists as in flight was deleted"
