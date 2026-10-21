@@ -1475,7 +1475,12 @@ families_for_changed_path() {
       printf '%s\n' pure-contract-unit
       ;;
     bin/fm-disk-sweep.sh)
+      # The owner of teardown's task-cache cleanup must select the suites that
+      # prove both delegation call sites, the way the bin/fm-teardown.sh arm
+      # below does: the seam between the two scripts breaks from either side.
       printf '%s\n' "__script__:fm-disk-sweep.test.sh"
+      printf '%s\n' "__script__:fm-gotmp.test.sh"
+      printf '%s\n' "__script__:fm-secondmate-lifecycle-e2e.test.sh"
       ;;
     bin/fm-watch*|bin/fm-wake*|bin/fm-inactive-reconcile.sh|\
     bin/fm-classify-lib.sh|bin/fm-daemon*|bin/fm-turnend-guard*|bin/fm-guard.sh)

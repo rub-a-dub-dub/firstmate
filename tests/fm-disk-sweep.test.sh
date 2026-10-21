@@ -3,7 +3,8 @@
 #
 # Covers task teardown cleanup for a task that owns a worktree and for a
 # secondmate that owns none, orphan-sweep age/live-state rules, process-use
-# refusal for inferred candidates, unconditional removal of the two temp roots
+# refusal for inferred candidates, honest reporting when a bounded size probe
+# cannot finish, unconditional removal of the two temp roots
 # teardown owns, wrong-root refusal, Xcode cache structure and WorkspacePath
 # provenance (including a WorkspacePath equal to the worktree root),
 # DerivedData matching, refusal to touch anything inside a worktree, Treehouse
@@ -222,6 +223,34 @@ test_secondmate_cleanup_without_a_worktree() {
   [ -e "$dir/derived/Demo-design" ] || fail "global DerivedData was deleted with no worktree to match"
   assert_contains "$out" "disk cleanup design: freed" "cleanup did not print one freed-space summary"
   pass "cleanup for a secondmate with no worktree clears its temp roots and touches no DerivedData"
+}
+
+# state/disk-sweep.log is this script's documented durable record: one
+# `removed=<label>\tbytes=<size>\tpath=<path>` row per removed path.
+test_unmeasurable_size_is_not_reported_as_zero() {
+  local dir out task_tmp
+  dir=$(make_case unsized)
+  # The size probe is bounded; a walk of a multi-GiB tree that outruns its
+  # bound leaves fm_run_timed with a nonzero status, exactly as this stands in.
+  cat > "$dir/fakebin/du" <<'SH'
+#!/usr/bin/env bash
+exit 124
+SH
+  chmod +x "$dir/fakebin/du"
+  task_tmp="$dir/temp/fm-slow"
+  mkdir -p "$task_tmp"
+  printf 'temporary\n' > "$task_tmp/file"
+
+  out=$(FM_DISK_TASK_TMP="$task_tmp" run_sweep "$dir" --cleanup-task slow "" 2>&1) \
+    || fail "cleanup failed when the size probe could not finish: $out"
+
+  [ ! -e "$task_tmp" ] || fail "an unmeasurable path was not removed"
+  assert_contains "$out" "1 removed path(s) of unmeasured size" \
+    "the summary hid that a removed path's size could not be measured"
+  assert_grep 'bytes=unknown' "$dir/home/state/disk-sweep.log" \
+    "the durable record logged an unmeasurable size as a measured value"
+  assert_not_contains "$out" "freed 1" "an unmeasured path was counted into the freed total"
+  pass "a removed path whose bounded size probe cannot finish is reported as unmeasured, not as zero bytes"
 }
 
 test_orphan_sweep_rules_and_default_dry_run() {
@@ -469,6 +498,7 @@ test_watcher_wakes_once_and_collects_detached_sweep() {
 
 test_task_cleanup_rules
 test_secondmate_cleanup_without_a_worktree
+test_unmeasurable_size_is_not_reported_as_zero
 test_orphan_sweep_rules_and_default_dry_run
 test_usage_cache_attributes_each_slot_to_its_own_project
 test_low_disk_thresholds

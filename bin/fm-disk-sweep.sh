@@ -80,6 +80,7 @@ TASK_ID=
 TASK_WORKTREE=
 TASK_TMP=${FM_DISK_TASK_TMP:-}
 SAFE_FREED=0
+SAFE_UNSIZED=0
 SAFE_REMOVED=0
 SAFE_SKIPPED=0
 SWEEP_CANDIDATES=0
@@ -373,25 +374,38 @@ safe_remove() {  # <path> <allowed-roots> <label>
 }
 
 commit_remove() {  # <path> <label>; the candidate is already proved
-  local path=$1 label=$2 bytes
-  bytes=$(size_bytes "$path" 2>/dev/null || printf '0')
-  case "$bytes" in ''|*[!0-9]*) bytes=0 ;; esac
+  local path=$1 label=$2 bytes sized=1 shown
+  # The size probe is bounded and the walk of a multi-GiB tree can outrun it.
+  # An unfinished walk is not a measured zero, so it is reported and logged as
+  # unknown rather than folded into the freed total.
+  bytes=$(size_bytes "$path" 2>/dev/null) || sized=0
+  case "$bytes" in ''|*[!0-9]*) bytes=0; sized=0 ;; esac
+  if [ "$sized" -eq 1 ]; then shown=$(human_bytes "$bytes"); else shown=unknown; fi
   SWEEP_CANDIDATES=$((SWEEP_CANDIDATES + 1))
   if [ "$APPLY" -eq 0 ]; then
-    printf 'would remove %s: %s (%s)\n' "$label" "$path" "$(human_bytes "$bytes")"
+    printf 'would remove %s: %s (%s)\n' "$label" "$path" "$shown"
     return 0
   fi
   if rm -rf -- "$path"; then
-    SAFE_FREED=$((SAFE_FREED + bytes))
+    if [ "$sized" -eq 1 ]; then
+      SAFE_FREED=$((SAFE_FREED + bytes))
+    else
+      SAFE_UNSIZED=$((SAFE_UNSIZED + 1))
+    fi
     SAFE_REMOVED=$((SAFE_REMOVED + 1))
     mkdir -p "$STATE" 2>/dev/null || true
     printf '%s\tmode=%s\tremoved=%s\tbytes=%s\tpath=%s\n' \
-      "$(epoch_now)" "$MODE" "$label" "$bytes" "$path" >> "$STATE/disk-sweep.log" 2>/dev/null || true
+      "$(epoch_now)" "$MODE" "$label" "$shown" "$path" >> "$STATE/disk-sweep.log" 2>/dev/null || true
     return 0
   fi
   printf 'skip removal-failed %s: %s\n' "$label" "$path" >&2
   SAFE_SKIPPED=$((SAFE_SKIPPED + 1))
   return 1
+}
+
+unsized_note() {
+  [ "$SAFE_UNSIZED" -gt 0 ] || return 0
+  printf ' (%s removed path(s) of unmeasured size)' "$SAFE_UNSIZED"
 }
 
 # A path this fleet created for exactly this task, named exactly, and handed to
@@ -587,8 +601,9 @@ cleanup_derived_for_task() {  # <worktree>
 
 log_totals() {  # <mode>
   mkdir -p "$STATE" 2>/dev/null || return 0
-  printf '%s\tmode=%s\tapply=%s\tcandidates=%s\tremoved=%s\tskipped=%s\tfreed_bytes=%s\n' \
+  printf '%s\tmode=%s\tapply=%s\tcandidates=%s\tremoved=%s\tskipped=%s\tfreed_bytes=%s\tunsized=%s\n' \
     "$(epoch_now)" "$1" "$APPLY" "$SWEEP_CANDIDATES" "$SAFE_REMOVED" "$SAFE_SKIPPED" "$SAFE_FREED" \
+    "$SAFE_UNSIZED" \
     >> "$STATE/disk-sweep.log" 2>/dev/null || true
 }
 
@@ -600,8 +615,8 @@ cleanup_task() {
   cleanup_temp_for_task "$TASK_ID" "$worktree_real"
   cleanup_derived_for_task "$worktree_real"
   log_totals cleanup-task
-  printf 'disk cleanup %s: freed %s from %s cache path(s); skipped %s\n' \
-    "$TASK_ID" "$(human_bytes "$SAFE_FREED")" "$SAFE_REMOVED" "$SAFE_SKIPPED"
+  printf 'disk cleanup %s: freed %s from %s cache path(s)%s; skipped %s\n' \
+    "$TASK_ID" "$(human_bytes "$SAFE_FREED")" "$SAFE_REMOVED" "$(unsized_note)" "$SAFE_SKIPPED"
 }
 
 collect_task_ids() {
@@ -788,34 +803,18 @@ refresh_usage_cache() {
   USAGE_CACHE_TMP=
 }
 
-free_bytes_for_home() {
-  local record value
-  record=$(df_free_record "$FM_HOME" 2>/dev/null || true)
-  value=${record#*$'\t'}
-  case "$value" in ''|*[!0-9]*) printf '0\n' ;; *) printf '%s\n' "$((value * 1024))" ;; esac
-}
-
 orphan_sweep() {
-  local before after warn_bytes
   mkdir -p "$STATE" "$DATA" 2>/dev/null || true
-  before=$(free_bytes_for_home)
   collect_task_ids
   collect_available_worktrees
   sweep_temp
   sweep_derived
   refresh_usage_cache
   log_totals orphan-sweep
-  printf 'disk sweep: %s candidate(s), removed %s, skipped %s, freed %s%s\n' \
+  printf 'disk sweep: %s candidate(s), removed %s, skipped %s, freed %s%s%s\n' \
     "$SWEEP_CANDIDATES" "$SAFE_REMOVED" "$SAFE_SKIPPED" "$(human_bytes "$SAFE_FREED")" \
+    "$(unsized_note)" \
     "$([ "$APPLY" -eq 1 ] && printf '' || printf ' (dry run)')"
-  if [ "$WATCHER" -eq 1 ] && [ "$APPLY" -eq 1 ] && [ "$SAFE_FREED" -ge $((10 * 1024 * 1024 * 1024)) ]; then
-    after=$(free_bytes_for_home)
-    warn_bytes=$((WARN_GB * 1024 * 1024 * 1024))
-    if [ "$before" -lt "$warn_bytes" ] && [ "$after" -lt "$warn_bytes" ]; then
-      printf 'wake: disk sweep freed %s but this home remains below its %s GiB warning threshold\n' \
-        "$(human_bytes "$SAFE_FREED")" "$WARN_GB"
-    fi
-  fi
 }
 
 case "$MODE" in

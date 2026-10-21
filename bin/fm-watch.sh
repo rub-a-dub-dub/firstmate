@@ -2796,8 +2796,8 @@ resurface_after_downtime() {
 # attribution can take minutes on a large pool, so it runs detached under its
 # own bound and a later tick collects the finished report, the same way the
 # other slow watcher work stays off the wake-delivery path. Warning-only output
-# stays in triage; only the script's explicit critical or large-low-space wake
-# line enters the durable queue.
+# stays in triage; only the script's explicit critical wake line enters the
+# durable queue.
 disk_report_lines() {  # <report text>; triage-logs lines, prints a wake reason
   local line reason=
   while IFS= read -r line; do
