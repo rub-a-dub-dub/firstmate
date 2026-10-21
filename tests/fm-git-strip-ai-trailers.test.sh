@@ -215,39 +215,6 @@ test_project_hook_generated_after_install_still_runs() {
   pass "a project hook that appears after install still runs for the rest of the task"
 }
 
-test_copied_wrapper_does_not_chain_itself() {
-  local repo hooks copied pid attempts rc
-  repo="$TMP_ROOT/copied-wrapper"
-  make_repo "$repo"
-  hooks="$TMP_ROOT/hooks-copied-wrapper"
-  "$STRIP" install "$hooks" "$repo" || fail "install should succeed"
-  copied="$repo/.beads/hooks"
-  mkdir -p "$copied"
-  cp "$hooks/prepare-commit-msg" "$copied/prepare-commit-msg"
-  chmod 700 "$copied/prepare-commit-msg"
-  git -C "$repo" config core.hooksPath .beads/hooks
-
-  (
-    cd "$repo" || exit 1
-    "$copied/prepare-commit-msg" "$repo/.git/COMMIT_EDITMSG"
-  ) &
-  pid=$!
-  attempts=0
-  while kill -0 "$pid" 2>/dev/null && [ "$attempts" -lt 100 ]; do
-    sleep 0.05
-    attempts=$((attempts + 1))
-  done
-  if kill -0 "$pid" 2>/dev/null; then
-    kill "$pid" 2>/dev/null || true
-    wait "$pid" 2>/dev/null || true
-    fail "a copied wrapper recursed into itself through the repository hooksPath"
-  fi
-  wait "$pid"
-  rc=$?
-  [ "$rc" -eq 0 ] || fail "a copied wrapper exited $rc instead of recognizing its own directory"
-  pass "a copied wrapper does not recurse when it is already the repository hook"
-}
-
 test_pane_hookspath_does_not_reroute_another_repository() {
   local repo other hooks
   repo="$TMP_ROOT/task-wt"
@@ -537,7 +504,6 @@ test_previous_commit_msg_hook_still_runs
 test_relative_project_hookspath_still_runs
 test_inherited_hookspath_env_does_not_decide_the_chain
 test_project_hook_generated_after_install_still_runs
-test_copied_wrapper_does_not_chain_itself
 test_pane_hookspath_does_not_reroute_another_repository
 test_empty_project_hookspath_runs_no_repository_hook
 test_unresolvable_project_hookspath_still_refuses

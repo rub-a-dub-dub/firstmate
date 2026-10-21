@@ -207,10 +207,7 @@ orig=\$(unset GIT_CONFIG_PARAMETERS; git rev-parse --path-format=absolute --git-
   echo "fm-git-strip-ai-trailers: cannot resolve this repository's hooks directory; refusing to skip its \$name hook" >&2
   exit 1
 }
-self_dir=\${0%/*}
-[ "\$self_dir" != "\$0" ] || self_dir=.
-self_dir=\$(CDPATH='' cd -- "\$self_dir" 2>/dev/null && pwd -P) || self_dir=
-if [ "\$orig" = "\$ours" ] || { [ -n "\$self_dir" ] && [ "\$orig" = "\$self_dir" ]; }; then
+if [ "\$orig" = "\$ours" ]; then
   exit 0
 fi
 if [ -x "\$orig/\$name" ]; then
