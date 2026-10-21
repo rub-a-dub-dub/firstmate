@@ -13,6 +13,7 @@ Both hint tables were refreshed on 2026-09-30 from five Ubuntu CI runs: [3658388
 Use the slowest successful `duration_ms` per script across their uploaded portable timing artifacts and completed `FM_TEST_END` log markers, with the two version/platform exceptions below.
 All artifact records were cross-checked against the corresponding job's markers.
 This covers all 24 parallel members and the 201 serial members the lane held at that refresh; `--check-coverage` names any serial member added since under `serial_unhinted=`, and an existing live-capability skip is a portable-runner measurement, not a timing claim for the unavailable live integration.
+The parallel table still rests on that baseline, while the serial table was refreshed again on 2026-10-21 from the fork runs recorded in [Fork refresh, 2026-10-21](#fork-refresh-2026-10-21).
 Observed maxima provide conservative packing weights, not an upper bound on future durations.
 
 Two serial-5 jobs were cancelled at their 30-minute cap and uploaded no artifact.
