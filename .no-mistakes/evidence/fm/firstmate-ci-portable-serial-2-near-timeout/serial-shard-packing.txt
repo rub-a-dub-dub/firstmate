@@ -1,0 +1,53 @@
+# Serial shard packing: coverage guard and partition transcript
+
+$ bash bin/fm-test-run.sh --check-coverage   # base commit 5f1ce1a5 (pre-fix)
+FM_TEST_COVERAGE ok total=254 parallel=24 parallel_max_ms=665545 parallel_imbalance_ms=2 parallel_unhinted=0 serial=214 serial_shards=9 serial_unhinted=11 serial_max_ms=1074843 serial_budget_ms=1200000 herdr=16
+
+$ bash bin/fm-test-run.sh --check-coverage   # target commit 2bd9f102 (post-fix)
+FM_TEST_COVERAGE ok total=254 parallel=24 parallel_max_ms=665545 parallel_imbalance_ms=2 parallel_unhinted=0 serial=214 serial_shards=9 serial_unhinted=0 serial_max_ms=1711444 serial_budget_ms=2100000 herdr=16
+
+11 serial scripts, tests/fm-disk-sweep.test.sh among them, had no hint before the
+change (serial_unhinted=11) and the modeled worst shard was 1074843 ms. After the
+refresh every serial member is hinted and the modeled worst shard is the measured
+1711444 ms of the indivisible supervision-host suite, inside the 2100000 ms target.
+
+## Modeled weight of each serial shard, target commit
+$ for k in 1..9; do bash bin/fm-test-run.sh --list --lane portable-serial-${k}of9; done
+
+shard  scripts  modeled_ms    modeled
+1      1        1711444       28m31s
+2      1        1218807       20m18s
+3      29       1188253       19m48s
+4      31       1188281       19m48s
+5      30       1188252       19m48s
+6      30       1188258       19m48s
+7      31       1188290       19m48s
+8      30       1188248       19m48s
+9      31       1188270       19m48s
+
+Shard 1 is tests/fm-supervision-host.test.sh alone and shard 2 is
+tests/fm-watch-triage.test.sh alone; the seven mixed shards model at 19m48s each.
+The largest, 28m31s, leaves 16m29s of the 45-minute serial shard cap.
+
+$ bash bin/fm-test-run.sh --list --lane portable-serial-1of9
+tests/fm-supervision-host.test.sh
+$ bash bin/fm-test-run.sh --list --lane portable-serial-2of9
+tests/fm-watch-triage.test.sh
+
+## The same nine shards before the change, weighed with the measured durations
+
+shard  scripts  modeled by old hints     actual, measured hints
+1      1        17m54s (1074843 ms)      20m18s (1218807 ms)
+2      21       17m06s (1026063 ms)      33m55s (2035130 ms)   <-- over the 30-minute job cap
+3      27       17m06s (1026080 ms)      19m04s (1144366 ms)
+4      26       17m06s (1026076 ms)      18m13s (1093293 ms)
+5      28       17m06s (1026072 ms)      21m24s (1284949 ms)
+6      26       17m06s (1026063 ms)      17m50s (1070848 ms)
+7      28       17m06s (1026076 ms)      18m07s (1087994 ms)
+8      28       17m06s (1026074 ms)      19m07s (1147044 ms)
+9      29       17m06s (1026065 ms)      19m25s (1165672 ms)
+
+The pre-fix split put tests/fm-supervision-host.test.sh on shard 2 beside 20 other
+scripts and believed that shard was 17m06s of work. Under the durations the fork
+actually measures it is 33m55s, above the 30-minute cap - which is why
+'Behavior portable serial 2' was cancelled while still passing tests.

@@ -1,0 +1,103 @@
+# Focused test runs
+
+$ bash tests/fm-ci-workflow.test.sh
+ok - CI matrices cover every executable serial lane and canonical lint root exactly once
+ok - a newer push to one PR supersedes that PR's in-flight CI
+ok - distinct PRs get distinct concurrency groups
+ok - every main push keeps its own group and is never cancelled
+ok - every ci.yml job carries a finite timeout
+ok - every ci.yml job belongs to one of the four timeout tiers
+ok - fast tier jobs share one 5 minute tripwire
+ok - normal tier jobs share one 30 minute budget
+ok - serial shard jobs share one 45 minute tripwire
+ok - the 45 minute serial shard cap covers the runner's 2100000ms packing target and its 1711444ms worst modeled shard
+ok - Herdr keeps a 20 minute step tripwire under a 75 minute job backstop
+
+$ bash tests/fm-test-run.test.sh    (41 assertions, exit 0)
+ok - exact suite coverage: --all lists every tests/*.test.sh once
+ok - family selection returns a proper subset of the suite
+ok - single-script selection lists exactly that path
+ok - changed-file selection stays conservative (never silent full suite)
+ok - a task marker refuses execution in the primary checkout and leaves worktrees and inspection alone
+ok - runner and its documentation surfaces select their curated family, not just their contract owners
+ok - shell line-ending policy selects runner coverage
+fm-test-run: no tests selected for changes vs HEAD (map is conservative; use --all for the complete suite)
+ok - changed selection covers dependents, fails closed for live unmapped source, and accepts retired unconsumed source
+ok - a bin reference selects the referencing scripts, and consumers still select their curated families
+ok - changed defaults to bounded automatic scheduling with serial override
+ok - Windows emulation exempts only synthetic POSIX modes
+ok - a plain script list defaults to bounded automatic concurrency without an automatic timeout
+ok - family proofs run concurrently only within separate family phases
+ok - empty changed selection emits deterministic text and JSON summaries
+ok - timing markers and JSON artifact are valid
+ok - aggregate exit reflects any script failure
+ok - gate-skip accounting is honest and non-failing
+ok - a gate skip records why it skipped
+ok - a script that actually ran records no skip reason
+ok - live guards are recorded as a capability class, not a bare env opt-in
+ok - fail-on-gate-skip converts herdr-not-found into a hard failure
+ok - exclude-family drops the named primary family after selection
+ok - proven-isolated scheduling ignores parallel hints
+ok - family, all, changed, and script selections ignore parallel hints
+ok - portable shard union, disjointness, and coverage guard hold
+ok - portable parallel lanes are fully hinted and packed within 5% of each other
+ok - portable serial shards are a deterministic disjoint cover of the serial lane
+ok - coverage guard bounds the unmeasured share and serial packing within thirty-five minutes
+ok - serial packing accepts the exact budget and refuses one millisecond above it
+ok - portable serial shard lanes refuse mismatched, out-of-range, and countless names
+ok - --jobs refuses non-proven / stateful selections
+ok - --jobs admits and schedules a family with a recorded concurrent proof
+ok - an unclassified new test stays serial while the proven residual family runs concurrently
+ok - a changed shared test fixture selects its readers while an unread tests/ path still refuses
+ok - a concurrent run starts the longest-hint script first
+ok - --per-script-timeout-secs turns a hung script into a bounded failure
+ok - the automatic --changed bound gives the slow watcher suite at least 1800s
+ok - --max-wall-ms fails an over-budget run and refuses a malformed budget
+ok - jobs scheduler runs proven scripts; failure propagates; non-proven refused
+ok - Herdr CI family-run step times out at 20 min under a 75 min job backstop
+ok - aggregate-json merges lane timing artifacts
+
+## The new cross-owner assertion fails when the two halves drift apart
+
+With PORTABLE_SERIAL_MAX_WEIGHT_MS temporarily raised to 2300000 (38m20s) against
+the 45-minute ci.yml serial tier, so the packing target no longer leaves ten minutes:
+
+not ok - the serial packing target (2300000ms) must leave at least ten minutes of the 45-minute serial shard cap (2700000ms) for setup and runtime variance
+
+(the runner was restored immediately; only tests/fm-ci-workflow.test.sh is modified)
+
+## --help reports the new automatic --changed bound
+                  record it as exit 124 (0 disables, the default). The
+                  --changed applies 2400s automatically, above the current
+                  slowest CI hint with margin; exceeding it becomes a bounded
+                  failure, not proof of a hang. --max-wall-ms is checked
+
+$ bash bin/fm-test-run.sh --help | grep "packing target"
+default weights) and serial_budget_ms (the 35-minute packing target), refusing
+
+## The one test failure in this branch run 39644788352 is fixed by the target commit
+
+CI run 39644788352 (commit fabae491) failed 'Behavior portable parallel 2' on
+tests/fm-test-run.test.sh: 'not ok - family scheduling must use serial hints and
+path-ordered default ties'. The cause was PORTABLE_SERIAL_DEFAULT_WEIGHT_MS=55000
+sorting above the tests/fm-muse-harness.test.sh hint of 51514 ms.
+
+$ bash bin/fm-test-run.sh --list-scheduled <the six scripts that test fixes>
+
+default 55000 (commit fabae491, as CI ran it) - muse-harness demoted below the defaults:
+  tests/fm-kimi-harness.test.sh
+  tests/fm-brief.test.sh
+  tests/fm-captain-hold-lifecycle.test.sh
+  tests/fm-lint.test.sh
+  tests/fm-muse-harness.test.sh
+  tests/fm-operational-input.test.sh
+
+default 50000 (target commit 2bd9f102) - the order the test expects:
+  tests/fm-kimi-harness.test.sh
+  tests/fm-muse-harness.test.sh
+  tests/fm-brief.test.sh
+  tests/fm-captain-hold-lifecycle.test.sh
+  tests/fm-lint.test.sh
+  tests/fm-operational-input.test.sh
+
+The full tests/fm-test-run.test.sh run above is from the target commit and passes.
