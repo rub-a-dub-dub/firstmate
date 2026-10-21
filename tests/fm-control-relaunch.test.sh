@@ -170,6 +170,12 @@ case "${1:-}" in
       esac
     done
     printf '%s\n' "$ses" >> "$D/created-sessions"
+    # A real new-session starts the server it finds absent, and that server
+    # holds none of the windows the dead one took with it, so the reads that
+    # follow the re-creation see a live, empty server.
+    if [ -f "$D/server-dead" ]; then
+      rm -f "$D/server-dead" "$D/windows"
+    fi
     exit 0 ;;
   has-session)
     # A dead server has no sessions to find; otherwise only the recorded one
