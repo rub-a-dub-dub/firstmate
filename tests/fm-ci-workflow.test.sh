@@ -207,6 +207,33 @@ test_serial_shard_tier_sits_between_normal_and_heavy() {
   pass "serial shard jobs share one $serial minute tripwire"
 }
 
+# The October 2026 serial-shard cancellations came from the two halves of this
+# policy being set independently: bin/fm-test-run.sh decides how much script
+# time it is willing to pack onto one shard, and this workflow decides how long
+# that shard may run. A shard is only dependable when the cap it runs under
+# covers the largest shard the runner will pack, with room for job overhead, so
+# hold that relationship across both owners rather than two unrelated numbers.
+test_serial_shard_cap_covers_the_runner_modeled_packing() {
+  local serial cap_ms coverage budget_ms max_ms
+  # shellcheck disable=SC2086
+  serial=$(tier_timeout serial $SERIAL_TIER_JOBS) || exit 1
+  cap_ms=$((serial * 60000))
+  coverage=$("$ROOT/bin/fm-test-run.sh" --check-coverage 2>&1 | grep '^FM_TEST_COVERAGE ') \
+    || fail "could not read serial packing figures from the runner's coverage guard"
+  budget_ms=${coverage##*serial_budget_ms=}
+  budget_ms=${budget_ms%% *}
+  max_ms=${coverage##*serial_max_ms=}
+  max_ms=${max_ms%% *}
+  case "$budget_ms$max_ms" in
+    ''|*[!0-9]*) fail "coverage guard reported no numeric serial packing figures: $coverage" ;;
+  esac
+  [ "$max_ms" -le "$budget_ms" ] \
+    || fail "largest modeled serial shard (${max_ms}ms) exceeds the runner's own packing target (${budget_ms}ms)"
+  [ $((budget_ms + 600000)) -le "$cap_ms" ] \
+    || fail "the serial packing target (${budget_ms}ms) must leave at least ten minutes of the ${serial}-minute serial shard cap (${cap_ms}ms) for setup and runtime variance"
+  pass "the ${serial} minute serial shard cap covers the runner's ${budget_ms}ms packing target and its ${max_ms}ms worst modeled shard"
+}
+
 # Heavy tier: Herdr alone carries a job-level last-resort backstop above the
 # normal tier, while its family-run step owns a tighter tripwire so the
 # always() cleanup and timing upload still run after a hang.
@@ -277,4 +304,5 @@ test_every_job_belongs_to_exactly_one_timeout_tier
 test_fast_tier_shares_one_short_tripwire
 test_normal_tier_shares_one_budget
 test_serial_shard_tier_sits_between_normal_and_heavy
+test_serial_shard_cap_covers_the_runner_modeled_packing
 test_heavy_tier_keeps_a_step_tripwire_under_a_job_backstop
