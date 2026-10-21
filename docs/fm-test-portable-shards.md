@@ -21,10 +21,27 @@ A failed script's duration is excluded even when its lane uploaded an artifact.
 In particular, run 36664663190's serial 5 finished in 22m15s with an assertion failure, not a timeout; treating that as a healthy whole-lane sample would hide the failure.
 Collect successful per-script measurements for every member before calculating a split.
 
-`tests/fm-supervision-host.test.sh` uses 789123 ms from run 36669175457, after the merged [host runtime fix](https://github.com/kunchenguid/firstmate/pull/6179), rather than its pre-fix maximum of 1065298 ms.
-That post-fix value has only one sample in this baseline, so further green runs must establish its variance.
+`tests/fm-supervision-host.test.sh` was set to 789123 ms from run 36669175457 on the upstream repository, after its merged [host runtime fix](https://github.com/kunchenguid/firstmate/pull/6179).
+The fork's own runners did not reproduce that value, as the 2026-10-21 refresh below records.
 The native-Windows-only `tests/fm-pi-windows-shell-invocation.test.sh` retains its separate 5121 ms measurement from 2026-09-06T21:02Z instead of a portable capability skip.
 The session-start hint retains its pre-optimization maximum until CI measures the shorter fixture-only home-summary bound; do not discount a local speedup from CI packing weights.
+
+### Fork refresh, 2026-10-21
+
+The fork's `Behavior portable serial 2` job reached its 30-minute cap on main run [39613397657](https://github.com/rub-a-dub-dub/firstmate/actions/runs/39613397657) and three times on pull request 46, including run [39617554991](https://github.com/rub-a-dub-dub/firstmate/actions/runs/39617554991).
+Those two cancelled jobs uploaded no artifact, so their shard-2 scripts have no successful sample.
+The serial hints were raised from the slowest successful `duration_ms` across the portable serial timing artifacts of eight fork runs: [38534017843](https://github.com/rub-a-dub-dub/firstmate/actions/runs/38534017843), [38818232706](https://github.com/rub-a-dub-dub/firstmate/actions/runs/38818232706), [38826348620](https://github.com/rub-a-dub-dub/firstmate/actions/runs/38826348620), [39486507769](https://github.com/rub-a-dub-dub/firstmate/actions/runs/39486507769), [39489965358](https://github.com/rub-a-dub-dub/firstmate/actions/runs/39489965358), [39589765073](https://github.com/rub-a-dub-dub/firstmate/actions/runs/39589765073), and the two cancelled runs' completed shards.
+The cause was the host suite, not the disk-sweep test.
+`tests/fm-disk-sweep.test.sh` measured 5232 to 5477 ms in three runs, and its hint is 5477 ms.
+`tests/fm-supervision-host.test.sh` measured 900666 to 1342826 ms in six successful samples, against its 789123 ms hint, so the old split packed it beside 21 other scripts and that shard accumulated 1.1 to 1.56 million ms of script time.
+It is now hinted at 1342826 ms and the partition places it alone, as it already placed `tests/fm-watch-triage.test.sh`, now hinted at its slowest sample of 1218807 ms.
+The other seven shards model at about 18.7 minutes each.
+The 11 serial scripts that had no hint were given their slowest sample.
+A hint was also raised to its slowest sample when that sample was at least 25 percent and 5 seconds above it, or at least 60 seconds above it.
+Smaller differences were left alone, since the slowest of a few samples is a weight and not a bound.
+A script with no successful fork sample keeps its earlier hint.
+The host floor sits above the former 20-minute packing target, so `PORTABLE_SERIAL_MAX_WEIGHT_MS` is now 23 minutes, which leaves seven minutes of the 30-minute tier.
+Raising the job timeout was not needed: the longest modeled shard is the host alone at 22.4 minutes, below the cap that the earlier 26-minute shard also cleared.
 
 ## Parallel lanes
 
@@ -67,9 +84,9 @@ Refresh the hints whenever a serial member grows materially or the lane gains sc
 `bin/fm-test-run.sh` owns the per-shard packing, so its `--check-coverage` output is the current account of lane size and coverage rather than a copied inventory.
 Its header and `--help` own the modeled-budget check and output fields; read the current estimates from `--check-coverage` instead of retaining copied lane sums here.
 [`tests/fm-test-run.test.sh`](../tests/fm-test-run.test.sh), in `test_portable_serial_packing_budget_boundary`, verifies acceptance exactly at the budget and refusal one millisecond above it through the executable runner.
-The longest script, `tests/fm-watch-triage.test.sh`, is the indivisible floor for this layout.
+The longest script, `tests/fm-supervision-host.test.sh`, is the indivisible floor for this layout, with `tests/fm-watch-triage.test.sh` next.
 The estimates use per-file maxima from different runs, not measured rebalanced jobs or an end-to-end latency guarantee.
-The baseline watch-triage samples range from 944375 to 1074843 ms, while each observed completed portable job adds at most 30 seconds beyond its summed scripts in these runs.
+The fork's host samples range from 900666 to 1342826 ms and its watch-triage samples from 973174 to 1218807 ms, while each observed completed portable job adds at most 30 seconds beyond its summed scripts in these runs.
 Even so, maxima from five runs do not establish a P95 or guarantee future headroom.
 Job timeouts remain hang tripwires under the policy in [Timeouts](#timeouts) below; they are not the desired healthy duration.
 `tests/fm-ci-workflow.test.sh` compares the parsed CI matrix to the executable runner lanes, and the runner rejects parallel `--jobs` on a serial lane even when that shard has only one member.
@@ -111,7 +128,7 @@ Its `--list-files` interface exposes partition membership; `tests/fm-lint.test.s
 The workflow uploads each partition's quiet telemetry plus its per-root lifecycle sidecar to distinguish analysis cost, memory use, and host contention.
 No fast mode, path skips, or paid runner provisioning is part of this layout.
 
-The longer-term performance objective remains a complete green run under fifteen minutes including start delay, but the current watch-triage floor alone exceeds that objective.
+The longer-term performance objective remains a complete green run under fifteen minutes including start delay, but the current host floor alone exceeds that objective.
 The immediate packing target is the runner's modeled script budget, not a claim that more shards alone can make an indivisible script faster.
 The layout uses fourteen long-lived Linux jobs (nine serial, two parallel, Herdr, two lint), plus short checks and macOS; insufficient shared account capacity can erase the packing gain.
 Compare complete before/after runs, preserve cancelled and partial-run evidence, and measure a representative normal-run sample before claiming a P95 improvement.
