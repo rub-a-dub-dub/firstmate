@@ -1839,7 +1839,9 @@ reconcile_note() {
 # front of a preserved pr= identity block and at the end only when the record
 # has none; appending it last would make the watcher reject an origin that
 # fm-pr-check.sh already armed. A prior pair is dropped because the union in
-# command_complete already folded its entries into <keys>.
+# command_complete already folded its entries into <keys>. The staged copy's
+# mode is set rather than inherited from mktemp because this file becomes the
+# record, and fm-pr-check.sh re-arms an origin only through a mode-600 one.
 record_inventory_attestation() {  # <meta> <keys>
   local meta=$1 keys=$2
   CAPTAIN_META_STAGED=$(mktemp "$STATE/.fm-captain-hold-meta.XXXXXX") || fail "cannot stage the updated task record"
