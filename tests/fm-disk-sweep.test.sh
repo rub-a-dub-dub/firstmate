@@ -203,6 +203,16 @@ test_orphan_sweep_rules_and_default_dry_run() {
   mkdir -p "$dir/temp/cache-unknown-task/Build"
   plist "$dir/temp/cache-unknown-task" "$missing"
   old "$dir/temp/cache-unknown-task"
+  # A task the backlog still lists as in flight, carrying no live state file.
+  printf 'done [at=1]: stale\n' > "$dir/home/state/backlog-task.status"
+  printf '%s\n' '## In flight' '- [ ] backlog-task Still running' \
+    '## Queued' '- [ ] queued-task Waiting' > "$dir/home/data/backlog.md"
+  mkdir -p "$dir/temp/cache-backlog-task/Build"
+  plist "$dir/temp/cache-backlog-task" "$missing"
+  old "$dir/temp/cache-backlog-task"
+  mkdir -p "$dir/temp/cache-queued-task/Build"
+  plist "$dir/temp/cache-queued-task" "$missing"
+  old "$dir/temp/cache-queued-task"
 
   mkdir -p "$dir/derived/Dead/Build"
   plist "$dir/derived/Dead" "$missing"
@@ -231,6 +241,8 @@ test_orphan_sweep_rules_and_default_dry_run() {
   [ ! -e "$dir/temp/old-task-Run.xcresult" ] || fail "old done-task xcresult was retained"
   [ -e "$dir/temp/foreign-old-task" ] || fail "cache recording another home's workspace was deleted"
   [ -e "$dir/temp/cache-unknown-task" ] || fail "cache for a task id unknown to this home was deleted"
+  [ -e "$dir/temp/cache-backlog-task" ] || fail "cache for a task the backlog lists as in flight was deleted"
+  [ ! -e "$dir/temp/cache-queued-task" ] || fail "cache for a queued backlog task was retained"
   [ ! -e "$dir/derived/Dead" ] || fail "missing-workspace DerivedData was retained"
   [ ! -e "$dir/derived/Idle" ] || fail "old idle-slot DerivedData was retained"
   [ -e "$dir/temp/cache-live-task" ] || fail "live task temp cache was deleted"
@@ -241,7 +253,7 @@ test_orphan_sweep_rules_and_default_dry_run() {
   [ -e "$dir/derived/Young" ] || fail "young DerivedData was deleted"
   assert_contains "$out" "disk sweep:" "applied sweep did not report totals"
   assert_grep 'mode=orphan-sweep' "$dir/home/state/disk-sweep.log" "durable sweep log omitted totals"
-  pass "orphan sweep is dry-run by default and enforces age, live-task, structure, workspace, and in-use rules"
+  pass "orphan sweep is dry-run by default and enforces age, live-task, backlog, structure, workspace, and in-use rules"
 }
 
 test_low_disk_thresholds() {

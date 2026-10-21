@@ -235,14 +235,6 @@ temp_cache_candidates() {  # <real-temp-root>; prints outermost recognized cache
       }'
 }
 
-project_names() {
-  local project
-  for project in "$PROJECTS"/*; do
-    [ -d "$project" ] && [ ! -L "$project" ] || continue
-    basename "$project"
-  done | LC_ALL=C sort -u
-}
-
 workspace_project() {  # <WorkspacePath>; prints a current-home project name
   local workspace=$1 project name root
   root=$(real_dir "$PROJECTS" 2>/dev/null || true)
@@ -661,10 +653,17 @@ collect_task_ids() {
   done
   if [ -f "$DATA/backlog.md" ] && [ ! -L "$DATA/backlog.md" ]; then
     awk '
-      /^## / { section=$0; next }
-      /^- \[[ x]\] [^ ]+ / {
-        id=$3; print id >> known;
-        if (section == "## In flight") print id >> live;
+      /^##[[:space:]]+/ {
+        section=$0
+        sub(/^##[[:space:]]+/, "## ", section)
+        sub(/[[:space:]]+$/, "", section)
+        next
+      }
+      /^- \[[ x]\] / {
+        rest=$0; sub(/^- \[[ x]\] +/, "", rest); id=rest; sub(/[ \t].*/, "", id)
+        if (id == "") next
+        print id >> known
+        if (section == "## In flight") print id >> live
       }
     ' known="$KNOWN_IDS" live="$LIVE_IDS" "$DATA/backlog.md"
   fi
