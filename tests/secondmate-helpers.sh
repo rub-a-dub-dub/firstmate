@@ -44,6 +44,8 @@ case "${1:-}" in
     ;;
   kill-window)
     printf '%s\n' "$*" >> "$FM_FAKE_TMUX_LOG"
+    # Opt-in endpoint-close failure, for teardown refusal paths.
+    [ -z "${FM_FAKE_TMUX_KILL_FAIL:-}" ] || exit 1
     target=
     previous=
     for arg in "$@"; do

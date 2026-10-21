@@ -208,6 +208,7 @@ SCRIPT_DIR="$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 mkdir -p "$STATE"
 # A home that never existed (a state-only test fixture) is not a home that
@@ -324,6 +325,12 @@ HEARTBEAT=${FM_HEARTBEAT:-600}        # base seconds between heartbeat scans
 HEARTBEAT_MAX=${FM_HEARTBEAT_MAX:-7200}  # heartbeat backoff cap
 CHECK_INTERVAL=${FM_CHECK_INTERVAL:-300}  # seconds between *.check.sh sweeps
 CHECK_TIMEOUT=${FM_CHECK_TIMEOUT:-30}     # seconds allowed per *.check.sh
+DISK_CHECK_INTERVAL=${FM_DISK_CHECK_INTERVAL:-300}  # low-space probe cadence
+DISK_SWEEP_INTERVAL=${FM_DISK_SWEEP_INTERVAL:-86400}  # orphan cleanup cadence
+DISK_SWEEP_TIMEOUT=${FM_DISK_SWEEP_TIMEOUT:-1800}     # detached sweep bound
+case "$DISK_CHECK_INTERVAL" in ''|*[!0-9]*|0) DISK_CHECK_INTERVAL=300 ;; esac
+case "$DISK_SWEEP_INTERVAL" in ''|*[!0-9]*|0) DISK_SWEEP_INTERVAL=86400 ;; esac
+case "$DISK_SWEEP_TIMEOUT" in ''|*[!0-9]*|0) DISK_SWEEP_TIMEOUT=1800 ;; esac
 HOME_SUMMARY_INTERVAL=${FM_HOME_SUMMARY_INTERVAL:-300}
 case "$HOME_SUMMARY_INTERVAL" in
   ''|*[!0-9]*|0) HOME_SUMMARY_INTERVAL=300 ;;
@@ -2958,6 +2965,80 @@ resurface_after_downtime() {
   wake "check: rearm-resurface"
 }
 
+# Disk hygiene is home-scoped and survives watcher restarts through timestamp
+# markers. The five-minute check is a fast df/cache read. The daily apply mode
+# deletes only the orphan categories owned by bin/fm-disk-sweep.sh; its size
+# attribution can take minutes on a large pool, so it runs detached under its
+# own bound and a later tick collects the finished report, the same way the
+# other slow watcher work stays off the wake-delivery path. Warning-only output
+# stays in triage; only the script's explicit critical wake line enters the
+# durable queue.
+disk_report_lines() {  # <report text>; triage-logs lines, prints a wake reason
+  local line reason=
+  while IFS= read -r line; do
+    case "$line" in
+      'wake: '*) reason=${line#wake: } ;;
+      '') ;;
+      *) triage_log "$line" ;;
+    esac
+  done <<EOF
+$1
+EOF
+  printf '%s' "$reason"
+}
+
+disk_hygiene_tick() {
+  local out rc reason='' sweep_reason running="$STATE/.disk-sweep.running"
+  local report="$STATE/.disk-sweep.report"
+  if [ -f "$report" ] && [ ! -d "$running" ]; then
+    disk_report_lines "$(cat "$report" 2>/dev/null || true)" >/dev/null
+    rm -f "$report"
+  fi
+  # A sweep killed with its watcher leaves its claim behind; reclaim it once
+  # the sweep's own bound has certainly passed.
+  if [ -d "$running" ] && [ "$(age_of "$running")" -gt $((DISK_SWEEP_TIMEOUT + 60)) ]; then
+    rmdir "$running" 2>/dev/null || true
+  fi
+  if [ ! -e "$STATE/.last-disk-sweep" ]; then
+    # A new home or an upgrade establishes the daily cadence first. Starting a
+    # potentially heavy apply sweep on the watcher's first ever cycle would
+    # compete with session-start recovery and every newly created test home.
+    touch "$STATE/.last-disk-sweep"
+  elif [ "$(age_of "$STATE/.last-disk-sweep")" -ge "$DISK_SWEEP_INTERVAL" ] \
+    && mkdir "$running" 2>/dev/null; then
+    touch "$STATE/.last-disk-sweep"
+    (
+      rc=0
+      fm_run_timed "$DISK_SWEEP_TIMEOUT" env FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+        FM_DATA_OVERRIDE="$DATA" \
+        FM_DISK_SCAN_TIMEOUT="${FM_DISK_SCAN_TIMEOUT:-120}" \
+        "$SCRIPT_DIR/fm-disk-sweep.sh" --apply --watcher > "$report.partial" 2>&1 || rc=$?
+      if [ "$rc" -ne 0 ]; then
+        printf 'disk sweep unavailable (rc=%s)\n' "$rc" >> "$report.partial"
+      fi
+      mv -f "$report.partial" "$report"
+      rmdir "$running" 2>/dev/null || true
+    ) </dev/null >/dev/null 2>&1 &
+  fi
+  if [ "$(age_of "$STATE/.last-disk-check")" -ge "$DISK_CHECK_INTERVAL" ]; then
+    rc=0
+    out=$(fm_run_timed 2 env FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+      FM_DATA_OVERRIDE="$DATA" \
+      "$SCRIPT_DIR/fm-disk-sweep.sh" --check --watcher 2>&1) || rc=$?
+    touch "$STATE/.last-disk-check"
+    if [ "$rc" -ne 0 ]; then
+      triage_log "disk-space check unavailable (rc=$rc): $out"
+    else
+      sweep_reason=$(disk_report_lines "$out")
+      [ -z "$sweep_reason" ] || reason=$sweep_reason
+    fi
+  fi
+  if [ -n "$reason" ]; then
+    fm_wake_append check disk-space "check: disk-space: $reason" || exit 1
+    wake "check: disk-space: $reason"
+  fi
+}
+
 while :; do
   # Home-gone exit: a deleted home, state directory, or code root means this
   # watcher's world is gone (a torn-down temporary home or a discarded
@@ -3065,6 +3146,8 @@ while :; do
   else
     triage_log "inactive-outcome reconciliation unavailable"
   fi
+
+  disk_hygiene_tick
 
   # Slow per-task checks (firstmate writes these, e.g. a merged-PR poll).
   # Time-based via .last-check mtime so the cadence survives watcher restarts.
