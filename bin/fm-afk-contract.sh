@@ -52,9 +52,7 @@
 #   expected_return: <UTC ISO 8601> | -
 #   reach_channels: none
 #   reach_announced: <the one-sentence reach announcement>
-#   spend_max_concurrent_workers: <n>   without --spend, the ordinary worker
-#                                  records this home already holds at entry,
-#                                  and never fewer than the default
+#   spend_max_concurrent_workers: <n>   without --spend, the fixed default
 #                                  (SPEND CAP below)
 #   confirmed: <UTC ISO 8601>       when this mandate was recorded; /afk itself
 #   confirmed_epoch: <seconds>        is the go, so no later human step stamps it
@@ -92,7 +90,7 @@
 #     carry the original session entry forward, and archive the superseded
 #     record. A replacement is staged before the prior record is archived and
 #     replaced. `propose` and `confirm` were retired with the wait-for-go gate.
-#     Without --spend the recorded cap follows SPEND CAP below.
+#     Without --spend the recorded cap is the fixed default (SPEND CAP below).
 #   fm-afk-contract.sh readback
 #     The record's content for the captain and for the away session: the words
 #     verbatim plus the entry time, expected return, spend cap, and reach line
@@ -132,14 +130,12 @@
 # away record stands; bin/fm-spawn.sh enforces it by refusing a fresh ordinary
 # spawn once the home already holds that many. An ordinary worker record is
 # every state/*.meta whose kind is not secondmate, counted by
-# fm_afk_contract_live_ordinary_workers and exposed as `live-workers`, which is
-# the one implementation both the entry default and that refusal read, so the
-# two can never count differently.
-# Without --spend, entry records the count standing at that moment, so away mode
-# never narrows work already under way; it never records less than
-# FM_AFK_CONTRACT_SPEND_DEFAULT, so an idle home still enters with the ordinary
-# room to work, and never 0. An explicit --spend is the captain's number and is
-# recorded unchanged.
+# fm_afk_contract_live_ordinary_workers and exposed as `live-workers`, the one
+# implementation of that count.
+# Without --spend, entry records FM_AFK_CONTRACT_SPEND_DEFAULT unchanged: the
+# captain chose to keep this fork's fixed default rather than adopt upstream's
+# derivation of the cap from the workers live at entry. An explicit --spend is
+# the captain's number and is recorded unchanged.
 #
 # Sourceable: with the BASH_SOURCE guard, other scripts get the path, presence,
 # posture, spend-cap, and lock helpers (fm_afk_contract_path,
@@ -188,7 +184,7 @@ fm_afk_contract_present() {  # [state-dir]
 # The ordinary worker records this home holds right now (the header's SPEND
 # CAP): every state/*.meta whose kind is not secondmate, because a secondmate is
 # a persistent home rather than spend. This is the one implementation of that
-# count, read by the entry default here and by bin/fm-spawn.sh's refusal.
+# count, read by bin/fm-spawn.sh's refusal.
 fm_afk_contract_live_ordinary_workers() {  # [state-dir]
   local state=${1:-$FM_AFK_CONTRACT_STATE} meta live=0
   for meta in "$state"/*.meta; do
@@ -196,15 +192,6 @@ fm_afk_contract_live_ordinary_workers() {  # [state-dir]
     [ "$(grep '^kind=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2-)" != secondmate ] || continue
     live=$((live + 1))
   done
-  printf '%s\n' "$live"
-}
-
-# The cap to record when the captain gave no --spend: the count standing at
-# entry, never below the default and so never 0.
-fm_afk_contract_entry_spend_default() {  # [state-dir]
-  local live
-  live=$(fm_afk_contract_live_ordinary_workers "${1:-$FM_AFK_CONTRACT_STATE}")
-  [ "$live" -gt "$FM_AFK_CONTRACT_SPEND_DEFAULT" ] || live=$FM_AFK_CONTRACT_SPEND_DEFAULT
   printf '%s\n' "$live"
 }
 
@@ -480,7 +467,7 @@ fm_afk_contract_render_announcement() {  # <path>
 # --- subcommands ------------------------------------------------------------
 
 fm_afk_contract_parse_inputs() {  # <args...>; sets WORDS, EXPECTED_RETURN, SPEND
-  local words_file='' spend_given=0
+  local words_file=''
   WORDS=; EXPECTED_RETURN=-; SPEND=$FM_AFK_CONTRACT_SPEND_DEFAULT; FM_AFK_CONTRACT_SCALARS_GIVEN=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -505,7 +492,6 @@ fm_afk_contract_parse_inputs() {  # <args...>; sets WORDS, EXPECTED_RETURN, SPEN
         [ "$#" -gt 1 ] || { fm_afk_contract_log '--spend requires a positive integer'; return 2; }
         case "$2" in ''|*[!0-9]*|0) fm_afk_contract_log "--spend must be a positive integer, got '$2'"; return 2 ;; esac
         SPEND=$2
-        spend_given=1
         FM_AFK_CONTRACT_SCALARS_GIVEN=1
         shift 2 ;;
       --action|--object|--when|--stop|--grant|--grant=*)
@@ -523,7 +509,6 @@ fm_afk_contract_parse_inputs() {  # <args...>; sets WORDS, EXPECTED_RETURN, SPEN
     WORDS=$(cat "$words_file"; rc=$?; printf x; exit "$rc") || return 1
     WORDS=${WORDS%x}
   fi
-  [ "$spend_given" -eq 1 ] || SPEND=$(fm_afk_contract_entry_spend_default) || return 1
   return 0
 }
 
