@@ -1,0 +1,104 @@
+Captain-hold completion vs. an armed pr= identity block — real CLI transcript
+Same fixture, same commands, run against both commits.
+  base   492b6cf2 (before the fix)
+  target 85eb92a9 (this change)
+
+Fixture: a captain-held origin with one held review call, armed for merge
+watching through bin/fm-pr-check.sh, completed through
+bin/fm-captain-hold.sh complete, then watched by one real bin/fm-watch.sh cycle.
+
+================ before-fix ================
+
+$ fm-pr-check.sh review-origin https://github.com/example/sample/pull/7      # the operator arms the origin's merge watch
+armed: state/review-origin.check.sh
+armed: review-origin.check.sh review-origin.pr-poll 
+
+$ cat state/review-origin.meta                 # the record a watcher cycle authenticates
+window=firstmate:fm-review-origin
+endpoint_task_id=review-origin
+worktree=<home>/projects/sample
+project=<home>/projects/sample
+harness=codex
+kind=ship
+mode=no-mistakes
+spawn_gen=fixture-review-origin
+pr=https://github.com/example/sample/pull/7
+pr_head=0123456789abcdef0123456789abcdef01234567
+
+$ fm-captain-hold.sh complete review-origin review-call
+complete: review-origin captain-call inventory reviewed (review-call)
+
+$ cat state/review-origin.meta                 # after completion
+window=firstmate:fm-review-origin
+endpoint_task_id=review-origin
+worktree=<home>/projects/sample
+project=<home>/projects/sample
+harness=codex
+kind=ship
+mode=no-mistakes
+spawn_gen=fixture-review-origin
+pr=https://github.com/example/sample/pull/7
+pr_head=0123456789abcdef0123456789abcdef01234567
+decisions_reviewed=1
+decision_keys=review-call
+
+$ fm-pr-lib.sh: fm_pr_metadata_identity_parse state/review-origin.meta
+REJECTED (the watcher cannot authenticate this record)
+
+$ fm-watch.sh                             # one real watcher cycle, bounded to 12s
+check: rejected unauthenticated state checks: <home>/state/review-origin.check.sh
+(watcher exited 0 after waking)
+VERDICT: the watcher REJECTED the armed origin's state check
+
+================ after-fix ================
+
+$ fm-pr-check.sh review-origin https://github.com/example/sample/pull/7      # the operator arms the origin's merge watch
+armed: state/review-origin.check.sh
+armed: review-origin.check.sh review-origin.pr-poll 
+
+$ cat state/review-origin.meta                 # the record a watcher cycle authenticates
+window=firstmate:fm-review-origin
+endpoint_task_id=review-origin
+worktree=<home>/projects/sample
+project=<home>/projects/sample
+harness=codex
+kind=ship
+mode=no-mistakes
+spawn_gen=fixture-review-origin
+pr=https://github.com/example/sample/pull/7
+pr_head=0123456789abcdef0123456789abcdef01234567
+
+$ fm-captain-hold.sh complete review-origin review-call
+complete: review-origin captain-call inventory reviewed (review-call)
+
+$ cat state/review-origin.meta                 # after completion
+window=firstmate:fm-review-origin
+endpoint_task_id=review-origin
+worktree=<home>/projects/sample
+project=<home>/projects/sample
+harness=codex
+kind=ship
+mode=no-mistakes
+spawn_gen=fixture-review-origin
+decisions_reviewed=1
+decision_keys=review-call
+pr=https://github.com/example/sample/pull/7
+pr_head=0123456789abcdef0123456789abcdef01234567
+
+$ fm-pr-lib.sh: fm_pr_metadata_identity_parse state/review-origin.meta
+accepted: provider=github pr=https://github.com/example/sample/pull/7 number=7
+
+$ fm-watch.sh                             # one real watcher cycle, bounded to 12s
+stale: firstmate:fm-review-origin
+(watcher exited 0 after waking)
+VERDICT: no unauthenticated-state-check wake; the armed origin stayed authenticated
+
+----------------------------------------------------------------------
+Regression proof for the committed test
+tests/fm-captain-hold-lifecycle.test.sh::test_complete_keeps_the_pr_identity_block_last
+
+  base   492b6cf2: 1..1
+                   not ok - the watcher parse rejects the record after completion
+  target 85eb92a9: 1..1
+                   ok - complete records the attestation in front of an armed
+                        pr identity block
