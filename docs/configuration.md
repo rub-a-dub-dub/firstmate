@@ -608,6 +608,7 @@ It never removes simulator runtimes or Treehouse pool slots.
 Every run appends totals to `state/disk-sweep.log`; warning attribution is cached in `state/disk-usage.cache` so session start never performs an unbounded size walk.
 Each Treehouse slot is sized and attributed to its own project, so projects sharing one pool root each keep their own row.
 Sizing a candidate is bounded like every other probe here, so a walk that cannot finish reports that path's size as unknown and counts it apart from the freed total rather than as zero bytes.
+For the same reason the attribution record names itself partial when any probe could not finish, and a refresh whose probes all failed is discarded rather than published over the last good record.
 A sweep never wakes the firstmate; the five-minute space check is the one owner of low-disk warnings and the critical wake.
 
 Successful task teardown calls the same owner after landed-work checks and process reaping.

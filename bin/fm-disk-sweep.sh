@@ -91,6 +91,7 @@ LIVE_IDS=
 OPEN_FILES=
 OPEN_FILES_AT=0
 USAGE_CACHE_TMP=
+USAGE_PARTIAL_MARK='#partial'
 
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
@@ -428,16 +429,26 @@ df_free_record() {  # <path> -> device<TAB>free-kib
 }
 
 print_cached_consumers() {
-  local cache="$STATE/disk-usage.cache" bytes kind label shown=0
+  local cache="$STATE/disk-usage.cache" bytes kind label shown=0 partial=0
   [ -f "$cache" ] && [ ! -L "$cache" ] || return 0
+  grep -Fxq "$USAGE_PARTIAL_MARK" "$cache" 2>/dev/null && partial=1
   while IFS=$'\t' read -r bytes kind label; do
     case "$bytes" in ''|*[!0-9]*) continue ;; esac
     [ "$bytes" -gt 0 ] || continue
-    if [ "$shown" -eq 0 ]; then printf 'Top attributed consumers for this home:\n'; fi
+    if [ "$shown" -eq 0 ]; then
+      if [ "$partial" -eq 1 ]; then
+        printf 'Top attributed consumers for this home (partial: some sizes could not be measured in time):\n'
+      else
+        printf 'Top attributed consumers for this home:\n'
+      fi
+    fi
     printf '  %s: %s (%s)\n' "$kind" "$label" "$(human_bytes "$bytes")"
     shown=$((shown + 1))
     [ "$shown" -lt 5 ] || break
   done < <(awk -F '\t' 'NF == 3 && $1 ~ /^[0-9]+$/ { print }' "$cache" | sort -t $'\t' -k1,1nr)
+  if [ "$shown" -eq 0 ] && [ "$partial" -eq 1 ]; then
+    printf 'No consumer attribution for this home: every size probe exceeded its bound.\n'
+  fi
 }
 
 shell_quote() { printf '%q' "$1"; }
@@ -758,7 +769,7 @@ cache_add() {  # <file> <bytes> <kind> <label>
 }
 
 refresh_usage_cache() {
-  local tmp root candidate bytes id entry workspace project
+  local tmp root candidate bytes id entry workspace project partial=0
   mkdir -p "$STATE" 2>/dev/null || return 0
   USAGE_CACHE_TMP=$(mktemp "$STATE/.disk-usage.cache.XXXXXX" 2>/dev/null) || return 0
   tmp=$USAGE_CACHE_TMP
@@ -768,7 +779,7 @@ refresh_usage_cache() {
       id=$(task_ids_for_path "$candidate" 2>/dev/null \
         | awk '{ print length($0) "\t" $0 }' | sort -rn | head -n 1 | cut -f2)
       [ -n "$id" ] || continue
-      bytes=$(size_bytes "$candidate" 2>/dev/null || printf '0')
+      bytes=$(size_bytes "$candidate" 2>/dev/null) || { partial=1; continue; }
       cache_add "$tmp" "$bytes" temp "$id"
     done < <(temp_cache_candidates "$root")
   done < <(unique_temp_roots)
@@ -779,7 +790,7 @@ refresh_usage_cache() {
       workspace=$(plist_workspace "$entry" 2>/dev/null || true)
       project=$(workspace_project "$workspace" 2>/dev/null || true)
       [ -n "$project" ] || continue
-      bytes=$(size_bytes "$entry" 2>/dev/null || printf '0')
+      bytes=$(size_bytes "$entry" 2>/dev/null) || { partial=1; continue; }
       cache_add "$tmp" "$bytes" DerivedData "$project"
     done
   fi
@@ -790,7 +801,7 @@ refresh_usage_cache() {
       [ -n "$entry" ] || continue
       project=$(workspace_project "$entry" 2>/dev/null || true)
       [ -n "$project" ] || continue
-      bytes=$(size_bytes "$entry" 2>/dev/null || printf '0')
+      bytes=$(size_bytes "$entry" 2>/dev/null) || { partial=1; continue; }
       cache_add "$tmp" "$bytes" treehouse "$project"
     done < "$ALL_WORKTREES"
   fi
@@ -798,7 +809,12 @@ refresh_usage_cache() {
     NF == 3 { key=$2 FS $3; total[key]+=$1 }
     END { for (key in total) print total[key] FS key }
   ' "$tmp" | sort -t $'\t' -k1,1nr > "$tmp.sum"
-  mv "$tmp.sum" "$STATE/disk-usage.cache"
+  # A refresh whose probes all failed knows nothing, so the previous record
+  # stays the best answer this home has rather than being published over.
+  if [ -s "$tmp.sum" ] || [ ! -s "$STATE/disk-usage.cache" ]; then
+    [ "$partial" -eq 0 ] || printf '%s\n' "$USAGE_PARTIAL_MARK" >> "$tmp.sum"
+    mv "$tmp.sum" "$STATE/disk-usage.cache"
+  fi
   rm -f "$tmp" "$tmp.sum"
   USAGE_CACHE_TMP=
 }

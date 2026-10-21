@@ -2816,7 +2816,7 @@ disk_hygiene_tick() {
   local out rc reason='' sweep_reason running="$STATE/.disk-sweep.running"
   local report="$STATE/.disk-sweep.report"
   if [ -f "$report" ] && [ ! -d "$running" ]; then
-    reason=$(disk_report_lines "$(cat "$report" 2>/dev/null || true)")
+    disk_report_lines "$(cat "$report" 2>/dev/null || true)" >/dev/null
     rm -f "$report"
   fi
   # A sweep killed with its watcher leaves its claim behind; reclaim it once

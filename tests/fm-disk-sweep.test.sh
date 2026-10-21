@@ -3,8 +3,8 @@
 #
 # Covers task teardown cleanup for a task that owns a worktree and for a
 # secondmate that owns none, orphan-sweep age/live-state rules, process-use
-# refusal for inferred candidates, honest reporting when a bounded size probe
-# cannot finish, unconditional removal of the two temp roots
+# refusal for inferred candidates, honest reporting and record-keeping when a
+# bounded size probe cannot finish, unconditional removal of the two temp roots
 # teardown owns, wrong-root refusal, Xcode cache structure and WorkspacePath
 # provenance (including a WorkspacePath equal to the worktree root),
 # DerivedData matching, refusal to touch anything inside a worktree, Treehouse
@@ -401,6 +401,60 @@ test_usage_cache_attributes_each_slot_to_its_own_project() {
   pass "each Treehouse slot is sized and attributed to its own project"
 }
 
+# state/disk-usage.cache is this script's documented durable record, and the
+# low-disk warning is its only consumer.
+test_usage_cache_never_publishes_unfinished_probes() {
+  local dir cache out slots
+  dir=$(make_case usagepartial)
+  mkdir -p "$dir/home/projects/app"
+  git init -q "$dir/home/projects/demo"
+  git init -q "$dir/home/projects/app"
+  mkdir -p "$dir/pool/1/app" "$dir/pool/2/demo"
+  dd if=/dev/zero of="$dir/pool/1/app/blob" bs=1024 count=400 2>/dev/null
+  dd if=/dev/zero of="$dir/pool/2/demo/blob" bs=1024 count=400 2>/dev/null
+  slots="$dir/pool/1/app|busy;$dir/pool/2/demo|busy"
+  cache="$dir/home/state/disk-usage.cache"
+
+  FM_FAKE_SLOTS="$slots" run_sweep "$dir" --apply >/dev/null 2>&1
+  usage_row_bytes "$cache" treehouse app >/dev/null \
+    || fail "a complete refresh published no row for app: $(cat "$cache")"
+  usage_row_bytes "$cache" treehouse demo >/dev/null \
+    || fail "a complete refresh published no row for demo: $(cat "$cache")"
+  grep -Fxq '#partial' "$cache" && fail "a complete refresh marked its record partial"
+
+  # Every size probe outruns its bound: this refresh knows nothing, so it must
+  # not replace the record the complete refresh published.
+  cat > "$dir/fakebin/du" <<'SH'
+#!/usr/bin/env bash
+exit 124
+SH
+  chmod +x "$dir/fakebin/du"
+  FM_FAKE_SLOTS="$slots" run_sweep "$dir" --apply >/dev/null 2>&1
+  usage_row_bytes "$cache" treehouse app >/dev/null \
+    || fail "a refresh whose probes all failed erased the last good record: $(cat "$cache")"
+  grep -Fxq '#partial' "$cache" \
+    && fail "a discarded refresh marked the surviving good record partial"
+
+  # One probe finishes and one does not: the surviving row is published, and
+  # the record says so rather than presenting itself as the whole picture.
+  cat > "$dir/fakebin/du" <<SH
+#!/usr/bin/env bash
+case "\$*" in *"$dir/pool/1/app"*) exit 124 ;; esac
+exec /usr/bin/du "\$@"
+SH
+  chmod +x "$dir/fakebin/du"
+  FM_FAKE_SLOTS="$slots" run_sweep "$dir" --apply >/dev/null 2>&1
+  usage_row_bytes "$cache" treehouse demo >/dev/null \
+    || fail "a partial refresh dropped a row whose probe did finish: $(cat "$cache")"
+  usage_row_bytes "$cache" treehouse app >/dev/null \
+    && fail "a row whose probe could not finish was published with a measured size"
+
+  out=$(FM_FAKE_FREE_KIB=$((15 * 1024 * 1024)) run_sweep "$dir" --check --watcher 2>&1)
+  assert_contains "$out" "Top attributed consumers for this home (partial" \
+    "the low-disk warning presented a partial attribution as the whole picture"
+  pass "the consumer record is never published from unfinished probes and says when it is partial"
+}
+
 test_low_disk_thresholds() {
   local dir out
   dir=$(make_case thresholds)
@@ -501,5 +555,6 @@ test_secondmate_cleanup_without_a_worktree
 test_unmeasurable_size_is_not_reported_as_zero
 test_orphan_sweep_rules_and_default_dry_run
 test_usage_cache_attributes_each_slot_to_its_own_project
+test_usage_cache_never_publishes_unfinished_probes
 test_low_disk_thresholds
 test_watcher_wakes_once_and_collects_detached_sweep
