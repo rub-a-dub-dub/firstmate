@@ -5,7 +5,8 @@
 # refusal, wrong-root refusal, Xcode cache structure and WorkspacePath
 # provenance (including a WorkspacePath equal to the worktree root),
 # DerivedData matching, refusal to touch anything inside a worktree, Treehouse
-# pool-root attribution of orphan and consumer rows, low-space thresholds and
+# pool-root attribution of orphan and consumer rows, the available-versus-busy
+# slot decision for a workspace that still exists, low-space thresholds and
 # wake throttling, dry-run-by-default, and the watcher's critical wake plus
 # detached daily-sweep collection.
 set -u
@@ -60,8 +61,6 @@ if [ "${1:-}" = status ] && [ "${2:-}" = --json ]; then
       sep=','
     done
     printf ']\n'
-  elif [ -n "${FM_FAKE_AVAILABLE_WORKTREE:-}" ]; then
-    printf '[{"name":"1","path":"%s","status":"available","processes":[]}]\n' "$FM_FAKE_AVAILABLE_WORKTREE"
   else
     printf '[]\n'
   fi
@@ -185,13 +184,14 @@ test_task_cleanup_rules() {
 }
 
 test_orphan_sweep_rules_and_default_dry_run() {
-  local dir missing idle live_wt lookalike out
+  local dir missing idle busy live_wt lookalike out slots
   dir=$(make_case orphan)
   git init -q "$dir/home/projects/demo"
   printf 'done [at=1]: old\n' > "$dir/home/state/old-task.status"
   printf 'working [at=1]: live\n' > "$dir/home/state/live-task.status"
   # Every slot of this project shares one Treehouse pool root; slot 9 is gone.
   idle="$dir/pool/1/demo"
+  busy="$dir/pool/3/demo"
   live_wt="$dir/pool/2/demo"
   missing="$dir/pool/9/demo/App.xcodeproj"
   mkdir -p "$live_wt"
@@ -250,18 +250,26 @@ test_orphan_sweep_rules_and_default_dry_run() {
   plist "$dir/derived/Lookalike" "$lookalike"
   old "$dir/derived/Lookalike"
 
-  mkdir -p "$idle"
+  # Both slots keep a tracked workspace the way a returned Hattie slot does, so
+  # the missing-workspace branch cannot decide either: only the slot state can.
+  mkdir -p "$idle/App.xcodeproj"
   git init -q "$idle"
   mkdir -p "$dir/derived/Idle/Build"
   plist "$dir/derived/Idle" "$idle/App.xcodeproj"
   old "$dir/derived/Idle"
+  mkdir -p "$busy/App.xcodeproj"
+  git init -q "$busy"
+  mkdir -p "$dir/derived/Busy/Build"
+  plist "$dir/derived/Busy" "$busy/App.xcodeproj"
+  old "$dir/derived/Busy"
+  slots="$idle|available;$busy|busy"
 
-  out=$(FM_FAKE_AVAILABLE_WORKTREE="$idle" run_sweep "$dir" 2>&1)
+  out=$(FM_FAKE_SLOTS="$slots" run_sweep "$dir" 2>&1)
   assert_contains "$out" "(dry run)" "default sweep was not a dry run"
   [ -e "$dir/temp/cache-old-task" ] || fail "dry run deleted an orphan temp cache"
   [ -e "$dir/derived/Dead" ] || fail "dry run deleted orphan DerivedData"
 
-  out=$(FM_FAKE_AVAILABLE_WORKTREE="$idle" run_sweep "$dir" --apply 2>&1)
+  out=$(FM_FAKE_SLOTS="$slots" run_sweep "$dir" --apply 2>&1)
   [ ! -e "$dir/temp/cache-old-task" ] || fail "old orphan temp cache was retained"
   [ ! -e "$dir/temp/reused-slot-old-task" ] || fail "done task's cache was retained because its slot was reused"
   [ ! -e "$dir/temp/old-task-Run.xcresult" ] || fail "old done-task xcresult was retained"
@@ -271,6 +279,7 @@ test_orphan_sweep_rules_and_default_dry_run() {
   [ ! -e "$dir/temp/cache-queued-task" ] || fail "cache for a queued backlog task was retained"
   [ ! -e "$dir/derived/Dead" ] || fail "missing-workspace DerivedData was retained"
   [ ! -e "$dir/derived/Idle" ] || fail "old idle-slot DerivedData was retained"
+  [ -e "$dir/derived/Busy" ] || fail "DerivedData for a slot Treehouse reports busy was deleted"
   [ -e "$dir/temp/cache-live-task" ] || fail "live task temp cache was deleted"
   [ -e "$dir/temp/cache-young-old-task" ] || fail "young temp cache was deleted"
   [ -e "$dir/temp/name-only-old-task" ] || fail "unstructured temp directory was deleted"
@@ -281,7 +290,7 @@ test_orphan_sweep_rules_and_default_dry_run() {
   [ -e "$dir/derived/Lookalike" ] || fail "DerivedData whose workspace only ends in a project name was deleted"
   assert_contains "$out" "disk sweep:" "applied sweep did not report totals"
   assert_grep 'mode=orphan-sweep' "$dir/home/state/disk-sweep.log" "durable sweep log omitted totals"
-  pass "orphan sweep is dry-run by default and enforces age, live-task, backlog, structure, pool-root workspace, and in-use rules"
+  pass "orphan sweep is dry-run by default and enforces age, live-task, backlog, structure, pool-root workspace, slot-availability, and in-use rules"
 }
 
 # state/disk-usage.cache is this script's documented durable record: one
