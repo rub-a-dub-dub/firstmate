@@ -71,7 +71,7 @@
 #   --per-script-timeout-secs N
 #                   terminate a script that runs longer than N seconds and
 #                   record it as exit 124 (0 disables, the default). The
-#                   --changed applies 1800s automatically, above the current
+#                   --changed applies 2400s automatically, above the current
 #                   slowest CI hint with margin; exceeding it becomes a bounded
 #                   failure, not proof of a hang. --max-wall-ms is checked
 #                   after the run and so cannot catch a hang on its own.

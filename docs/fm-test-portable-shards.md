@@ -33,7 +33,7 @@ The fork's `Behavior portable serial 2` job reached its 30-minute cap on main ru
 Of those four cancellations only the two runs cited above contributed samples; the shard-2 job of each uploaded no artifact, so their shard-2 scripts have no successful sample there.
 The serial hints were raised from the slowest successful `duration_ms` across the portable serial timing artifacts of nine fork runs: [38534017843](https://github.com/rub-a-dub-dub/firstmate/actions/runs/38534017843), [38818232706](https://github.com/rub-a-dub-dub/firstmate/actions/runs/38818232706), [38826348620](https://github.com/rub-a-dub-dub/firstmate/actions/runs/38826348620), [39486507769](https://github.com/rub-a-dub-dub/firstmate/actions/runs/39486507769), [39489965358](https://github.com/rub-a-dub-dub/firstmate/actions/runs/39489965358), [39589765073](https://github.com/rub-a-dub-dub/firstmate/actions/runs/39589765073), the nine shards of the first repacked pull request 47 run [39644788352](https://github.com/rub-a-dub-dub/firstmate/actions/runs/39644788352), and the eight completed shards of each of those two cancelled runs.
 The cause was the host suite, not the disk-sweep test.
-`tests/fm-disk-sweep.test.sh` measured 5232 to 5477 ms in three runs, and its hint is 5477 ms.
+`tests/fm-disk-sweep.test.sh` measured 5232 to 5561 ms in four runs, and its hint is 5561 ms.
 `tests/fm-supervision-host.test.sh` measured 900666 to 1711444 ms in seven successful samples, against its 789123 ms hint, so the old split packed it beside 20 other scripts and that shard accumulated 1.1 to 1.56 million ms of script time.
 It is now hinted at its slowest sample of 1711444 ms, from the repacked run where it alone filled a 29m34s job, and the partition places it alone, as it already placed `tests/fm-watch-triage.test.sh`, now hinted at its slowest sample of 1218807 ms.
 The other seven shards model at about 19.8 minutes each.
@@ -86,7 +86,7 @@ Its header and `--help` own the modeled-budget check and output fields; read the
 The longest script, `tests/fm-supervision-host.test.sh`, is the indivisible floor for this layout, with `tests/fm-watch-triage.test.sh` next.
 The estimates use per-file maxima from different runs, not measured rebalanced jobs or an end-to-end latency guarantee.
 The fork's host samples range from 900666 to 1711444 ms and its watch-triage samples from 973174 to 1218807 ms.
-The 30-second ceiling on job overhead beyond summed scripts was observed in the 2026-09-30 baseline runs; the fork refresh measured no job overhead of its own.
+The 30-second ceiling on job overhead beyond summed scripts was observed in the 2026-09-30 baseline runs; the fork's host-alone shard on run 39644788352 ran 29m34s against 1711444 ms of script time, about 63 seconds of job overhead, so allow at least that much above a modeled shard weight.
 Even so, maxima from a few runs do not establish a P95 or guarantee future headroom.
 Job timeouts remain hang tripwires under the policy in [Timeouts](#timeouts) below; they are not the desired healthy duration.
 `tests/fm-ci-workflow.test.sh` compares the parsed CI matrix to the executable runner lanes, and the runner rejects parallel `--jobs` on a serial lane even when that shard has only one member.
