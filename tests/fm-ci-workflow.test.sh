@@ -6,8 +6,8 @@
 # fan-out, and four jobs carried no timeout at all. These tests hold both
 # safeguards: PR runs supersede within one PR while main pushes are never
 # cancelled, and every CI job carries a finite hang tripwire drawn from the
-# three-tier timeout policy that docs/fm-test-portable-shards.md "Timeouts"
-# owns (fast, normal, heavy), so no job drifts back to a one-off number.
+# four-tier timeout policy that docs/fm-test-portable-shards.md "Timeouts"
+# owns (fast, normal, serial shard, heavy), so no job drifts back to a one-off number.
 #
 # They also hold the fork opt-out: the repository variables FM_CI_SKIP_PUSH and
 # FM_CI_SKIP_MACOS let a fork skip the push run and the macOS job through a
@@ -200,7 +200,8 @@ puts YAML.load_file(ARGV[0]).fetch("jobs").fetch(ARGV[1]).fetch("timeout-minutes
 # must join a tier, and a job-level value outside these tiers is exactly the
 # one-off number the policy removed.
 FAST_TIER_JOBS='test-coverage invariants tests-timing-aggregate'
-NORMAL_TIER_JOBS='lint tests-portable-parallel-1 tests-portable-parallel-2 tests-portable-serial macos-stock-bash'
+NORMAL_TIER_JOBS='lint tests-portable-parallel-1 tests-portable-parallel-2 macos-stock-bash'
+SERIAL_TIER_JOBS='tests-portable-serial'
 HEAVY_TIER_JOBS='tests-herdr'
 
 # Print the one timeout every listed job shares; fail on any disagreement.
@@ -272,21 +273,21 @@ end
   pass "every ci.yml job carries a finite timeout"
 }
 
-# Every job sits in exactly one tier, and the workflow carries exactly three
+# Every job sits in exactly one tier, and the workflow carries exactly four
 # distinct job-level timeouts: one per tier, no one-off numbers.
 test_every_job_belongs_to_exactly_one_timeout_tier() {
   local expected actual distinct
   # shellcheck disable=SC2086
-  expected=$(printf '%s\n' $FAST_TIER_JOBS $NORMAL_TIER_JOBS $HEAVY_TIER_JOBS | LC_ALL=C sort)
+  expected=$(printf '%s\n' $FAST_TIER_JOBS $NORMAL_TIER_JOBS $SERIAL_TIER_JOBS $HEAVY_TIER_JOBS | LC_ALL=C sort)
   [ "$(printf '%s\n' "$expected" | LC_ALL=C sort -u)" = "$expected" ] \
     || fail "a job is listed in more than one timeout tier:"$'\n'"$expected"
   actual=$(workflow_jobs | LC_ALL=C sort) || fail "could not list ci.yml jobs"
   [ "$actual" = "$expected" ] \
     || fail "ci.yml jobs and the timeout tiers disagree; every job must join one tier"$'\n'"workflow: $(printf '%s' "$actual" | tr '\n' ' ')"$'\n'"tiers: $(printf '%s' "$expected" | tr '\n' ' ')"
   distinct=$(for job in $expected; do job_timeout "$job"; done | LC_ALL=C sort -u | wc -l | tr -d ' ')
-  [ "$distinct" = 3 ] \
-    || fail "ci.yml must carry exactly three distinct job timeouts (fast, normal, heavy), got $distinct"
-  pass "every ci.yml job belongs to one of the three timeout tiers"
+  [ "$distinct" = 4 ] \
+    || fail "ci.yml must carry exactly four distinct job timeouts (fast, normal, serial shard, heavy), got $distinct"
+  pass "every ci.yml job belongs to one of the four timeout tiers"
 }
 
 # Fast tier: seconds-long checks share one short tripwire in the 5-10 minute band.
@@ -312,6 +313,51 @@ test_normal_tier_shares_one_budget() {
   [ "$normal" = 30 ] \
     || fail "normal tier must be the single 30-minute shared budget, got $normal"
   pass "normal tier jobs share one $normal minute budget"
+}
+
+# Serial shard tier: the portable serial shards carry the indivisible
+# supervision-host suite, which alone ran 29m34s of a 30-minute job, so they
+# keep a 45-minute tripwire above the normal tier and below the heavy backstop.
+test_serial_shard_tier_sits_between_normal_and_heavy() {
+  local normal serial heavy
+  # shellcheck disable=SC2086
+  normal=$(tier_timeout normal $NORMAL_TIER_JOBS) || exit 1
+  # shellcheck disable=SC2086
+  serial=$(tier_timeout serial $SERIAL_TIER_JOBS) || exit 1
+  # shellcheck disable=SC2086
+  heavy=$(tier_timeout heavy $HEAVY_TIER_JOBS) || exit 1
+  [ "$serial" -gt "$normal" ] && [ "$serial" -lt "$heavy" ] \
+    || fail "serial shard tier ($serial) must sit between the normal ($normal) and heavy ($heavy) tiers"
+  [ "$serial" = 45 ] \
+    || fail "serial shard tier must be the single 45-minute budget, got $serial"
+  pass "serial shard jobs share one $serial minute tripwire"
+}
+
+# The October 2026 serial-shard cancellations came from the two halves of this
+# policy being set independently: bin/fm-test-run.sh decides how much script
+# time it is willing to pack onto one shard, and this workflow decides how long
+# that shard may run. A shard is only dependable when the cap it runs under
+# covers the largest shard the runner will pack, with room for job overhead, so
+# hold that relationship across both owners rather than two unrelated numbers.
+test_serial_shard_cap_covers_the_runner_modeled_packing() {
+  local serial cap_ms coverage budget_ms max_ms
+  # shellcheck disable=SC2086
+  serial=$(tier_timeout serial $SERIAL_TIER_JOBS) || exit 1
+  cap_ms=$((serial * 60000))
+  coverage=$("$ROOT/bin/fm-test-run.sh" --check-coverage 2>&1 | grep '^FM_TEST_COVERAGE ') \
+    || fail "could not read serial packing figures from the runner's coverage guard"
+  budget_ms=${coverage##*serial_budget_ms=}
+  budget_ms=${budget_ms%% *}
+  max_ms=${coverage##*serial_max_ms=}
+  max_ms=${max_ms%% *}
+  case "$budget_ms$max_ms" in
+    ''|*[!0-9]*) fail "coverage guard reported no numeric serial packing figures: $coverage" ;;
+  esac
+  [ "$max_ms" -le "$budget_ms" ] \
+    || fail "largest modeled serial shard (${max_ms}ms) exceeds the runner's own packing target (${budget_ms}ms)"
+  [ $((budget_ms + 600000)) -le "$cap_ms" ] \
+    || fail "the serial packing target (${budget_ms}ms) must leave at least ten minutes of the ${serial}-minute serial shard cap (${cap_ms}ms) for setup and runtime variance"
+  pass "the ${serial} minute serial shard cap covers the runner's ${budget_ms}ms packing target and its ${max_ms}ms worst modeled shard"
 }
 
 # Heavy tier: Herdr alone carries a job-level last-resort backstop above the
@@ -449,4 +495,6 @@ test_every_job_has_a_finite_timeout
 test_every_job_belongs_to_exactly_one_timeout_tier
 test_fast_tier_shares_one_short_tripwire
 test_normal_tier_shares_one_budget
+test_serial_shard_tier_sits_between_normal_and_heavy
+test_serial_shard_cap_covers_the_runner_modeled_packing
 test_heavy_tier_keeps_a_step_tripwire_under_a_job_backstop
