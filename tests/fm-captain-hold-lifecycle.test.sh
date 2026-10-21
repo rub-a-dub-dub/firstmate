@@ -4735,6 +4735,31 @@ test_complete_keeps_the_pr_identity_block_last() {
   assert_equals 1 "$(grep -c '^decision_keys=' "$meta")" "a repeat completion stacked a second inventory line"
   bash -c '. "$1"; fm_pr_metadata_identity_parse "$2"' _ "$ROOT/bin/fm-pr-lib.sh" "$meta" \
     || fail "the record is rejected after a repeat completion"
+
+  # A record an earlier release already wedged by appending the pair after the
+  # pr identity block is healed by re-running the same completion.
+  fm_write_meta "$meta" \
+    "window=firstmate:fm-$origin" \
+    "worktree=$home/projects/missing-$origin" \
+    "project=$home/projects/sample" \
+    "harness=codex" \
+    "kind=scout" \
+    "mode=scout" \
+    "spawn_gen=fixture-$origin" \
+    "pr=https://github.com/example/sample/pull/7" \
+    "pr_head=$head" \
+    "x_request=req-1" \
+    "decisions_reviewed=1" \
+    "decision_keys=$call"
+  bash -c '. "$1"; fm_pr_metadata_identity_parse "$2"' _ "$ROOT/bin/fm-pr-lib.sh" "$meta" \
+    && fail "the wedged fixture record parses, so it does not reproduce the reported failure"
+  run_captain "$home" complete "$origin" "$call" >/dev/null \
+    || fail "re-running completion on a wedged record failed"
+  bash -c '. "$1"; fm_pr_metadata_identity_parse "$2" && [ "$FM_PR_META_URL" = "$3" ]' _ \
+    "$ROOT/bin/fm-pr-lib.sh" "$meta" "https://github.com/example/sample/pull/7" \
+    || fail "re-running completion did not heal a wedged record"
+  assert_equals 1 "$(grep -c '^decision_keys=' "$meta")" "healing a wedged record stacked a second inventory line"
+  assert_grep "decision_keys=$call" "$meta" "healing a wedged record lost the inventory"
   pass "complete records the attestation in front of an armed pr identity block"
 }
 

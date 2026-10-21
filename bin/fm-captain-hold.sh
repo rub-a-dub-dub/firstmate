@@ -255,7 +255,10 @@ CAPTAIN_META_LOCK=
 CAPTAIN_META_LOCK_HELD=0
 CAPTAIN_CONTROL_LOCK=
 CAPTAIN_CONTROL_LOCK_HELD=0
+CAPTAIN_META_STAGED=
 captain_hold_cleanup() {
+  [ -z "$CAPTAIN_META_STAGED" ] || rm -f -- "$CAPTAIN_META_STAGED"
+  CAPTAIN_META_STAGED=
   if [ "$CAPTAIN_META_LOCK_HELD" = 1 ]; then
     fm_lock_release "$CAPTAIN_META_LOCK" || true
     CAPTAIN_META_LOCK_HELD=0
@@ -1838,18 +1841,20 @@ reconcile_note() {
 # fm-pr-check.sh already armed. A prior pair is dropped because the union in
 # command_complete already folded its entries into <keys>.
 record_inventory_attestation() {  # <meta> <keys>
-  local meta=$1 keys=$2 tmp
-  tmp=$(mktemp "$STATE/.fm-captain-hold-meta.XXXXXX") || fail "cannot stage the updated task record"
+  local meta=$1 keys=$2
+  CAPTAIN_META_STAGED=$(mktemp "$STATE/.fm-captain-hold-meta.XXXXXX") || fail "cannot stage the updated task record"
   if ! LC_ALL=C awk -F= -v keys="$keys" '
       $1 == "decisions_reviewed" || $1 == "decision_keys" { next }
       $1 == "pr" && !written { printf "decisions_reviewed=1\ndecision_keys=%s\n", keys; written = 1 }
       { print }
       END { if (!written) printf "decisions_reviewed=1\ndecision_keys=%s\n", keys }
-    ' "$meta" > "$tmp" ||
-    ! fm_backlog_atomic_transition publish "$tmp" "$meta" "task record" "$STATE"; then
-    rm -f "$tmp"
+    ' "$meta" > "$CAPTAIN_META_STAGED" ||
+    ! fm_backlog_atomic_transition publish "$CAPTAIN_META_STAGED" "$meta" "task record" "$STATE"; then
+    rm -f "$CAPTAIN_META_STAGED"
+    CAPTAIN_META_STAGED=
     fail "could not record the reviewed inventory in the task record ${FM_BACKLOG_TRANSITION_ERROR:+($FM_BACKLOG_TRANSITION_ERROR)}"
   fi
+  CAPTAIN_META_STAGED=
 }
 
 command_complete() {
@@ -1908,9 +1913,7 @@ EOF
   fi
 
   if [ "$has_meta" = 1 ]; then
-    if [ "$(meta_value "$meta" decisions_reviewed)" != 1 ] || [ "$previous" != "$keys" ]; then
-      record_inventory_attestation "$meta" "$keys"
-    fi
+    record_inventory_attestation "$meta" "$keys"
     fm_lock_release "$CAPTAIN_META_LOCK"
     CAPTAIN_META_LOCK_HELD=0
 
