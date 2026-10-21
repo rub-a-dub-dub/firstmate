@@ -683,6 +683,7 @@ collect_available_worktrees() {
   command -v jq >/dev/null 2>&1 || return 0
   for project in "$PROJECTS"/*; do
     [ -d "$project" ] && [ ! -L "$project" ] || continue
+    # shellcheck disable=SC2016  # $1 must reach the inner bash, not expand here
     json=$(fm_run_timed "$SCAN_TIMEOUT" bash -c 'cd "$1" 2>/dev/null && exec treehouse status --json' _ "$project" 2>/dev/null || true)
     [ -n "$json" ] || continue
     printf '%s\n' "$json" | jq -r '.[] | .path' 2>/dev/null >> "$ALL_WORKTREES" || true
@@ -742,7 +743,9 @@ EOF
       # projects; its slot may since serve another task, so slot state is not
       # consulted.
       workspace=$(plist_workspace "$candidate" 2>/dev/null || true)
-      [ -n "$workspace" ] && workspace_project "$workspace" >/dev/null || continue
+      if [ -z "$workspace" ] || ! workspace_project "$workspace" >/dev/null; then
+        continue
+      fi
       safe_remove "$candidate" "$TEMP_ROOTS" "orphan task temp cache ($id)" || true
     done < <(temp_cache_candidates "$root")
   done < <(unique_temp_roots)
