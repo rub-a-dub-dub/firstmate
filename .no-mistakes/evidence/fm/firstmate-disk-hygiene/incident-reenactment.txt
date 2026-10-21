@@ -1,0 +1,113 @@
+fm-disk-sweep end-to-end reenactment of the 2026-10-21 full-disk incident
+fixture: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-disk-incident.HXChB2
+branch commit: 002c24b2
+fixture size before any cleanup: 1489 MiB
+
+======== 1. the nightly periodic sweep, dry run (default mode, nothing is deleted) ========
+
+would remove orphan task temp cache (hattie-ship-5): /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-disk-incident.HXChB2/temp/hattie-ship-5-attempt-1 (128.0 MiB)
+would remove orphan DerivedData: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-disk-incident.HXChB2/derived/Hattie-slot2 (64.0 MiB)
+would remove orphan DerivedData: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-disk-incident.HXChB2/derived/Hattie-slot3 (64.0 MiB)
+would remove orphan DerivedData: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-disk-incident.HXChB2/derived/Hattie-slot4 (64.0 MiB)
+would remove orphan DerivedData: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-disk-incident.HXChB2/derived/Hattie-slot5 (64.0 MiB)
+disk sweep: 5 candidate(s), removed 0, skipped 0, freed 0 B (dry run)
+
+======== 2. the disk falls to 2 GiB free: what the captain is shown ========
+
+$ fm-disk-sweep.sh --check --watcher   # the watcher every 5 min; session start prints the same under DISK SPACE
+
+warning: low disk on home volume /dev/disk3s5: 2.0 GiB free (warn below 20 GiB; critical below 10 GiB)
+Top attributed consumers for this home:
+  DerivedData: hattie (448.0 MiB)
+  temp: hattie-ship-1 (384.0 MiB)
+  treehouse: hattie (192.5 MiB)
+  temp: hattie-ship-5 (128.0 MiB)
+  temp: hattie-ship-7 (128.0 MiB)
+Reclaim orphaned caches safely: FM_HOME=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-disk-incident.HXChB2/home /Users/crossbow/.no-mistakes/worktrees/00644a303d6a/01M5EGJB9C0BXD17T0AWVKN35A/bin/fm-disk-sweep.sh --apply
+wake: disk space is below the 10 GiB critical threshold for this home
+
+======== 3. the same low-disk condition reaching the firstmate through the real watcher ========
+
+$ fm-watch.sh   (watcher stdout)
+  check: disk-space: disk space is below the 10 GiB critical threshold for this home
+
+durable wake queue (state/.wake-queue):
+  1792571280	1	check	disk-space	check: disk-space: disk space is below the 10 GiB critical threshold for this home
+
+======== 4. teardown of landed task hattie-ship-1 (exactly as bin/fm-teardown.sh delegates it) ========
+
+$ FM_DISK_TASK_TMP=temp/fm-hattie-ship-1 fm-disk-sweep.sh --cleanup-task hattie-ship-1 pool/1/hattie
+
+disk cleanup hattie-ship-1: freed 480.0 MiB from 5 cache path(s); skipped 0
+
+this task's caches:
+  GONE     temp/hattie-ship-1-attempt-1
+  GONE     temp/hattie-ship-1-attempt-2
+  GONE     temp/hattie-ship-1-attempt-3
+  GONE     temp/fm-hattie-ship-1
+  GONE     derived/Hattie-slot1
+
+its worktree is untouched:
+  present  pool/1/hattie/.build/blob
+  present  pool/1/hattie/Hattie.xcodeproj
+
+======== 5. the periodic sweep, applied ========
+
+$ fm-disk-sweep.sh --apply
+
+disk sweep: 5 candidate(s), removed 5, skipped 0, freed 384.0 MiB
+
+======== 6. what the sweep kept ========
+
+in flight on slot 7, so untouchable:
+  present  temp/hattie-ship-7-attempt-1
+  present  derived/Hattie-slot7
+
+slot Treehouse still reports busy:
+  present  derived/Hattie-slot6
+
+not this home's work:
+  present  temp/other-home-attempt-1
+  present  derived/OtherApp
+
+simulator runtime (never a candidate here):
+  present  temp/CoreSimulator/Runtimes/iOS-18.0.simruntime
+
+returned slots 2-4 and the destroyed slot 5:
+  GONE     derived/Hattie-slot2
+  GONE     derived/Hattie-slot3
+  GONE     derived/Hattie-slot4
+  GONE     derived/Hattie-slot5
+  GONE     temp/hattie-ship-5-attempt-1
+
+the Treehouse pool slots themselves are never deleted here:
+  present  pool/2/hattie
+  present  pool/7/hattie
+
+======== 7. durable records and the space actually reclaimed ========
+
+fixture size after cleanup: 625 MiB (was 1489 MiB at the top of this run)
+
+state/disk-sweep.log:
+  1792571277	mode=orphan-sweep	apply=0	candidates=5	removed=0	skipped=0	freed_bytes=0	unsized=0
+  1792571282	mode=cleanup-task	removed=task temp cache	bytes=128.0 MiB	path=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-disk-incident.HXChB2/temp/hattie-ship-1-attempt-1
+  1792571283	mode=cleanup-task	removed=task temp cache	bytes=128.0 MiB	path=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-disk-incident.HXChB2/temp/hattie-ship-1-attempt-2
+  1792571284	mode=cleanup-task	removed=task temp cache	bytes=128.0 MiB	path=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-disk-incident.HXChB2/temp/hattie-ship-1-attempt-3
+  1792571284	mode=cleanup-task	removed=recorded task temp root	bytes=32.0 MiB	path=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-disk-incident.HXChB2/temp/fm-hattie-ship-1
+  1792571284	mode=cleanup-task	removed=task DerivedData	bytes=64.0 MiB	path=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-disk-incident.HXChB2/derived/Hattie-slot1
+  1792571284	mode=cleanup-task	apply=1	candidates=5	removed=5	skipped=0	freed_bytes=503332864	unsized=0
+  1792571287	mode=sweep	removed=orphan task temp cache (hattie-ship-5)	bytes=128.0 MiB	path=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-disk-incident.HXChB2/temp/hattie-ship-5-attempt-1
+  1792571288	mode=sweep	removed=orphan DerivedData	bytes=64.0 MiB	path=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-disk-incident.HXChB2/derived/Hattie-slot2
+  1792571289	mode=sweep	removed=orphan DerivedData	bytes=64.0 MiB	path=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-disk-incident.HXChB2/derived/Hattie-slot3
+  1792571291	mode=sweep	removed=orphan DerivedData	bytes=64.0 MiB	path=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-disk-incident.HXChB2/derived/Hattie-slot4
+  1792571293	mode=sweep	removed=orphan DerivedData	bytes=64.0 MiB	path=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-disk-incident.HXChB2/derived/Hattie-slot5
+  1792571295	mode=orphan-sweep	apply=1	candidates=5	removed=5	skipped=0	freed_bytes=402673664	unsized=0
+
+state/disk-usage.cache (bytes<TAB>kind<TAB>label):
+  201818112	treehouse	hattie
+  134225920	DerivedData	hattie
+  134221824	temp	hattie-ship-7
+
+======== 8. the warning the captain sees once space recovers ========
+
+(silent - above the 20 GiB warning threshold)
