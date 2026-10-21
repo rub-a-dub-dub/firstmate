@@ -11,6 +11,7 @@ Start with the directory layout, then use the setting reference for the behavior
 | Task windows and worker tools | [Runtime backend](#runtime-backend-configbackend--fm_backend) and [harness support](#harness-support) |
 | Worker permissions, accounts, or environment | [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [worker account pin](#worker-account-pin-configclaude-account-configpi-account), [worker tool exclusions](#worker-tool-exclusions-configcrew-exclude-tools), and [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist) |
 | Backlog, preferences, and memory | [Backlog backend](#backlog-backend-taskstoml--configbacklog-backend), [captain preferences](#captain-preferences-datacaptainmd--datacaptain-sharedmd), and [startup memory budget](#startup-memory-budget-configstartup-memory-budget) |
+| Disk warnings and build-cache cleanup | [Disk hygiene](#disk-hygiene) |
 | Supervision and presentation | [Pi supervision branch](#pi-supervision-branch), [supervision host](#supervision-host-configsupervision-host), and [Calm preference](#calm-preference-configcalm) |
 | Persistent secondmates | [Secondmate routes](#secondmate-routes-datasecondmatesmd) |
 | Per-run overrides and tuning | [Environment variables](#environment-variables) |
@@ -585,6 +586,44 @@ The flag is a home-local preference and is not inherited by secondmate homes.
 The optional local, gitignored `config/pipeline-spend` presence flag opts this home into recording per-task no-mistakes pipeline spend in `data/pipeline-spend.jsonl` during teardown.
 When the flag is absent, teardown skips recording and the recorder exits before reading task metadata, no-mistakes state, or the spend ledger.
 An existing ledger is left untouched while recording is disabled.
+
+## Disk hygiene
+
+`bin/fm-disk-sweep.sh` owns low-space reporting, task-cache cleanup, and the conservative orphan sweep.
+The session-start digest runs its read-only space check with a two-second bound, and the watcher repeats that check every five minutes by default.
+Healthy checks are silent.
+Below the warning threshold the digest names each affected volume, prints the largest cached consumers attributable to this home, and prints the safe apply command.
+Below the critical threshold the watcher also emits a durable `check: disk-space` wake, repeated at most every six hours while space stays critical.
+
+The warning threshold is 20 GiB free and the critical threshold is 10 GiB free.
+Neither is configurable, so every home reports low space on the same terms.
+
+The watcher starts `bin/fm-disk-sweep.sh --apply --watcher` once per day by default as a detached job bounded by `FM_DISK_SWEEP_TIMEOUT`, and a later watcher pass collects its report, so a slow size walk never delays wakes.
+The standalone sweep is a dry run unless `--apply` is present, while `--cleanup-task` always applies.
+The periodic apply mode deletes only two orphan categories.
+The first is structurally recognized temp Xcode caches older than 24 hours whose name, or parent directory name, carries a task id this home knows from `state/` or the backlog as a whole dash-, dot-, underscore-, or plus-delimited token, where no task the name carries is still live; a DerivedData layout must also record a WorkspacePath in one of this home's projects.
+The second is DerivedData entries older than seven days whose recorded WorkspacePath belongs to this home's projects, lies in no live task's worktree, and is missing or belongs to a Treehouse slot that Treehouse reports available.
+A WorkspacePath belongs to this home only when it lies below `projects/<name>`, or at `<pool-root>/<slot>/<name>` for a Treehouse pool root this home's own slot paths prove, so an unrelated path that merely happens to end in a project name is never attributed here.
+It never removes simulator runtimes or Treehouse pool slots.
+Every run appends totals to `state/disk-sweep.log`; warning attribution is cached in `state/disk-usage.cache` so session start never performs an unbounded size walk.
+Each Treehouse slot is sized and attributed to its own project, so projects sharing one pool root each keep their own row.
+Sizing a candidate is bounded like every other probe here, so a walk that cannot finish reports that path's size as unknown and counts it apart from the freed total rather than as zero bytes.
+For the same reason the attribution record names itself partial when a size probe could not finish, and a refresh that attributed nothing is discarded rather than published over the last good record.
+A sweep never wakes the firstmate; the five-minute space check is the one owner of low-disk warnings and the critical wake.
+
+Successful task teardown calls the same owner after landed-work checks and process reaping.
+It cleans structurally recognized task-named caches under `/tmp` and `/private/tmp` (a DerivedData layout whose `WorkspacePath` is the task's worktree or lies inside it), the task's recorded temporary root and home-bound launch namespace, and global DerivedData whose `WorkspacePath` is that task's worktree or lies inside it.
+Nothing inside a task worktree is ever removed.
+Task-named temp caches match the same delimited-token rule, and a cache whose name also carries another live task's id is left for that task.
+It prints one totals line and never changes `--force` authority or landed-work checks.
+
+A secondmate keeps both its launch namespace and its task temporary root until its endpoint is closed and every teardown refusal has passed, so a retry that preserves the secondmate home and route leaves a still-running agent's temporary root intact.
+
+Immediately before every removal, the command re-proves that the candidate is a strict descendant of one of two allowed roots: a configured system temp root, or the global Xcode DerivedData root.
+It refuses symlinks and skips an inferred candidate unless bounded whole-system `lsof` and `ps` listings both prove that no running process has the path, or anything below it, open or in its command line.
+Missing tools, timeouts, malformed plist provenance, ambiguous task ids, unreadable Treehouse state, and any path outside those roots all fail closed by retaining the candidate.
+The task's recorded temporary root and its home-bound launch namespace are the exception, because this fleet created each of them for that one task and teardown's landed-work gates and process reap are the authority to retire them.
+They carry the allowed-root and symlink re-proof, and teardown removes them whether or not the in-use listings complete, so a loaded machine cannot leak them permanently.
 
 ## Turn-end pane-churn absorb (config/turnend-churn-absorb)
 
@@ -2403,6 +2442,11 @@ FM_HEARTBEAT_MAX=7200   # heartbeat backoff cap
 FM_INACTIVE_RECONCILE_SECS=900  # 60..1800-second watcher cadence and inactivity threshold; locked session start also requests an immediate scan in the deferred worker
 FM_INACTIVE_RECONCILE_BUDGET_SECS=10  # 1..30-second scan deadline; wedged-scan kill backstop follows one second later
 FM_CHECK_INTERVAL=300   # seconds between slow checks (authenticated merge polls, custom checks, or Relay dispatch)
+FM_DISK_CHECK_INTERVAL=300   # seconds between watcher low-space checks; invalid or zero uses 300
+FM_DISK_SWEEP_INTERVAL=86400 # seconds between watcher orphan sweeps; invalid or zero uses 86400
+FM_DISK_SWEEP_TIMEOUT=1800   # seconds allowed for the watcher's detached daily sweep; invalid or zero uses 1800
+FM_DISK_IN_USE_TIMEOUT=10    # seconds allowed for each lsof or ps listing before a deletion is skipped
+FM_DISK_SCAN_TIMEOUT=3       # seconds allowed for each best-effort size or Treehouse attribution probe; the detached daily sweep defaults to 120
 FM_TASK_INBOX_GRACE_SECS=90   # seconds an unhandled steering-inbox message may sit before the watcher attempts doorbell delivery on an idle pane; also the minimum spacing between attempts
 FM_TASK_INBOX_RING_MAX=3      # watcher delivery attempts without an acknowledgement before the task surfaces as a stale wake for recovery
 FM_TASK_INBOX_BUSY_MAX=2      # consecutive busy-deferred due polls before a stuck-busy stale wake; 1..999999999, at most 9 decimal digits, otherwise 2; policy: bin/fm-task-inbox-lib.sh
