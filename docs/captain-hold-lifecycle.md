@@ -104,6 +104,7 @@ An expired deferral therefore remains answerable.
 
 While originating task metadata is live, the `complete` subcommand unions the reviewed captain-held task ids, called the reviewed inventory, into `decision_keys=` and records `decisions_reviewed=1` beside it.
 The pair goes in front of an armed `pr=` identity block, which stays the record's tail, and at the end only when the record carries none.
+The whole record is rewritten in place, so one pair survives a repeat completion, and re-running `complete` repairs a record an earlier release wedged by appending the pair after that block.
 A post-teardown visual review can complete against the surviving report and durable tasks without recreating volatile task metadata.
 
 `complete` accepts `--none` as an explicit semantic inventory result.
@@ -536,6 +537,7 @@ The suite does not test the accepted merge-to-cleanup re-hold window or asynchro
   A pruned bare close does not.
   An earlier answered incarnation archived beside a later bare close of the same reused call id does not answer for it, regardless of archive order.
 - The archived origin binding holds per id: a pruned answered call completes for the origin its archived row records and is refused for one that id was never held for, and two archived incarnations each complete under their own recorded origin.
+- Completing an origin that `bin/fm-pr-check.sh` already armed leaves the record parseable as a PR identity: the attestation pair lands in front of the `pr=` block, a repeat completion keeps one inventory line, a record wedged by the earlier appending writer is healed, and the republished record still satisfies the re-arm precondition.
 
 ### Answers, stamps, and deferral
 
