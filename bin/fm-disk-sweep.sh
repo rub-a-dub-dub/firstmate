@@ -99,12 +99,16 @@ KNOWN_IDS=
 LIVE_IDS=
 OPEN_FILES=
 OPEN_FILES_AT=0
+USAGE_CACHE_TMP=
+USAGE_POOLS_TMP=
 
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 
 cleanup_scratch() {
-  rm -f "$OPEN_FILES" "$KNOWN_IDS" "$LIVE_IDS" "$AVAILABLE_WORKTREES" "$ALL_WORKTREES" 2>/dev/null || true
+  rm -f "$OPEN_FILES" "$KNOWN_IDS" "$LIVE_IDS" "$AVAILABLE_WORKTREES" "$ALL_WORKTREES" \
+    "$USAGE_POOLS_TMP" "$USAGE_CACHE_TMP" "${USAGE_CACHE_TMP:+$USAGE_CACHE_TMP.sum}" \
+    2>/dev/null || true
 }
 trap cleanup_scratch EXIT
 
@@ -787,8 +791,11 @@ cache_add() {  # <file> <bytes> <kind> <label>
 refresh_usage_cache() {
   local tmp root candidate bytes id entry workspace project pool pools
   mkdir -p "$STATE" 2>/dev/null || return 0
-  tmp=$(mktemp "$STATE/.disk-usage.cache.XXXXXX" 2>/dev/null) || return 0
-  pools=$(mktemp "${TMPDIR:-/tmp}/fm-disk-pools.XXXXXX") || { rm -f "$tmp"; return 0; }
+  USAGE_CACHE_TMP=$(mktemp "$STATE/.disk-usage.cache.XXXXXX" 2>/dev/null) || return 0
+  USAGE_POOLS_TMP=$(mktemp "${TMPDIR:-/tmp}/fm-disk-pools.XXXXXX") \
+    || { rm -f "$USAGE_CACHE_TMP"; USAGE_CACHE_TMP=; return 0; }
+  tmp=$USAGE_CACHE_TMP
+  pools=$USAGE_POOLS_TMP
   while IFS= read -r root; do
     while IFS= read -r candidate; do
       [ -n "$candidate" ] || continue
@@ -827,7 +834,9 @@ refresh_usage_cache() {
     END { for (key in total) print total[key] FS key }
   ' "$tmp" | sort -t $'\t' -k1,1nr > "$tmp.sum"
   mv "$tmp.sum" "$STATE/disk-usage.cache"
-  rm -f "$tmp" "$pools"
+  rm -f "$tmp" "$tmp.sum" "$pools"
+  USAGE_CACHE_TMP=
+  USAGE_POOLS_TMP=
 }
 
 free_bytes_for_home() {

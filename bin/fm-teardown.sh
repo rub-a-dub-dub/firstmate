@@ -3651,16 +3651,18 @@ if [ "$KIND" != secondmate ] && teardown_owns_worktree; then
 elif [ "$KIND" != secondmate ]; then
   reap_task_worktree_processes tasktmp "$TASK_TMP"
 fi
-if [ "$KIND" != secondmate ]; then
-  DISK_CLEANUP_WORKTREE=
-  if teardown_owns_worktree && [ -d "$WT" ]; then
-    DISK_CLEANUP_WORKTREE=$WT
-  fi
-  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
-    FM_CONFIG_OVERRIDE="$CONFIG" FM_DISK_TASK_TMP="$TASK_TMP" \
-    "$SCRIPT_DIR/fm-disk-sweep.sh" --cleanup-task "$ID" "$DISK_CLEANUP_WORKTREE" "$PROJ" \
-    || echo "warning: task cache cleanup could not complete for $ID; teardown continues conservatively" >&2
+# Every kind stages its launch command under /tmp/fm-<id>+<home-hash>
+# (bin/fm-spawn.sh), and only this delegation retires it. A secondmate's
+# worktree= is its own Firstmate home rather than a task slot, so it is handed
+# no worktree here: that confines its cleanup to the launch namespace.
+DISK_CLEANUP_WORKTREE=
+if [ "$KIND" != secondmate ] && teardown_owns_worktree && [ -d "$WT" ]; then
+  DISK_CLEANUP_WORKTREE=$WT
 fi
+FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+  FM_CONFIG_OVERRIDE="$CONFIG" FM_DISK_TASK_TMP="$TASK_TMP" \
+  "$SCRIPT_DIR/fm-disk-sweep.sh" --cleanup-task "$ID" "$DISK_CLEANUP_WORKTREE" "$PROJ" \
+  || echo "warning: task cache cleanup could not complete for $ID; teardown continues conservatively" >&2
 if [ "$KIND" = ship ] && teardown_owns_worktree && [ -e "$CONFIG/pipeline-spend" ]; then
   FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_CONFIG_OVERRIDE="$CONFIG" \
     "$SCRIPT_DIR/fm-pipeline-spend.sh" record "$ID" >/dev/null \
