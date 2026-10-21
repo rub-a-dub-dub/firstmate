@@ -530,7 +530,7 @@ PY
   cp "$ROOT/tests/git-config-helpers.sh" "$timeout_repo/tests/"
   cat >"$timeout_repo/bin/fm-timeout-lib.sh" <<'SH'
 fm_run_timed() {
-  [ "$1" -ge 1500 ] || return 99
+  [ "$1" -ge 1800 ] || return 99
   return 124
 }
 SH
@@ -1567,10 +1567,10 @@ SH
   [ "$rc" -eq 0 ] || fail "healthy changed watcher script must pass, got $rc: $(cat "$tmp/out" "$tmp/err")"
   [ -s "$repo/bound-secs" ] || fail "changed watcher script did not run under the automatic bound: $(cat "$tmp/out")"
   bound=$(cat "$repo/bound-secs")
-  [ "$bound" -ge 1500 ] \
-    || fail "automatic --changed bound for $script must be at least 1500s, got ${bound}s"
+  [ "$bound" -ge 1800 ] \
+    || fail "automatic --changed bound for $script must be at least 1800s, got ${bound}s"
   rm -rf "$tmp"
-  pass "the automatic --changed bound gives the slow watcher suite at least 1500s"
+  pass "the automatic --changed bound gives the slow watcher suite at least 1800s"
 }
 
 test_max_wall_ms_is_a_result_not_advice() {
