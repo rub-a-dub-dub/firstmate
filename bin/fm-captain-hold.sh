@@ -1831,6 +1831,27 @@ reconcile_note() {
   printf 'still-open: %s\n' "$id"
 }
 
+# Publish the attestation pair into the task record. fm_pr_metadata_identity_parse
+# rejects any key after a pr= line except pr_head= and x_*, so the pair goes in
+# front of a preserved pr= identity block and at the end only when the record
+# has none; appending it last would make the watcher reject an origin that
+# fm-pr-check.sh already armed. A prior pair is dropped because the union in
+# command_complete already folded its entries into <keys>.
+record_inventory_attestation() {  # <meta> <keys>
+  local meta=$1 keys=$2 tmp
+  tmp=$(mktemp "$STATE/.fm-captain-hold-meta.XXXXXX") || fail "cannot stage the updated task record"
+  if ! LC_ALL=C awk -F= -v keys="$keys" '
+      $1 == "decisions_reviewed" || $1 == "decision_keys" { next }
+      $1 == "pr" && !written { printf "decisions_reviewed=1\ndecision_keys=%s\n", keys; written = 1 }
+      { print }
+      END { if (!written) printf "decisions_reviewed=1\ndecision_keys=%s\n", keys }
+    ' "$meta" > "$tmp" ||
+    ! fm_backlog_atomic_transition publish "$tmp" "$meta" "task record" "$STATE"; then
+    rm -f "$tmp"
+    fail "could not record the reviewed inventory in the task record ${FM_BACKLOG_TRANSITION_ERROR:+($FM_BACKLOG_TRANSITION_ERROR)}"
+  fi
+}
+
 command_complete() {
   local origin=${1:-} meta previous='' supplied='' keys='' entry key status_file open has_meta=0 transfer_rc transfers=() resolved
   local resolved_how attested_by_prefix='' origin_state unrecorded_origin=''
@@ -1888,7 +1909,7 @@ EOF
 
   if [ "$has_meta" = 1 ]; then
     if [ "$(meta_value "$meta" decisions_reviewed)" != 1 ] || [ "$previous" != "$keys" ]; then
-      printf 'decisions_reviewed=1\ndecision_keys=%s\n' "$keys" >> "$meta"
+      record_inventory_attestation "$meta" "$keys"
     fi
     fm_lock_release "$CAPTAIN_META_LOCK"
     CAPTAIN_META_LOCK_HELD=0
