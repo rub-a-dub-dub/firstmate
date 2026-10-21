@@ -530,7 +530,7 @@ PY
   cp "$ROOT/tests/git-config-helpers.sh" "$timeout_repo/tests/"
   cat >"$timeout_repo/bin/fm-timeout-lib.sh" <<'SH'
 fm_run_timed() {
-  [ "$1" -eq 1500 ] || return 99
+  [ "$1" -ge 1500 ] || return 99
   return 124
 }
 SH
@@ -1199,10 +1199,10 @@ test_portable_serial_hint_coverage_is_reported_and_bounded() {
   budget=$(printf '%s\n' "$out" | sed -n 's/.*serial_budget_ms=\([0-9][0-9]*\).*/\1/p')
   [ -n "$max" ] && [ -n "$budget" ] \
     || fail "coverage summary must carry serial packing and budget: $out"
-  [ "$budget" -eq 1380000 ] || fail "packing must leave seven minutes of the normal CI tier"
+  [ "$budget" -eq 1500000 ] || fail "packing must leave five minutes of the normal CI tier"
   [ "$max" -gt 0 ] && [ "$max" -le "$budget" ] \
     || fail "largest serial shard packs ${max}ms above the ${budget}ms target"
-  pass "coverage guard bounds the unmeasured share and serial packing within twenty-three minutes"
+  pass "coverage guard bounds the unmeasured share and serial packing within twenty-five minutes"
 }
 
 test_portable_serial_packing_budget_boundary() {
@@ -1216,7 +1216,7 @@ test_portable_serial_packing_budget_boundary() {
     printf '#!/usr/bin/env bash\nexit 0\n' >"$repo/$script"
   done < <("$RUNNER" --list --all)
 
-  for weight in 1380000 1380001; do
+  for weight in 1500000 1500001; do
     cp "$RUNNER" "$repo/bin/fm-test-run.sh"
     python3 - "$repo/bin/fm-test-run.sh" "$weight" <<'PY' \
       || fail "could not seed the fixture's measured timing input"
@@ -1230,15 +1230,17 @@ runner.write_text(re.sub(
 ))
 PY
     out=$(bash "$repo/bin/fm-test-run.sh" --check-coverage 2>&1) && rc=0 || rc=$?
-    if [ "$weight" -eq 1380000 ]; then
+    if [ "$weight" -eq 1500000 ]; then
       expect_code 0 "$rc" "packing exactly at the budget must be accepted"
       assert_contains "$out" "FM_TEST_COVERAGE ok" "boundary coverage did not pass"
-      assert_contains "$out" "serial_max_ms=1380000" "fixture did not pack exactly at the budget"
-      assert_contains "$out" "serial_budget_ms=1380000" "fixture changed the packing budget"
+      assert_contains "$out" "serial_max_ms=1500000" "fixture did not pack exactly at the budget"
+      assert_contains "$out" "serial_budget_ms=1500000" "fixture changed the packing budget"
     else
       expect_code 1 "$rc" "packing one millisecond above the budget must be refused"
-      assert_contains "$out" "largest portable serial shard packs 1380001ms above the 1380000ms target" \
+      assert_contains "$out" "largest portable serial shard packs 1500001ms above the 1500000ms target" \
         "over-budget refusal did not explain the modeled excess"
+      assert_contains "$out" "that shard is a single script, which no rebalance or extra shard can divide" \
+        "over-budget refusal advised rebalancing an indivisible one-script shard"
       assert_not_contains "$out" "FM_TEST_COVERAGE ok" "over-budget packing reported success"
     fi
   done

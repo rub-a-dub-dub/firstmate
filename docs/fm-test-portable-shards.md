@@ -29,18 +29,15 @@ The session-start hint retains its pre-optimization maximum until CI measures th
 ### Fork refresh, 2026-10-21
 
 The fork's `Behavior portable serial 2` job reached its 30-minute cap on main run [39613397657](https://github.com/rub-a-dub-dub/firstmate/actions/runs/39613397657) and three times on pull request 46, including run [39617554991](https://github.com/rub-a-dub-dub/firstmate/actions/runs/39617554991).
-Those two cancelled jobs uploaded no artifact, so their shard-2 scripts have no successful sample.
-The serial hints were raised from the slowest successful `duration_ms` across the portable serial timing artifacts of eight fork runs: [38534017843](https://github.com/rub-a-dub-dub/firstmate/actions/runs/38534017843), [38818232706](https://github.com/rub-a-dub-dub/firstmate/actions/runs/38818232706), [38826348620](https://github.com/rub-a-dub-dub/firstmate/actions/runs/38826348620), [39486507769](https://github.com/rub-a-dub-dub/firstmate/actions/runs/39486507769), [39489965358](https://github.com/rub-a-dub-dub/firstmate/actions/runs/39489965358), [39589765073](https://github.com/rub-a-dub-dub/firstmate/actions/runs/39589765073), and the two cancelled runs' completed shards.
+Of those four cancellations only the two runs cited above contributed samples; the shard-2 job of each uploaded no artifact, so their shard-2 scripts have no successful sample there.
+The serial hints were raised from the slowest successful `duration_ms` across the portable serial timing artifacts of eight fork runs: [38534017843](https://github.com/rub-a-dub-dub/firstmate/actions/runs/38534017843), [38818232706](https://github.com/rub-a-dub-dub/firstmate/actions/runs/38818232706), [38826348620](https://github.com/rub-a-dub-dub/firstmate/actions/runs/38826348620), [39486507769](https://github.com/rub-a-dub-dub/firstmate/actions/runs/39486507769), [39489965358](https://github.com/rub-a-dub-dub/firstmate/actions/runs/39489965358), [39589765073](https://github.com/rub-a-dub-dub/firstmate/actions/runs/39589765073), and the eight completed shards of each of those two cancelled runs.
 The cause was the host suite, not the disk-sweep test.
 `tests/fm-disk-sweep.test.sh` measured 5232 to 5477 ms in three runs, and its hint is 5477 ms.
 `tests/fm-supervision-host.test.sh` measured 900666 to 1342826 ms in six successful samples, against its 789123 ms hint, so the old split packed it beside 20 other scripts and that shard accumulated 1.1 to 1.56 million ms of script time.
 It is now hinted at 1342826 ms and the partition places it alone, as it already placed `tests/fm-watch-triage.test.sh`, now hinted at its slowest sample of 1218807 ms.
-The other seven shards model at about 18.7 minutes each.
-The 11 serial scripts that had no hint were given their slowest sample.
-A hint was also raised to its slowest sample when that sample was at least 25 percent and 5 seconds above it, or at least 60 seconds above it.
-Smaller differences were left alone, since the slowest of a few samples is a weight and not a bound.
-A script with no successful fork sample keeps its earlier hint.
-The host floor sits above the former 20-minute packing target, so `PORTABLE_SERIAL_MAX_WEIGHT_MS` is now 23 minutes, which leaves seven minutes of the 30-minute tier.
+The other seven shards model at about 19.7 minutes each.
+Every hint below its slowest successful fork sample was raised to that sample, including the 11 serial scripts that had no hint at all, and a hint already above every fork sample keeps its earlier, higher value, so each entry is still the slowest successful sample across the runs this file references.
+The host floor sits above the former 20-minute packing target, so `PORTABLE_SERIAL_MAX_WEIGHT_MS` is now 25 minutes, which leaves five minutes of the 30-minute tier and about 12 percent of headroom over that indivisible floor.
 Raising the job timeout was not needed: the longest modeled shard is the host alone at 22.4 minutes, below the cap that the earlier 26-minute shard also cleared.
 
 ## Parallel lanes
@@ -104,7 +101,7 @@ jq -r '.scripts[] | select(.exit == 0) | [.path, .duration_ms] | @tsv' /tmp/fm-s
 bin/fm-test-run.sh --check-coverage
 ```
 
-Run this in the checkout whose CI you are measuring, since the run IDs and the hint table must come from the same repository.
+Run this in the checkout whose CI you are measuring, since `gh-axi run download` resolves the repository from the working directory and the run IDs must belong to it.
 A timed-out shard may upload no artifact, so include a complete green run or the slowest scripts go unmeasured in exactly the shard that needs them most.
 Completed shards from a partial run can supplement that complete baseline, but never treat missing tail scripts or the timeout duration as successful samples.
 Measure native-Windows-only scripts through the focused Git Bash runner and retain that `duration_ms` separately, because the portable CI shards skip them.
