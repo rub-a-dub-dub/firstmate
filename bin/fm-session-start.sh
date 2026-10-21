@@ -36,6 +36,8 @@
 #                       handoff retry, X-mode artifact writes, fleet sync) also run only when
 #                       locked; the four network sweeps run in the deferred
 #                       stage rather than this synchronous bootstrap section.
+#                       A read-only disk-space check then stays silent when
+#                       healthy and has its own two-second bound.
 #   3. wake-drain     - presents durable wakes and advances recovery handling
 #                       state, so it only runs when locked. The local bounded
 #                       inactive-outcome startup scan runs in the deferred worker.
@@ -752,6 +754,13 @@ if [ -n "$BOOT_OUT" ]; then
   printf '%s\n' "$BOOT_OUT"
 else
   printf '(silent - all good)\n'
+fi
+DISK_OUT=$(fm_run_timed 2 env FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+  FM_DATA_OVERRIDE="$DATA" FM_CONFIG_OVERRIDE="$CONFIG" \
+  "$SCRIPT_DIR/fm-disk-sweep.sh" --check 2>&1) || DISK_OUT=
+if [ -n "$DISK_OUT" ]; then
+  subsection "DISK SPACE"
+  printf '%s\n' "$DISK_OUT"
 fi
 
 # --- 3. wake-drain ---------------------------------------------------------
