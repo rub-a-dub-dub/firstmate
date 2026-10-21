@@ -33,7 +33,7 @@ Those two cancelled jobs uploaded no artifact, so their shard-2 scripts have no 
 The serial hints were raised from the slowest successful `duration_ms` across the portable serial timing artifacts of eight fork runs: [38534017843](https://github.com/rub-a-dub-dub/firstmate/actions/runs/38534017843), [38818232706](https://github.com/rub-a-dub-dub/firstmate/actions/runs/38818232706), [38826348620](https://github.com/rub-a-dub-dub/firstmate/actions/runs/38826348620), [39486507769](https://github.com/rub-a-dub-dub/firstmate/actions/runs/39486507769), [39489965358](https://github.com/rub-a-dub-dub/firstmate/actions/runs/39489965358), [39589765073](https://github.com/rub-a-dub-dub/firstmate/actions/runs/39589765073), and the two cancelled runs' completed shards.
 The cause was the host suite, not the disk-sweep test.
 `tests/fm-disk-sweep.test.sh` measured 5232 to 5477 ms in three runs, and its hint is 5477 ms.
-`tests/fm-supervision-host.test.sh` measured 900666 to 1342826 ms in six successful samples, against its 789123 ms hint, so the old split packed it beside 21 other scripts and that shard accumulated 1.1 to 1.56 million ms of script time.
+`tests/fm-supervision-host.test.sh` measured 900666 to 1342826 ms in six successful samples, against its 789123 ms hint, so the old split packed it beside 20 other scripts and that shard accumulated 1.1 to 1.56 million ms of script time.
 It is now hinted at 1342826 ms and the partition places it alone, as it already placed `tests/fm-watch-triage.test.sh`, now hinted at its slowest sample of 1218807 ms.
 The other seven shards model at about 18.7 minutes each.
 The 11 serial scripts that had no hint were given their slowest sample.
