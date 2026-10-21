@@ -29,6 +29,10 @@ set -u
 
 TMP_ROOT=$(fm_test_tmproot fm-secondmate-lifecycle)
 export FM_BACKEND=tmux
+# Teardown's temp-root removal proves no process holds the path through
+# whole-system lsof and ps listings. Bound those generously so a loaded host's
+# listing latency is not read as an unprovable open state.
+export FM_DISK_IN_USE_TIMEOUT=120
 
 HOME_DIR="$TMP_ROOT/main home"
 SUB="$TMP_ROOT/design-home"

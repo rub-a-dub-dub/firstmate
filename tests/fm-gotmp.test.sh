@@ -3,7 +3,9 @@
 #
 # fm-spawn gives each task a temp root /tmp/fm-<id>/ with Go's build temp nested at
 # gotmp/, exports GOTMPDIR into the crewmate pane, and records tasktmp= in the task's
-# meta. fm-teardown reads tasktmp= and removes the whole root on cleanup.
+# meta. fm-teardown reads tasktmp= and delegates the removal of the whole root to
+# bin/fm-disk-sweep.sh --cleanup-task, which re-proves the path below an allowed
+# temp root before removing it.
 #
 # These tests exercise fm-teardown directly as a subprocess against a fake FM_HOME/FM_ROOT
 # built so the real script resolves into it, with stub helper scripts.
@@ -40,6 +42,13 @@ trap cleanup EXIT
 
 TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/fm-gotmp-tests.XXXXXX")
 
+# The removal owner re-proves every candidate below an allowed temp root, so this
+# fixture's root (under $TMPDIR, not /tmp) has to be the allowed root here. Its
+# in-use proof runs whole-system lsof and ps listings, whose latency on a loaded
+# host must not be mistaken for an unprovable open state.
+export FM_DISK_TEMP_ROOTS="$TMP_ROOT"
+export FM_DISK_IN_USE_TIMEOUT=120
+
 # Build a fake FM_HOME/FM_ROOT so the real fm-teardown.sh (symlinked in) resolves
 # state and helper scripts inside it. Stub the helper scripts fm-teardown calls so no
 # live tmux/treehouse/fleet state is touched. A nonexistent worktree path makes both
@@ -75,6 +84,8 @@ SH
   # fm-timeout-lib.sh: the shared hard bound fm-classify-lib.sh sources for the
   # wedge detector's bounded worktree write probe.
   ln -s "$ROOT/bin/fm-timeout-lib.sh" "$fake/bin/fm-timeout-lib.sh"
+  # fm-disk-sweep.sh: the owner teardown delegates task temp-root removal to.
+  ln -s "$ROOT/bin/fm-disk-sweep.sh" "$fake/bin/fm-disk-sweep.sh"
   ln -s "$ROOT/bin/fm-wake-lib.sh" "$fake/bin/fm-wake-lib.sh"
   ln -s "$ROOT/bin/fm-path-lib.sh" "$fake/bin/fm-path-lib.sh"
   # fm-gate-refuse-lib.sh: teardown sources it before any fleet mutation.
@@ -180,6 +191,8 @@ SH
   # fm-timeout-lib.sh: the shared hard bound fm-classify-lib.sh sources for the
   # wedge detector's bounded worktree write probe.
   ln -s "$ROOT/bin/fm-timeout-lib.sh" "$fake/bin/fm-timeout-lib.sh"
+  # fm-disk-sweep.sh: the owner teardown delegates task temp-root removal to.
+  ln -s "$ROOT/bin/fm-disk-sweep.sh" "$fake/bin/fm-disk-sweep.sh"
   ln -s "$ROOT/bin/fm-wake-lib.sh" "$fake/bin/fm-wake-lib.sh"
   ln -s "$ROOT/bin/fm-path-lib.sh" "$fake/bin/fm-path-lib.sh"
   # fm-gate-refuse-lib.sh: teardown sources it before any fleet mutation.

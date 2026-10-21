@@ -2835,7 +2835,7 @@ disk_hygiene_tick() {
     (
       rc=0
       fm_run_timed "$DISK_SWEEP_TIMEOUT" env FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
-        FM_DATA_OVERRIDE="$DATA" FM_CONFIG_OVERRIDE="$CONFIG" \
+        FM_DATA_OVERRIDE="$DATA" \
         FM_DISK_SCAN_TIMEOUT="${FM_DISK_SCAN_TIMEOUT:-120}" \
         "$SCRIPT_DIR/fm-disk-sweep.sh" --apply --watcher > "$report.partial" 2>&1 || rc=$?
       if [ "$rc" -ne 0 ]; then
@@ -2848,7 +2848,7 @@ disk_hygiene_tick() {
   if [ "$(age_of "$STATE/.last-disk-check")" -ge "$DISK_CHECK_INTERVAL" ]; then
     rc=0
     out=$(fm_run_timed 2 env FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
-      FM_DATA_OVERRIDE="$DATA" FM_CONFIG_OVERRIDE="$CONFIG" \
+      FM_DATA_OVERRIDE="$DATA" \
       "$SCRIPT_DIR/fm-disk-sweep.sh" --check --watcher 2>&1) || rc=$?
     touch "$STATE/.last-disk-check"
     if [ "$rc" -ne 0 ]; then

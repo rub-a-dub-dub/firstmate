@@ -65,7 +65,6 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
-CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 TEMP_ROOTS=${FM_DISK_TEMP_ROOTS:-/tmp:/private/tmp}
 DERIVED_ROOT=${FM_DISK_DERIVED_DATA_ROOT:-$HOME/Library/Developer/Xcode/DerivedData}
@@ -802,7 +801,7 @@ free_bytes_for_home() {
 
 orphan_sweep() {
   local before after warn_bytes
-  mkdir -p "$STATE" "$DATA" "$CONFIG" 2>/dev/null || true
+  mkdir -p "$STATE" "$DATA" 2>/dev/null || true
   before=$(free_bytes_for_home)
   collect_task_ids
   collect_available_worktrees

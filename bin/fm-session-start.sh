@@ -756,7 +756,7 @@ else
   printf '(silent - all good)\n'
 fi
 DISK_OUT=$(fm_run_timed 2 env FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
-  FM_DATA_OVERRIDE="$DATA" FM_CONFIG_OVERRIDE="$CONFIG" \
+  FM_DATA_OVERRIDE="$DATA" \
   "$SCRIPT_DIR/fm-disk-sweep.sh" --check 2>&1) || DISK_OUT=
 if [ -n "$DISK_OUT" ]; then
   subsection "DISK SPACE"

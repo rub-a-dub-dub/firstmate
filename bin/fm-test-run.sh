@@ -1618,7 +1618,16 @@ families_for_changed_path() {
       printf '%s\n' pr-forge
       printf '%s\n' snapshot-bearings
       ;;
-    bin/fm-pr-*|bin/fm-merge-local.sh|bin/fm-teardown.sh|bin/fm-review-diff.sh|\
+    bin/fm-teardown.sh)
+      # Teardown delegates its task-cache cleanup to bin/fm-disk-sweep.sh at two
+      # call sites, and neither is covered by pr-forge: the ordinary-task one by
+      # fm-gotmp.test.sh (session-bootstrap) and the secondmate one by
+      # fm-secondmate-lifecycle-e2e.test.sh (secondmate).
+      printf '%s\n' pr-forge
+      printf '%s\n' "__script__:fm-gotmp.test.sh"
+      printf '%s\n' "__script__:fm-secondmate-lifecycle-e2e.test.sh"
+      ;;
+    bin/fm-pr-*|bin/fm-merge-local.sh|bin/fm-review-diff.sh|\
     bin/fm-x-*|bin/fm-check*|bin/fm-pipeline-spend.sh)
       printf '%s\n' pr-forge
       ;;

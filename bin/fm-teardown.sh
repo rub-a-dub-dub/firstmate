@@ -3657,7 +3657,7 @@ if [ "$KIND" != secondmate ]; then
     DISK_CLEANUP_WORKTREE=$WT
   fi
   FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
-    FM_CONFIG_OVERRIDE="$CONFIG" FM_DISK_TASK_TMP="$TASK_TMP" \
+    FM_DISK_TASK_TMP="$TASK_TMP" \
     "$SCRIPT_DIR/fm-disk-sweep.sh" --cleanup-task "$ID" "$DISK_CLEANUP_WORKTREE" \
     || echo "warning: task cache cleanup could not complete for $ID; teardown continues conservatively" >&2
 fi
@@ -3858,7 +3858,7 @@ fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
 # closed and every refusal above has passed, so its cleanup runs only here.
 if [ "$KIND" = secondmate ]; then
   FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
-    FM_CONFIG_OVERRIDE="$CONFIG" FM_DISK_TASK_TMP="$TASK_TMP" \
+    FM_DISK_TASK_TMP="$TASK_TMP" \
     "$SCRIPT_DIR/fm-disk-sweep.sh" --cleanup-task "$ID" "" \
     || echo "warning: task cache cleanup could not complete for $ID; teardown continues conservatively" >&2
 fi
