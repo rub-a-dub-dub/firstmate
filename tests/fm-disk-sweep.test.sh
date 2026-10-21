@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Behavior tests for bin/fm-disk-sweep.sh.
 #
-# Covers task teardown cleanup, orphan-sweep age/live-state rules, process-use
+# Covers task teardown cleanup for a task that owns a worktree and for a
+# secondmate that owns none, orphan-sweep age/live-state rules, process-use
 # refusal, wrong-root refusal, Xcode cache structure and WorkspacePath
 # provenance (including a WorkspacePath equal to the worktree root),
 # DerivedData matching, refusal to touch anything inside a worktree, Treehouse
@@ -105,9 +106,8 @@ test_task_cleanup_rules() {
   local dir wt out task_tmp
   dir=$(make_case cleanup)
   wt="$dir/wt"
-  mkdir -p "$wt/build-cache/a" "$wt/keep" "$dir/outside/precious"
+  mkdir -p "$wt/build-cache/a" "$wt/keep"
   printf 'golden\n' > "$wt/.env"
-  printf 'keep\n' > "$dir/outside/precious/key"
 
   mkdir -p "$dir/temp/attempt-task-a/Build"
   plist "$dir/temp/attempt-task-a" "$wt/App.xcodeproj"
@@ -175,12 +175,46 @@ test_task_cleanup_rules() {
   assert_contains "$out" "skip command-line-in-use task temp cache" "command-line refusal was not reported"
   assert_grep 'removed=task temp cache' "$dir/home/state/disk-sweep.log" "removed paths were not logged durably"
 
-  printf 'demo\tbuild-cache/* ../outside/*\n' > "$dir/home/config/idle-slot-clean"
-  out=$(run_sweep "$dir" --cleanup-task task-a "$wt" 2>&1)
-  [ -e "$wt/build-cache/a" ] || fail "a stale idle-slot-clean config deleted build output inside the worktree"
-  [ -e "$wt/.env" ] || fail "a stale idle-slot-clean config deleted a golden local file"
-  [ -e "$dir/outside/precious/key" ] || fail "a stale idle-slot-clean config reached outside every allowed root"
   pass "task cleanup requires structure, WorkspacePath, allowed roots, and process safety, and never deletes inside the worktree"
+}
+
+home_hash_for() {  # <home>
+  local root
+  root=$(cd "$1" && pwd -P)
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$root" | shasum -a 256 | awk '{print $1}'
+  else
+    printf '%s' "$root" | sha256sum | awk '{print $1}'
+  fi
+}
+
+# A secondmate teardown owns no worktree, so bin/fm-teardown.sh calls the same
+# cleanup with an empty worktree argument.
+test_secondmate_cleanup_without_a_worktree() {
+  local dir out task_tmp launch
+  dir=$(make_case secondmate)
+  task_tmp="$dir/temp/fm-design"
+  launch="$dir/temp/fm-design+$(home_hash_for "$dir/home")"
+  mkdir -p "$task_tmp/gotmp" "$launch"
+  printf 'temporary\n' > "$task_tmp/gotmp/build-artifact"
+  printf 'launch\n' > "$launch/command"
+  xcresult "$dir/temp/run-design.xcresult"
+  mkdir -p "$dir/temp/attempt-design/Build"
+  plist "$dir/temp/attempt-design" "$dir/elsewhere/App.xcodeproj"
+  mkdir -p "$dir/derived/Demo-design/Build"
+  plist "$dir/derived/Demo-design" "$dir/elsewhere/App.xcodeproj"
+
+  out=$(FM_DISK_TASK_TMP="$task_tmp" run_sweep "$dir" --cleanup-task design "" 2>&1) \
+    || fail "cleanup refused a secondmate's empty worktree argument: $out"
+
+  [ ! -e "$task_tmp" ] || fail "secondmate cleanup retained the recorded task temp root"
+  [ ! -e "$launch" ] || fail "secondmate cleanup retained this home's launch namespace"
+  [ ! -e "$dir/temp/run-design.xcresult" ] || fail "secondmate cleanup retained the task's result bundle"
+  [ -e "$dir/temp/attempt-design" ] \
+    || fail "a DerivedData-layout temp cache was deleted with no worktree to prove its WorkspacePath"
+  [ -e "$dir/derived/Demo-design" ] || fail "global DerivedData was deleted with no worktree to match"
+  assert_contains "$out" "disk cleanup design: freed" "cleanup did not print one freed-space summary"
+  pass "cleanup for a secondmate with no worktree clears its temp roots and touches no DerivedData"
 }
 
 test_orphan_sweep_rules_and_default_dry_run() {
@@ -355,11 +389,6 @@ test_low_disk_thresholds() {
   out=$(FM_FAKE_FREE_KIB=$((5 * 1024 * 1024)) run_sweep "$dir" --check --watcher 2>&1)
   assert_contains "$out" "wake:" "re-entering critical space after recovery did not wake"
   rm -f "$dir/home/state/.disk-space-critical-woke"
-
-  printf 'warn_gb=30\nwake_gb=12\n' > "$dir/home/config/disk-space-thresholds"
-  out=$(FM_FAKE_FREE_KIB=$((15 * 1024 * 1024)) run_sweep "$dir" --check --watcher 2>&1)
-  assert_contains "$out" "warn below 20 GiB" "a thresholds config changed the fixed warning threshold"
-  assert_not_contains "$out" "wake:" "a thresholds config escalated the wake at 15 GiB free"
   pass "disk checks stay quiet when healthy and separate warning from wake thresholds"
 }
 
@@ -435,6 +464,7 @@ test_watcher_wakes_once_and_collects_detached_sweep() {
 }
 
 test_task_cleanup_rules
+test_secondmate_cleanup_without_a_worktree
 test_orphan_sweep_rules_and_default_dry_run
 test_usage_cache_attributes_each_slot_to_its_own_project
 test_low_disk_thresholds

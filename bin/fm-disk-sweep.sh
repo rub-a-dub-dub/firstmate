@@ -47,7 +47,6 @@
 # Durable local records:
 #   state/disk-sweep.log      One totals row per sweep or task cleanup.
 #   state/disk-usage.cache    Best-effort current-home consumer attribution.
-#   state/disk-space.log      Low-disk observations from --watcher checks.
 #   state/.disk-space-critical-woke
 #                             Throttles the critical wake to one per six hours
 #                             while space stays critical; removed on recovery.
@@ -443,10 +442,6 @@ check_space() {
     print_cached_consumers
     printf 'Reclaim orphaned caches safely: FM_HOME=%s %s --apply\n' \
       "$(shell_quote "$FM_HOME")" "$(shell_quote "$SCRIPT_DIR/fm-disk-sweep.sh")"
-    if [ "$WATCHER" -eq 1 ]; then
-      mkdir -p "$STATE" 2>/dev/null || true
-      printf '%s\tlow=%s\tcritical=%s\n' "$(epoch_now)" "$low" "$critical" >> "$STATE/disk-space.log" 2>/dev/null || true
-    fi
   fi
   [ "$WATCHER" -eq 1 ] || return 0
   # A persisting critical condition re-wakes at most every six hours rather
