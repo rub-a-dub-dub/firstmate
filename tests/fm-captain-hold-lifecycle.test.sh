@@ -4760,6 +4760,13 @@ test_complete_keeps_the_pr_identity_block_last() {
     || fail "re-running completion did not heal a wedged record"
   assert_equals 1 "$(grep -c '^decision_keys=' "$meta")" "healing a wedged record stacked a second inventory line"
   assert_grep "decision_keys=$call" "$meta" "healing a wedged record lost the inventory"
+
+  # fm-pr-check.sh refuses to re-arm an origin whose record is not a private,
+  # single-link regular file on the state device, so the record `complete`
+  # republishes has to keep satisfying that gate.
+  bash -c '. "$1"; fm_pr_private_file_valid "$2" 600 "$(fm_pr_file_device "$3")"' _ \
+    "$ROOT/bin/fm-pr-lib.sh" "$meta" "$home/state" \
+    || fail "the republished record no longer satisfies the re-arm precondition"
   pass "complete records the attestation in front of an armed pr identity block"
 }
 

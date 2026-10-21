@@ -1849,6 +1849,7 @@ record_inventory_attestation() {  # <meta> <keys>
       { print }
       END { if (!written) printf "decisions_reviewed=1\ndecision_keys=%s\n", keys }
     ' "$meta" > "$CAPTAIN_META_STAGED" ||
+    ! chmod 0600 "$CAPTAIN_META_STAGED" ||
     ! fm_backlog_atomic_transition publish "$CAPTAIN_META_STAGED" "$meta" "task record" "$STATE"; then
     rm -f "$CAPTAIN_META_STAGED"
     CAPTAIN_META_STAGED=
