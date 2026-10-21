@@ -46,7 +46,11 @@
 #     this home's projects (sweep);
 #   - simulator runtimes and Treehouse pool slots are never deleted here.
 #
-# Durable local records:
+# Durable local records. Task cleanup never creates the state directory it
+# writes into: a remote secondmate's retirement runs this cleanup after
+# removing the home whose own state directory it was told to record in
+# (bin/fm-remote-secondmate-control.sh retire), and a record must not
+# resurrect that retired home.
 #   state/disk-sweep.log      One totals row per sweep or task cleanup.
 #   state/disk-usage.cache    Best-effort current-home consumer attribution.
 #   state/.disk-space-critical-woke
@@ -394,7 +398,6 @@ commit_remove() {  # <path> <label>; the candidate is already proved
       SAFE_UNSIZED=$((SAFE_UNSIZED + 1))
     fi
     SAFE_REMOVED=$((SAFE_REMOVED + 1))
-    mkdir -p "$STATE" 2>/dev/null || true
     printf '%s\tmode=%s\tremoved=%s\tbytes=%s\tpath=%s\n' \
       "$(epoch_now)" "$MODE" "$label" "$shown" "$path" >> "$STATE/disk-sweep.log" 2>/dev/null || true
     return 0
@@ -611,7 +614,6 @@ cleanup_derived_for_task() {  # <worktree>
 }
 
 log_totals() {  # <mode>
-  mkdir -p "$STATE" 2>/dev/null || return 0
   printf '%s\tmode=%s\tapply=%s\tcandidates=%s\tremoved=%s\tskipped=%s\tfreed_bytes=%s\tunsized=%s\n' \
     "$(epoch_now)" "$1" "$APPLY" "$SWEEP_CANDIDATES" "$SAFE_REMOVED" "$SAFE_SKIPPED" "$SAFE_FREED" \
     "$SAFE_UNSIZED" \

@@ -225,6 +225,33 @@ test_secondmate_cleanup_without_a_worktree() {
   pass "cleanup for a secondmate with no worktree clears its temp roots and touches no DerivedData"
 }
 
+# A remote secondmate's control state lives inside the home being retired, so
+# bin/fm-teardown.sh calls this cleanup after that home is gone. The temp roots
+# must still be cleared, and no durable record may recreate the retired home.
+test_cleanup_after_the_home_is_retired_writes_nothing_back() {
+  local dir out retired task_tmp launch
+  dir=$(make_case retired)
+  retired="$dir/retired-home"
+  task_tmp="$dir/temp/fm-ios"
+  launch="$dir/temp/fm-ios+$(home_hash_for "$dir/home")"
+  mkdir -p "$task_tmp/gotmp" "$launch"
+  printf 'temporary\n' > "$task_tmp/gotmp/build-artifact"
+  printf 'launch\n' > "$launch/command"
+
+  out=$(PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" \
+    FM_STATE_OVERRIDE="$retired/state/parent-route" \
+    FM_DISK_TEMP_ROOTS="$dir/temp" FM_DISK_DERIVED_DATA_ROOT="$dir/derived" \
+    FM_DISK_TASK_TMP="$task_tmp" \
+    "$SWEEP" --cleanup-task ios "" 2>&1) \
+    || fail "cleanup failed once the retired home's state was gone: $out"
+
+  [ ! -e "$task_tmp" ] || fail "cleanup retained the retired secondmate's task temp root"
+  [ ! -e "$launch" ] || fail "cleanup retained the retired secondmate's launch namespace"
+  [ ! -e "$retired" ] || fail "cleanup recreated the retired home to write its durable record"
+  assert_contains "$out" "disk cleanup ios: freed" "cleanup did not print one freed-space summary"
+  pass "cleanup for a retired home clears its temp roots without recreating the removed home"
+}
+
 # state/disk-sweep.log is this script's documented durable record: one
 # `removed=<label>\tbytes=<size>\tpath=<path>` row per removed path.
 test_unmeasurable_size_is_not_reported_as_zero() {
@@ -552,6 +579,7 @@ test_watcher_wakes_once_and_collects_detached_sweep() {
 
 test_task_cleanup_rules
 test_secondmate_cleanup_without_a_worktree
+test_cleanup_after_the_home_is_retired_writes_nothing_back
 test_unmeasurable_size_is_not_reported_as_zero
 test_orphan_sweep_rules_and_default_dry_run
 test_usage_cache_attributes_each_slot_to_its_own_project
