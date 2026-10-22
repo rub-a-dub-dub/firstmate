@@ -255,7 +255,10 @@ CAPTAIN_META_LOCK=
 CAPTAIN_META_LOCK_HELD=0
 CAPTAIN_CONTROL_LOCK=
 CAPTAIN_CONTROL_LOCK_HELD=0
+CAPTAIN_META_STAGED=
 captain_hold_cleanup() {
+  [ -z "$CAPTAIN_META_STAGED" ] || rm -f -- "$CAPTAIN_META_STAGED"
+  CAPTAIN_META_STAGED=
   if [ "$CAPTAIN_META_LOCK_HELD" = 1 ]; then
     fm_lock_release "$CAPTAIN_META_LOCK" || true
     CAPTAIN_META_LOCK_HELD=0
@@ -1831,6 +1834,32 @@ reconcile_note() {
   printf 'still-open: %s\n' "$id"
 }
 
+# Publish the attestation pair into the task record. fm_pr_metadata_identity_parse
+# rejects any key after a pr= line except pr_head= and x_*, so the pair goes in
+# front of a preserved pr= identity block and at the end only when the record
+# has none; appending it last would make the watcher reject an origin that
+# fm-pr-check.sh already armed. A prior pair is dropped because the union in
+# command_complete already folded its entries into <keys>. The staged copy's
+# mode is set rather than inherited from mktemp because this file becomes the
+# record, and fm-pr-check.sh re-arms an origin only through a mode-600 one.
+record_inventory_attestation() {  # <meta> <keys>
+  local meta=$1 keys=$2
+  CAPTAIN_META_STAGED=$(mktemp "$STATE/.fm-captain-hold-meta.XXXXXX") || fail "cannot stage the updated task record"
+  if ! LC_ALL=C awk -F= -v keys="$keys" '
+      $1 == "decisions_reviewed" || $1 == "decision_keys" { next }
+      $1 == "pr" && !written { printf "decisions_reviewed=1\ndecision_keys=%s\n", keys; written = 1 }
+      { print }
+      END { if (!written) printf "decisions_reviewed=1\ndecision_keys=%s\n", keys }
+    ' "$meta" > "$CAPTAIN_META_STAGED" ||
+    ! chmod 0600 "$CAPTAIN_META_STAGED" ||
+    ! fm_backlog_atomic_transition publish "$CAPTAIN_META_STAGED" "$meta" "task record" "$STATE"; then
+    rm -f "$CAPTAIN_META_STAGED"
+    CAPTAIN_META_STAGED=
+    fail "could not record the reviewed inventory in the task record ${FM_BACKLOG_TRANSITION_ERROR:+($FM_BACKLOG_TRANSITION_ERROR)}"
+  fi
+  CAPTAIN_META_STAGED=
+}
+
 command_complete() {
   local origin=${1:-} meta previous='' supplied='' keys='' entry key status_file open has_meta=0 transfer_rc transfers=() resolved
   local resolved_how attested_by_prefix='' origin_state unrecorded_origin=''
@@ -1887,9 +1916,7 @@ EOF
   fi
 
   if [ "$has_meta" = 1 ]; then
-    if [ "$(meta_value "$meta" decisions_reviewed)" != 1 ] || [ "$previous" != "$keys" ]; then
-      printf 'decisions_reviewed=1\ndecision_keys=%s\n' "$keys" >> "$meta"
-    fi
+    record_inventory_attestation "$meta" "$keys"
     fm_lock_release "$CAPTAIN_META_LOCK"
     CAPTAIN_META_LOCK_HELD=0
 

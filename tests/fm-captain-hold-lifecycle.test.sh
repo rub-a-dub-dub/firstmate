@@ -4694,6 +4694,82 @@ test_historical_self_inventory_has_workable_repair() {
   pass "historical self-inventories name a workable repair that preserves sibling entries"
 }
 
+# fm_pr_metadata_identity_parse rejects any key after pr= except pr_head= and
+# x_*, so completing an origin that fm-pr-check.sh already armed must put the
+# attestation pair in front of the pr identity block, not after it.
+test_complete_keeps_the_pr_identity_block_last() {
+  local home origin=sample-pr-review call=pr-review-call meta head=0123456789abcdef0123456789abcdef01234567
+  home=$(make_home complete-pr-identity)
+  run_captain "$home" hold "$origin" --title "Old review call" --reason "Choose" >/dev/null \
+    || fail "could not create the origin"
+  run_captain "$home" hold "$call" --title "Call $call" --reason "Choose" --origin "$origin" >/dev/null \
+    || fail "could not create $call"
+  meta="$home/state/$origin.meta"
+  fm_write_meta "$meta" \
+    "window=firstmate:fm-$origin" \
+    "worktree=$home/projects/missing-$origin" \
+    "project=$home/projects/sample" \
+    "harness=codex" \
+    "kind=scout" \
+    "mode=scout" \
+    "spawn_gen=fixture-$origin" \
+    "pr=https://github.com/example/sample/pull/7" \
+    "pr_head=$head" \
+    "x_request=req-1"
+  bash -c '. "$1"; fm_pr_metadata_identity_parse "$2"' _ "$ROOT/bin/fm-pr-lib.sh" "$meta" \
+    || fail "the armed fixture record does not parse before completion"
+
+  run_captain "$home" complete "$origin" "$call" >/dev/null \
+    || fail "completing an origin that carries a pr identity block failed"
+  assert_grep "decisions_reviewed=1" "$meta" "completion attestation missing"
+  assert_grep "decision_keys=$call" "$meta" "inventory was not recorded"
+  bash -c '. "$1"; fm_pr_metadata_identity_parse "$2" && [ "$FM_PR_META_URL" = "$3" ]' _ \
+    "$ROOT/bin/fm-pr-lib.sh" "$meta" "https://github.com/example/sample/pull/7" \
+    || fail "the watcher parse rejects the record after completion"
+  assert_grep "pr=https://github.com/example/sample/pull/7" "$meta" "the pr identity block was lost"
+  assert_grep "pr_head=$head" "$meta" "the pr head was lost"
+  assert_equals "x_request=req-1" "$(tail -1 "$meta")" "the pr identity block is no longer the record's tail"
+
+  # A repeat completion leaves one pair and a parseable record.
+  run_captain "$home" complete "$origin" "$call" >/dev/null || fail "idempotent completion failed"
+  assert_equals 1 "$(grep -c '^decision_keys=' "$meta")" "a repeat completion stacked a second inventory line"
+  bash -c '. "$1"; fm_pr_metadata_identity_parse "$2"' _ "$ROOT/bin/fm-pr-lib.sh" "$meta" \
+    || fail "the record is rejected after a repeat completion"
+
+  # A record an earlier release already wedged by appending the pair after the
+  # pr identity block is healed by re-running the same completion.
+  fm_write_meta "$meta" \
+    "window=firstmate:fm-$origin" \
+    "worktree=$home/projects/missing-$origin" \
+    "project=$home/projects/sample" \
+    "harness=codex" \
+    "kind=scout" \
+    "mode=scout" \
+    "spawn_gen=fixture-$origin" \
+    "pr=https://github.com/example/sample/pull/7" \
+    "pr_head=$head" \
+    "x_request=req-1" \
+    "decisions_reviewed=1" \
+    "decision_keys=$call"
+  bash -c '. "$1"; fm_pr_metadata_identity_parse "$2"' _ "$ROOT/bin/fm-pr-lib.sh" "$meta" \
+    && fail "the wedged fixture record parses, so it does not reproduce the reported failure"
+  run_captain "$home" complete "$origin" "$call" >/dev/null \
+    || fail "re-running completion on a wedged record failed"
+  bash -c '. "$1"; fm_pr_metadata_identity_parse "$2" && [ "$FM_PR_META_URL" = "$3" ]' _ \
+    "$ROOT/bin/fm-pr-lib.sh" "$meta" "https://github.com/example/sample/pull/7" \
+    || fail "re-running completion did not heal a wedged record"
+  assert_equals 1 "$(grep -c '^decision_keys=' "$meta")" "healing a wedged record stacked a second inventory line"
+  assert_grep "decision_keys=$call" "$meta" "healing a wedged record lost the inventory"
+
+  # fm-pr-check.sh refuses to re-arm an origin whose record is not a private,
+  # single-link regular file on the state device, so the record `complete`
+  # republishes has to keep satisfying that gate.
+  bash -c '. "$1"; fm_pr_private_file_valid "$2" 600 "$(fm_pr_file_device "$3")"' _ \
+    "$ROOT/bin/fm-pr-lib.sh" "$meta" "$home/state" \
+    || fail "the republished record no longer satisfies the re-arm precondition"
+  pass "complete records the attestation in front of an armed pr identity block"
+}
+
 test_inventory_compares_backend_identities() {
   local home origin entry shown before
   home=$(make_home backend-identities)
@@ -4937,6 +5013,7 @@ TESTS=(
   test_hold_reason_round_trips_awkward_characters
   test_hold_origins_precede_backend_holds
   test_historical_self_inventory_has_workable_repair
+  test_complete_keeps_the_pr_identity_block_last
   test_inventory_compares_backend_identities
   test_origin_is_never_its_own_inventory_entry
   test_complete_refuses_an_entry_held_for_another_origin
