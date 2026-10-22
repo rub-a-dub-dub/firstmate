@@ -622,9 +622,46 @@ test_away_entry_over_quiet_mode_becomes_away_and_quiet_never_masks_away() {
   pass "an away entry over quiet mode records away, and a quiet entry never masks a standing away record"
 }
 
+# Entry without --spend records the fixed default however many workers are
+# live: the captain kept the fork's fixed cap rather than deriving it from the
+# live count. live-workers still counts ordinary workers only (a secondmate is a
+# persistent home rather than spend) because the spawn refusal reads that count,
+# and an explicit --spend is recorded unchanged.
+test_entry_without_spend_records_the_fixed_default_whatever_is_live() {
+  local home out i
+  home=$(make_home spend-live-above)
+  for i in 1 2 3 4 5 6; do
+    fm_write_meta "$home/state/task-$i.meta" "window=fm-task-$i" "kind=ship"
+  done
+  fm_write_meta "$home/state/mate-1.meta" "window=remote:mate-1" "kind=secondmate"
+  [ "$(contract "$home" live-workers)" = 6 ] \
+    || fail "live-workers counted the secondmate or miscounted: $(contract "$home" live-workers)"
+  out=$(contract "$home" enter --words 'keep the lane busy' 2>&1) || fail "entry failed: $out"
+  [ "$(contract "$home" field spend_max_concurrent_workers)" = 4 ] \
+    || fail "entry derived the cap from the live count: $(contract "$home" field spend_max_concurrent_workers)"
+  assert_contains "$out" 'Spend cap: 4 concurrent workers.' 'the announcement carries the fixed default'
+  assert_contains "$out" '  spend cap: 4 concurrent workers' 'the read-back carries the fixed default'
+
+  home=$(make_home spend-live-empty)
+  out=$(contract "$home" enter --words 'nothing running' 2>&1) || fail "entry failed: $out"
+  [ "$(contract "$home" live-workers)" = 0 ] || fail "an empty home did not count zero workers"
+  [ "$(contract "$home" field spend_max_concurrent_workers)" = 4 ] \
+    || fail "an empty home recorded a cap other than the default"
+
+  home=$(make_home spend-live-explicit)
+  for i in 1 2 3 4 5 6; do
+    fm_write_meta "$home/state/task-$i.meta" "window=fm-task-$i" "kind=ship"
+  done
+  contract "$home" enter --words 'hold it down' --spend 2 >/dev/null 2>&1 || fail "explicit entry failed"
+  [ "$(contract "$home" field spend_max_concurrent_workers)" = 2 ] \
+    || fail "an explicit --spend lost to the default"
+  pass "entry without --spend records the fixed default whatever is live, and an explicit --spend still wins"
+}
+
 test_readback_renders_words_verbatim_with_the_record_scalars
 test_words_preserve_final_newline_shape
 test_enter_writes_a_v2_record_in_one_step_and_announces_hold_for_return
+test_entry_without_spend_records_the_fixed_default_whatever_is_live
 test_retired_two_step_entry_is_refused_by_name
 test_enter_removes_a_legacy_proposal_without_promoting_it
 test_same_turn_entry_pre_authorizes_nothing_on_the_never_set

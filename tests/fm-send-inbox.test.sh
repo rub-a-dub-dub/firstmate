@@ -77,7 +77,9 @@ case "${1:-}" in
       printf '╭────╮\n│    │\n╰────╯\n'
     fi
     exit 0 ;;
-  list-windows) printf '%s\n' "${FM_FAKE_TMUX_WINDOWS:-fm-t1}"; exit 0 ;;
+  list-windows)
+    printf '%s\n' "${FM_FAKE_TMUX_WINDOWS:-$(printf 'fm-t1\nwin')}"
+    exit 0 ;;
 esac
 exit 0
 SH

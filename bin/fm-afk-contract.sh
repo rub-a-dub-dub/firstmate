@@ -52,7 +52,8 @@
 #   expected_return: <UTC ISO 8601> | -
 #   reach_channels: none
 #   reach_announced: <the one-sentence reach announcement>
-#   spend_max_concurrent_workers: <n>
+#   spend_max_concurrent_workers: <n>   without --spend, the fixed default
+#                                  (SPEND CAP below)
 #   confirmed: <UTC ISO 8601>       when this mandate was recorded; /afk itself
 #   confirmed_epoch: <seconds>        is the go, so no later human step stamps it
 #   mode: quiet                    only on a quiet entry (FM_AFK_MODE=quiet); absent
@@ -89,6 +90,7 @@
 #     carry the original session entry forward, and archive the superseded
 #     record. A replacement is staged before the prior record is archived and
 #     replaced. `propose` and `confirm` were retired with the wait-for-go gate.
+#     Without --spend the recorded cap is the fixed default (SPEND CAP below).
 #   fm-afk-contract.sh readback
 #     The record's content for the captain and for the away session: the words
 #     verbatim plus the entry time, expected return, spend cap, and reach line
@@ -98,6 +100,10 @@
 #   fm-afk-contract.sh field <name> [--path <record>]
 #   fm-afk-contract.sh words [--path <record>]
 #   fm-afk-contract.sh validate [--path <record>]  exit 0 when the record is readable and complete
+#   fm-afk-contract.sh live-workers
+#     Print the ordinary worker count this home holds right now (SPEND CAP
+#     below). Reads no record, so it answers before an entry as well as during
+#     one.
 #   fm-afk-contract.sh archive              move the record aside; print its path
 #   fm-afk-contract.sh archived <entered_epoch>   print that archived record's path
 #
@@ -118,10 +124,23 @@
 # by the ordinary stale-owner recovery in bin/fm-wake-lib.sh, which owns the lock
 # primitive itself.
 #
+# SPEND CAP (spend_max_concurrent_workers; this script is its one owner, for
+# both the number written at entry and the counting rule behind it).
+# The cap bounds how many ordinary workers this home runs concurrently while an
+# away record stands; bin/fm-spawn.sh enforces it by refusing a fresh ordinary
+# spawn once the home already holds that many. An ordinary worker record is
+# every state/*.meta whose kind is not secondmate, counted by
+# fm_afk_contract_live_ordinary_workers and exposed as `live-workers`, the one
+# implementation of that count.
+# Without --spend, entry records FM_AFK_CONTRACT_SPEND_DEFAULT unchanged: the
+# captain chose to keep this fork's fixed default rather than adopt upstream's
+# derivation of the cap from the workers live at entry. An explicit --spend is
+# the captain's number and is recorded unchanged.
+#
 # Sourceable: with the BASH_SOURCE guard, other scripts get the path, presence,
-# posture, and lock helpers (fm_afk_contract_path, fm_afk_contract_present,
-# fm_afk_contract_mode, fm_afk_contract_away_present,
-# fm_afk_contract_archive_dir,
+# posture, spend-cap, and lock helpers (fm_afk_contract_path,
+# fm_afk_contract_present, fm_afk_contract_mode, fm_afk_contract_away_present,
+# fm_afk_contract_archive_dir, fm_afk_contract_live_ordinary_workers,
 # fm_afk_contract_lock_hold, fm_afk_contract_lock_release) without running main.
 set -u
 
@@ -160,6 +179,20 @@ fm_afk_contract_archive_dir() {  # [state-dir]
 
 fm_afk_contract_present() {  # [state-dir]
   [ -f "$(fm_afk_contract_path "${1:-$FM_AFK_CONTRACT_STATE}")" ]
+}
+
+# The ordinary worker records this home holds right now (the header's SPEND
+# CAP): every state/*.meta whose kind is not secondmate, because a secondmate is
+# a persistent home rather than spend. This is the one implementation of that
+# count, read by bin/fm-spawn.sh's refusal.
+fm_afk_contract_live_ordinary_workers() {  # [state-dir]
+  local state=${1:-$FM_AFK_CONTRACT_STATE} meta live=0
+  for meta in "$state"/*.meta; do
+    [ -f "$meta" ] || continue
+    [ "$(grep '^kind=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2-)" != secondmate ] || continue
+    live=$((live + 1))
+  done
+  printf '%s\n' "$live"
 }
 
 # The posture a record at <path> is (the header's AWAY OR QUIET): quiet only
@@ -637,6 +670,9 @@ fm_afk_contract_main() {
     validate)
       path=$(fm_afk_contract_select_path "$@") || { fm_afk_contract_usage >&2; return 2; }
       fm_afk_contract_validate "$path" ;;
+    live-workers)
+      [ "$#" -eq 0 ] || { fm_afk_contract_usage >&2; return 2; }
+      fm_afk_contract_live_ordinary_workers ;;
     clauses|flags|refused|grants)
       fm_afk_contract_log "'$cmd' was retired with the clause and merge-grant apparatus: the record is the captain's words (read them with 'words' or 'readback')"
       return 2 ;;
