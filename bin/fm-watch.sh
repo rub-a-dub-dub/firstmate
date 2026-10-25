@@ -1480,7 +1480,7 @@ _wedge_cap_rollback() {
   _wedge_cap_int _now "$_now" 0 0
   { : > "$_esc"; } 2>/dev/null || _failed=1
   { printf '%s\n' "$_now" > "$_since"; } 2>/dev/null || _failed=1
-  clear_write_tracking "$_key" 2>/dev/null || true
+  clear_deferral_tracking "$_key" 2>/dev/null || true
   [ "$_failed" -eq 0 ] && [ "$_silence" -eq 0 ] && return 0
   _sentinel="$STATE/.wedge-rollback-failed-$_key"
   _sentinel_rc=0
@@ -2128,7 +2128,7 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
       _wrb_since=$(cat "$since_file" 2>/dev/null || true)
       case "$_wrb_since" in
         ''|*[!0-9]*)
-          clear_write_tracking "$_wkey"
+          clear_deferral_tracking "$_wkey"
           { printf '%s\n' "$_wrb_now" > "$since_file"; } 2>/dev/null || true
           ;;
         *)
@@ -2314,7 +2314,7 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
             esac
           fi
           wedge_episode_end "$_wkey" 1
-          clear_write_tracking "$_wkey"
+          clear_deferral_tracking "$_wkey"
           # The reset is cap state like the count write above it, and the one
           # whose failure the horizon would otherwise hide: it is what lets the
           # count climb a fresh 1..N once the cap marker expires, so a state dir
@@ -2534,8 +2534,7 @@ clear_stale_hash_tracking() {  # <window-key>
   local key=$1
   clear_deferral_tracking "$key"
   wedge_episode_end "$key"
-  rm -f "$STATE/.stale-$key" \
-    "$STATE/.waiting-resurfaced-$key"
+  rm -f "$STATE/.stale-$key"
 }
 
 # The away daemon copies a dialog name off a self-handled stale wake into this
