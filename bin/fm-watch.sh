@@ -1849,6 +1849,8 @@ wedge_defer_validating() {  # <window> <since-file> <triage-label> <idle-age> <t
   verdict=$(crew_run_is_validating "$task") || return 1
   run=${verdict%% *}; step=${verdict#* }
   key=$(window_key "$win")
+  clear_run_activity_tracking "$key"
+  clear_wait_tracking "$key"
   vsf="$STATE/.validating-since-$key"
   [ "$(cat "$vsf" 2>/dev/null || true)" = "$run" ] || printf '%s' "$run" > "$vsf"
   vage=$(age_of "$vsf")
@@ -2368,7 +2370,7 @@ wedge_defer_t3code_running() {  # <window> <since-file> <triage-label> <idle-age
   [ "$(fm_backend_t3code_probe "$win")" = running ] || return 1
   turn_age=$(fm_backend_t3code_turn_age "$win") || return 1
   [ "$turn_age" -lt "$BUSY_TURN_MAX_SECS" ] || return 1
-  clear_write_tracking "$(window_key "$win")"
+  clear_deferral_tracking "$(window_key "$win")"
   date +%s > "$since_file"
   triage_log "absorbed $label (T3 session still running, turn ${turn_age}s, idle ${age}s), timer reset: $win"
   return 0
