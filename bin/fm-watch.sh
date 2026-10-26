@@ -2526,9 +2526,8 @@ clear_pause_state() {  # <window-key>
 }
 
 # The hash-scoped half of clear_pause_tracking: the stale suppressor, its wedge
-# timer, escalation count, and any cap markers that episode fired, and both
-# deferral chains the timer can take - the write- and validating-deferral
-# chains and the wait-deferral throttle.
+# timer, escalation count, and any cap markers that episode fired, and every
+# deferral chain the timer can take, via clear_deferral_tracking.
 # Split out so a caller
 # that must keep a window's DECLARATION-scoped pause state - its .paused-* flag,
 # recheck, and re-surface throttle - can still reset the per-hash half alone.
