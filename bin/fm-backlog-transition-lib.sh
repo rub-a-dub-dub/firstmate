@@ -225,11 +225,15 @@ fm_backlog_file() {  # <data-dir>
   fi
 }
 
-# The fixed sibling of fm_backlog_file: `tasks-axi prune` archives pruned Done
-# rows to <data>/done-archive.md (the same fixed name
-# bin/fm-bootstrap.sh's detect_code_root_backlog_fork already hardcodes), never
-# a `.tasks.toml`-configured path, exactly as fm_backlog_file itself never
+# The fixed sibling of fm_backlog_file: <data>/done-archive.md, the default name
+# `tasks-axi prune` archives pruned Done rows to (the same fixed name
+# bin/fm-bootstrap.sh's detect_code_root_backlog_fork already hardcodes), read
+# without consulting `.tasks.toml`, exactly as fm_backlog_file itself never
 # consults `.tasks.toml`'s own `path=` override.
+# tasks-axi does honour a `[markdown] archive` key, which
+# captain_markdown_archive_path in bin/fm-captain-hold.sh resolves for the
+# completion gate, so in a home that relocates the archive this path is not the
+# file tasks-axi prunes into and the row probe below finds nothing there.
 fm_backlog_archive_file() {  # <data-dir>
   local data
   data=$(fm_backlog_data_absolute "$1") || {

@@ -13,7 +13,7 @@ Both hint tables were refreshed on 2026-09-30 from five Ubuntu CI runs: [3658388
 Use the slowest successful `duration_ms` per script across their uploaded portable timing artifacts and completed `FM_TEST_END` log markers, with the two version/platform exceptions below.
 All artifact records were cross-checked against the corresponding job's markers.
 This covers all 24 parallel members and the 201 serial members the lane held at that refresh; `--check-coverage` names any serial member added since under `serial_unhinted=`, and an existing live-capability skip is a portable-runner measurement, not a timing claim for the unavailable live integration.
-The parallel table still rests on that baseline, while the serial table was refreshed again on 2026-10-21 from the fork runs recorded in [Fork refresh, 2026-10-21](#fork-refresh-2026-10-21).
+The parallel table still rests on that baseline, while the serial table was refreshed again on 2026-10-21 from the fork runs recorded in [Fork refresh, 2026-10-21](#fork-refresh-2026-10-21), and then partly re-taken from upstream by the 147b2672 merge as that section records.
 Observed maxima provide conservative packing weights, not an upper bound on future durations.
 
 Two serial-5 jobs were cancelled at their 30-minute cap and uploaded no artifact.
@@ -22,11 +22,21 @@ A failed script's duration is excluded even when its lane uploaded an artifact.
 In particular, run 36664663190's serial 5 finished in 22m15s with an assertion failure, not a timeout; treating that as a healthy whole-lane sample would hide the failure.
 Collect successful per-script measurements for every member before calculating a split.
 
-`tests/fm-supervision-host.test.sh` was set to 789123 ms from run 36669175457 on the upstream repository, after its merged [host runtime fix](https://github.com/kunchenguid/firstmate/pull/6179).
-The fork's own runners did not reproduce that value, as the 2026-10-21 refresh below records.
+`tests/fm-supervision-host.test.sh` carries 1711444 ms here, the fork's slowest successful sample, which the 2026-10-21 refresh below records; upstream instead uses 1192918 ms, the one completed successful sample from run [39642852135](https://github.com/kunchenguid/firstmate/actions/runs/39642852135), in place of the 789123 ms baseline value it carried from run 36669175457 after the merged [host runtime fix](https://github.com/kunchenguid/firstmate/pull/6179), and rather than its pre-fix maximum of 1065298 ms.
+That replacement is a single completed sample too: run 39765114423 cancelled this script alone in a serial shard at the 30-minute job cap, and upstream run 39618934309 hangs on it the same way, so a shard carrying it alone can still overrun.
+The 1192918 ms weight is therefore a fit to upstream's 1200000 ms packing target, not a cure; the slowness behind it is an upstream defect this layout does not own, and further green runs must establish the variance either way.
 The native-Windows-only `tests/fm-pi-windows-shell-invocation.test.sh` retains its separate 5121 ms measurement from 2026-09-06T21:02Z instead of a portable capability skip.
 The 2026-10-07 polytoken adapter tests carry provisional local measurements instead - 21090 ms for `tests/fm-polytoken-harness.test.sh` and the 103 ms live-guard skip for `tests/fm-polytoken-signals-live-e2e.test.sh`, both measured on the adapter-verification macOS host - until the next CI refresh replaces them with Ubuntu measurements, because they postdate the 2026-09-30 baseline.
+The 2026-10-23 `tests/fm-approval-failover.test.sh` serial hint is a provisional local measurement of 5410 ms, the slowest of five local `bin/fm-test-run.sh` samples (4991-5410 ms), until the next CI refresh replaces it with an Ubuntu timing-artifact maximum.
+The 2026-10-23 Kimi folder-prompt live guard, `tests/fm-kimi-trust-prompt-live-e2e.test.sh`, carries a provisional 60 ms skip measured on the Linux host that recorded its captures, until the next CI refresh replaces it with an Ubuntu measurement.
+The wedge-cap suite carries the Ubuntu measurements from CI run [39597689178](https://github.com/kunchenguid/firstmate/actions/runs/39597689178) - 374225 ms for `tests/fm-watch-wedge-cap.test.sh` and the 74 ms live-guard skip for `tests/fm-watch-wedge-cap-live.test.sh` - in place of the provisional local measurements the suite first carried (1003000 ms and the 155 ms skip), which overstated the CI cost of both.
+They are not a formality: under that run's split, without a hint the suite would have been packed on the 45000 ms default beside a shard already holding about 17 minutes of measured work, so that shard would really have run for about 23 minutes - past the then-current 20-minute target - while the coverage guard still passed.
+The same run measured the wedge-cap parity suite at 27763 ms, which `bin/fm-test-run.sh` packs in place of the provisional 209000 ms local measurement.
+`test_portable_serial_packing_budget_boundary` now pins every other fixture script to 1 ms, so packing exactly at the current 2100000 ms budget is accepted and one millisecond above it is refused even when real serial members have no hint.
+The coverage-guard test owns modeled real-hint headroom under that budget.
 The session-start hint retains its pre-optimization maximum until CI measures the shorter fixture-only home-summary bound; do not discount a local speedup from CI packing weights.
+The T3 Code backend suites carry the slowest successful Ubuntu samples from CI runs [39463576576](https://github.com/kunchenguid/firstmate/actions/runs/39463576576), [39814995718](https://github.com/kunchenguid/firstmate/actions/runs/39814995718), and [39883948163](https://github.com/kunchenguid/firstmate/actions/runs/39883948163) - 239245 ms for `tests/fm-backend-t3code.test.sh`, 57613 ms for `tests/fm-t3-mcp.test.sh`, 283 ms for `tests/fm-watch-inbox-meta.test.sh`, and the 51 ms and 52 ms live-guard skips for `tests/fm-backend-t3code-live-e2e.test.sh` and `tests/fm-backend-t3code-pr-tools-live-e2e.test.sh`.
+`tests/fm-backend-t3code.test.sh` and `tests/fm-t3-mcp.test.sh` run in the portable parallel lanes, so those two values sit in `portable_parallel_weight_hints`: every case id the backend suite spawns carries a per-run suffix and its cleanup removes only the `/tmp/fm-<id>` directories that run created, and both suites passed running concurrently with each other and beside another parallel suite (see [`fm-test-isolation-proof.md`](fm-test-isolation-proof.md)).
 
 ### Fork refresh, 2026-10-21
 
@@ -36,9 +46,12 @@ The serial hints were raised from the slowest successful `duration_ms` across th
 The cause was the host suite, not the disk-sweep test.
 `tests/fm-disk-sweep.test.sh` measured 5232 to 5561 ms in four runs, and its hint is 5561 ms.
 `tests/fm-supervision-host.test.sh` measured 900666 to 1711444 ms in seven successful samples, against its 789123 ms hint, so the old split packed it beside 20 other scripts and that shard accumulated 1.1 to 1.56 million ms of script time.
-It is now hinted at its slowest sample of 1711444 ms, from the repacked run where it alone filled a 29m34s job, and the partition places it alone, as it already placed `tests/fm-watch-triage.test.sh`, now hinted at its slowest sample of 1218807 ms.
-The other seven shards model at about 19.8 minutes each.
-Every hint below its slowest successful fork sample was raised to that sample, including the 11 serial scripts that had no hint at all, and a hint already above every fork sample keeps its earlier, higher value, so each entry is still the slowest successful sample across the runs this file references.
+It is now hinted at its slowest sample of 1711444 ms, from the repacked run where it alone filled a 29m34s job, and the partition places it alone.
+`tests/fm-watch-triage.test.sh`, the next longest script, was raised to its own slowest fork sample of 1218807 ms at that refresh, but the 147b2672 merge re-took upstream's later 1074843 ms measurement for it, so the partition now fills its shard with the lane's smallest remaining scripts instead of leaving it alone, and that shard's real time can run past its modeled weight by the 144 seconds the lower hint omits.
+The eight shards beside the host model at about 19.9 minutes each.
+At that refresh, every hint below its slowest successful fork sample was raised to that sample, including the 11 serial scripts that had no hint at all, and a hint already above every fork sample kept its earlier, higher value.
+That no longer describes the table: of the 174 serial entries whose fork sample was above upstream's later measurement, the 147b2672 merge kept 83 and re-took upstream's lower value for the other 91, so an entry is no longer guaranteed to be the slowest successful sample across the runs this file references.
+A refresh that re-raises every entry to its slowest successful sample across both repositories' artifacts is owed; the host-suite sample and the packing and CI budgets below are retained deliberately.
 The host floor sits above the former 20-minute packing target, so `PORTABLE_SERIAL_MAX_WEIGHT_MS` is now 35 minutes, which leaves ten minutes of the 45-minute serial shard cap and about 23 percent of headroom over that indivisible floor.
 The host alone reached 29m34s of the old 30-minute cap, so the serial shard jobs now run under their own 45-minute tripwire in the Timeouts policy below.
 Splitting that suite is the real remedy for its duration, and a larger cap is only the safeguard until that lands.
