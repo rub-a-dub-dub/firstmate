@@ -3169,7 +3169,15 @@ SH
     bash -c '"$0" park > "$FM_HOME/host.out" 2>&1; printf "%s\n" "$?" > "$FM_HOME/host.rc"' "$HOST" 2>> "$home/claude.err" &
   wait_until 150 watcher_live "$home" || fail "tagged: the host never started a watcher cycle: $(cat "$home/host.out")"
   append_status "$home" 'step one'
-  wait_until 250 handled_at_least "$home" 1 || fail "tagged: the wake was not handled: $(cat "$home/host.out"; cat "$home/state/.supervision-host.log")"
+  # One whole engine turn, and the slowest of them in this file: every liveness
+  # question in a win:-tagged home crosses the Windows bridge, so each one costs
+  # a `ps -W` fork instead of a `kill -0`. The case ran 19.3s end to end on
+  # upstream run 40221122175, where the neighbouring cases run 2.5x to 3.7x
+  # faster than on the fork's runners, which took this turn past the former 250
+  # polls (25s) and failed it on run 40258196666. 600 polls, as the other
+  # whole-turn waits above use, keeps a wedged turn bounded well clear of the
+  # measured path.
+  wait_until 600 handled_at_least "$home" 1 || fail "tagged: the wake was not handled: $(cat "$home/host.out"; cat "$home/state/.supervision-host.log")"
   first="$home/engine-call.1"
   assert_re '^holder=win:7204$' "$first" "the engine's lease holder must be the tagged session-lock holder, whole"
   assert_re '^branch win:7204 [0-9]+ live$' "$home/engine-lease.log" \
