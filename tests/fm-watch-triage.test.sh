@@ -4862,18 +4862,6 @@ test_closed_exit_picker_drops_saved_dialog_name() {
   pass "a closed picker drops the saved dialog name, and the stale stays ordinary"
 }
 
-# CI's stock macOS Bash lane sets FM_TEST_STOCK_BASH=1 to run just the bash-3.2
-# churn-deferral regression. The rest of this file is not a 3.2 snapshot suite.
-# Adding another stock-bash case means adding it to this list, not to ci.yml.
-if [ -n "${FM_TEST_STOCK_BASH:-}" ]; then
-  fm_test_run test_turn_ended_churn_existing_marker_absorbed
-  exit 0
-fi
-if [ -n "${FM_TEST_ONLY:-}" ]; then
-  "$FM_TEST_ONLY"
-  exit 0
-fi
-
 test_crew_wedge_reconciliation_state_classifier() {
   local dir fakebin
   dir=$(make_case wedge-reconciliation-state); fakebin="$dir/fakebin"
@@ -5153,6 +5141,18 @@ test_run_activity_deferral_retires_a_stale_write_chain() {
   unset FM_FAKE_CREW_STATE
   pass "a recent-activity deferral retires the write chain, so a finished write episode cannot age into the next one"
 }
+
+# CI's stock macOS Bash lane sets FM_TEST_STOCK_BASH=1 to run just the bash-3.2
+# churn-deferral regression. The rest of this file is not a 3.2 snapshot suite.
+# Adding another stock-bash case means adding it to this list, not to ci.yml.
+if [ -n "${FM_TEST_STOCK_BASH:-}" ]; then
+  fm_test_run test_turn_ended_churn_existing_marker_absorbed
+  exit 0
+fi
+if [ -n "${FM_TEST_ONLY:-}" ]; then
+  "$FM_TEST_ONLY"
+  exit 0
+fi
 
 fm_test_run \
   test_run_activity_deferral_retires_a_stale_write_chain \

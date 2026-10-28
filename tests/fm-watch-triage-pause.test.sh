@@ -1429,11 +1429,6 @@ test_paused_bg_job_until_timeout_rechecks_after_the_job_ends() {
   pass "until set to a background job's timeout rechecks the worker paused on it once the job must have ended"
 }
 
-if [ -n "${FM_TEST_ONLY:-}" ]; then
-  "$FM_TEST_ONLY"
-  exit 0
-fi
-
 test_declared_pause_under_trailing_note_does_not_wake_every_poll() {
   local dir state fakebin out capture_file statusf window key pane_hash sig pid back round wakes
   dir=$(make_case pause-trailing-note); state="$dir/state"; fakebin="$dir/fakebin"
@@ -1481,6 +1476,11 @@ test_declared_pause_under_trailing_note_does_not_wake_every_poll() {
   [ "$wakes" -le 1 ] || fail "a declared wait under a trailing note: woke $wakes times across five unchanged polls"
   pass "a declared wait under a trailing note: surfaces once instead of waking on every poll"
 }
+
+if [ -n "${FM_TEST_ONLY:-}" ]; then
+  "$FM_TEST_ONLY"
+  exit 0
+fi
 
 fm_test_run \
   test_declared_pause_under_trailing_note_does_not_wake_every_poll \
