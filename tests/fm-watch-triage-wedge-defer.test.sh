@@ -497,10 +497,13 @@ working: still parked at that gate'
 # for it. Absent `config/wedge-defer-parked-gate` the lane this whole file
 # otherwise defers - human-owed gate, open decision keyed to that run, every
 # signal the armed cases assert on - must escalate on the unchanged schedule
-# with the unchanged reason and demand-deep-inspection wording, and the evidence
-# arm must not even be reached: no current-state read is spent and no recheck
-# throttle is written. The fixture is byte-identical to the armed case above
-# except for the flag, so the difference is attributable to the flag alone.
+# with the unchanged reason and demand-deep-inspection wording. The optional
+# parked-gate evidence arm must not be reached and no recheck throttle is
+# written. This reconciled fork still spends exactly one bounded current-state
+# read per threshold for its retained done/recent-run safeguards; the test
+# distinguishes that universal read from the additional parked-gate read the
+# flag enables. The fixture is byte-identical to the armed case above except
+# for the flag, so the difference is attributable to the flag alone.
 test_wedge_threshold_parked_gate_is_off_until_armed() {
   local dir state fakebin out capture window key n unarmed_probes armed_probes
   local human='state: parked · source: run-step · parked at awaiting_approval: 2 finding(s) · ask-user: authority decision · run: 01RUNGATE'
@@ -951,7 +954,8 @@ test_wedge_threshold_escalates_when_no_run_is_executing() {
 
 # Absent config/wedge-defer-validating an executing run is no deferral at all:
 # the lane escalates on the unchanged schedule and wording, and the consult is
-# never reached, so no current-state read is spent and no chain is started.
+# never reached, so it adds no read beyond the one-per-threshold fork
+# reconciliation check and starts no validating deferral chain.
 test_wedge_threshold_validating_run_is_off_until_armed() {
   local dir state fakebin out capture window key n probes
   local verdict='state: working · source: run-step · validating (running) · run: 01RUNLIVE'
