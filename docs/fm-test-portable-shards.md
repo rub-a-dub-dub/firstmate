@@ -161,13 +161,13 @@ The workflow retains per-PR supersession without cancelling main pushes or chang
 CI job timeouts follow one four-tier policy, so the workflow reads as a policy rather than as a collection of per-job numbers.
 Every tier is a hang tripwire with headroom above the healthy duration, never a packing estimate or a runtime target.
 A lane that reaches its tier bound needs investigation and a distribution or runtime fix, not a larger timeout to fit the same work.
-The one exception is a lane whose indivisible floor is a single script already above its tier: it earns its own tier bound until that script is split, which stays the real remedy.
+The one exception is a lane whose floor was a single script already above its tier: it earns its own tier bound, and keeps it after that script is split only until loaded CI runs measure the split lane.
 
 | Tier | Jobs | Bound | Rationale |
 |---|---|---|---|
 | Fast | coverage guard, repo invariants, timing aggregate | 5 minutes | Seconds-long local work, so the tripwire only catches a hung runner. |
 | Normal | lint partitions, portable parallel shards, macOS stock Bash | 30 minutes, one value shared by every job in the tier | One shared hang tripwire keeps every ordinary test and lint lane on the same policy instead of allowing per-lane packing estimates or one-off caps to set the bound. |
-| Serial shard | portable serial shards | 45 minutes | The indivisible supervision-host suite alone ran 29m34s of the former 30-minute cap, so these shards keep a tripwire above the normal tier while the suite stays whole. |
+| Serial shard | portable serial shards | 45 minutes | The then-whole supervision-host suite alone ran 29m34s of the former 30-minute cap; it is now four members, so these shards keep a tripwire above the normal tier only until loaded CI runs measure the split lane. |
 | Heavy | Herdr | family-run step 20 minutes under a 75-minute job-level last-resort backstop | Healthy runs finish in about 7-10 minutes, so the step tripwire fails a wedged suite while the `always()` cleanup and timing upload still run, and the job cap only catches a hang outside that step. |
 
 [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) holds the executable values and names each job's tier beside its `timeout-minutes`.
