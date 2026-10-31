@@ -2704,7 +2704,7 @@ open_decision_reminder_tick() {  # [now-epoch], for deterministic clock callers
   local cap=${FM_OPEN_DECISION_BACKOFF_MAX_SECS:-14400} value
   local f task open key verb opened note exclude ledger rows='' old=''
   local old_task old_key old_opened old_last old_delay last delay
-  local due_task='' due_key='' due_opened='' due_delay='' tmp reason
+  local due_task='' due_key='' due_opened='' due_delay='' tmp reason kept
   OPEN_DECISION_REMINDER=
   [ -e "$CONFIG/open-decision-reminders" ] || return 0
   for value in "$threshold" "$cap"; do
@@ -2723,7 +2723,11 @@ open_decision_reminder_tick() {  # [now-epoch], for deterministic clock callers
     [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || continue
     [ "$f" != "$exclude" ] || continue
     task=${f##*/}; task=${task%.status}
-    open=$(status_open_decisions_incremental "$f" '' timed) || return 1
+    if ! open=$(status_open_decisions_incremental "$f" '' timed); then
+      kept=$(printf '%s' "$old" | awk -F '\t' -v task="$task" 'NF == 5 && ($1 "") == (task "")') || return 1
+      [ -z "$kept" ] || rows="$rows$kept"$'\n'
+      continue
+    fi
     [ -n "$open" ] || continue
     while IFS=$'\t' read -r key verb opened note; do
       case "$opened" in ''|unknown|*[!0-9]*) continue ;; esac

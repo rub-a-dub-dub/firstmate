@@ -188,6 +188,24 @@ test_timed_cursor_retirement() {
   pass "task retirement removes the timed cursor and ends reminders"
 }
 
+test_transient_fold_read_failure() {
+  reset_case
+  touch "$CONFIG/open-decision-reminders"
+  printf 'needs-decision [at=1000] [key=api]: choose\n' > "$STATE/worker.status"
+  printf '#!/bin/sh\nexit 1\n' > "$TMP_ROOT/ident-fail"
+  chmod +x "$TMP_ROOT/ident-fail"
+  open_decision_reminder_tick 1200
+  [ "$(count_wakes)" = 1 ] || fail "overdue key did not queue its first reminder"
+  FM_STATUS_IDENTITY_READER="$TMP_ROOT/ident-fail" open_decision_reminder_tick 1250 \
+    || fail "a per-task status read failure failed the whole tick"
+  [ "$(count_wakes)" = 1 ] || fail "unreadable task queued a reminder"
+  open_decision_reminder_tick 1251
+  [ "$(count_wakes)" = 1 ] || fail "unreadable poll reset the key's recorded backoff"
+  open_decision_reminder_tick 1300
+  [ "$(count_wakes)" = 2 ] || fail "key stopped repeating after an unreadable poll"
+  pass "an unreadable task is skipped for one poll without failing the tick or losing backoff"
+}
+
 test_watcher_loop() {
   local dir="$TMP_ROOT/watcher-loop" pid i=0
   mkdir -p "$dir/state" "$dir/config"
@@ -215,4 +233,5 @@ test_watcher_loop() {
 fm_test_run test_disabled test_oldest_and_backoff test_numeric_keys_are_distinct \
   test_numeric_tasks_are_distinct test_resolution_and_reopen \
   test_wait_exemptions test_unknown_times_and_keyless test_timed_fold_is_incremental \
-  test_invalid_settings test_timed_cursor_retirement test_watcher_loop
+  test_invalid_settings test_timed_cursor_retirement test_transient_fold_read_failure \
+  test_watcher_loop
