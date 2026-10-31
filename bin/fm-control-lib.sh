@@ -355,8 +355,9 @@ fm_control_backend_supports_key() {  # <backend> <key>
 
 # Whether <backend> has a recovery-grade agent-state classifier. tmux, herdr,
 # rex, and t3code implement fm_backend_agent_state; zellij, orca, cmux, and paseo report
-# `unverified`, and tern's `tern process` classifier answers for display but is
-# not promoted to this list, so no reading of theirs can prove an agent stopped.
+# `unverified`, and the `tern process` and `hc get` classifiers answer for
+# display but are not promoted to this list, so no reading of theirs can prove
+# an agent stopped.
 # The control plane refuses a stop-proving verb there instead of reporting an
 # unprovable transition as success.
 fm_control_backend_state_verified() {  # <backend>

@@ -369,7 +369,7 @@ fm_backend_validate_spawn() {  # <name>
 #     paths parse the backend's JSON output (see each adapter's
 #     tool check, e.g. fm_backend_herdr_tool_check);
 #   - the treehouse worktree provider for every session-provider-only backend
-#     (tmux, herdr, zellij, cmux, paseo, rex, t3code, tern); orca owns its own task worktree and
+#     (tmux, herdr, zellij, cmux, paseo, rex, t3code, tern, hc); orca owns its own task worktree and
 #     terminal, so it drops both treehouse and any other backend's session CLI;
 #   - node for t3code, whose adapter speaks MCP to the T3 server through
 #     bin/fm-t3-mcp.mjs.
@@ -1178,8 +1178,8 @@ fm_backend_worktree_path() {  # <backend> <worktree-id>
   esac
 }
 
-# fm_backend_busy_state: native busy/idle/unknown for Herdr, Rex, T3 Code, and
-# Tern; backends without a native primitive report unknown. Recorded-task consumers
+# fm_backend_busy_state: native busy/idle/unknown for Herdr, Rex, T3 Code,
+# Tern, and hc; backends without a native primitive report unknown. Recorded-task consumers
 # use fm-busy-lib.sh's shared classifier, which owns native-state precedence
 # and harness fallbacks. Delivery-only callers own their separate guards.
 # tern reads Tern's native agent list through `tern ctl` when a desktop window
