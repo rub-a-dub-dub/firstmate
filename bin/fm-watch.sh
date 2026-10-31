@@ -2698,7 +2698,13 @@ task_captain_call_open() {  # <task>
 # double after each repeat, and cap at FM_OPEN_DECISION_BACKOFF_MAX_SECS (14400).
 # Both settings must be canonical positive integers of at most nine digits,
 # and the cap must be at least the threshold. Invalid enabled settings fail
-# the tick rather than creating an unbounded reminder loop.
+# the tick rather than creating an unbounded reminder loop. One task's fold
+# read failing is not such an error: that task is skipped for this poll, the
+# way scan_open_decisions_incremental skips it, and its recorded rows carry
+# forward unchanged, so a transient read can neither reset a key's backoff
+# into an immediate repeat nor retire a key the unread bytes may still hold
+# open. Only configuration, ledger, temp-file and wake-queue failures fail
+# the tick.
 open_decision_reminder_tick() {  # [now-epoch], for deterministic clock callers
   local now=${1:-} threshold=${FM_OPEN_DECISION_OVERDUE_SECS:-1800}
   local cap=${FM_OPEN_DECISION_BACKOFF_MAX_SECS:-14400} value
