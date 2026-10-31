@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Self-update a running firstmate and its secondmates to the latest origin.
+# Self-update a running firstmate and its secondmates to the latest from origin,
+# or from a configured self-update source.
 #
 # Mechanical half of the /updatefirstmate skill. Fast-forwards the running
 # firstmate repo's default branch from origin after synchronizing a GitHub fork
@@ -12,7 +13,9 @@
 # already exists in this repository and a branch on it (for example a fork
 # branch carrying unmerged fixes on top of upstream). When it is present:
 #   - the primary fetches exactly that branch into refs/remotes/<remote>/<branch>
-#     and fast-forwards to it under the same guards as the origin path;
+#     and fast-forwards to it under the same clean, on-default, and ancestry
+#     guards as the origin path; that fetch replaces the origin fetch, so the
+#     origin-path GitHub fork synchronization does not run for this primary;
 #   - local secondmates advance to the primary's resulting default-branch commit
 #     (the same commit the startup secondmate sync follows), importing it from
 #     the primary first when a standalone clone lacks it;
@@ -41,9 +44,11 @@
 # default branch, so a fast-forward there advances HEAD only and never touches
 # any other worktree's checkout or the shared `main` branch.
 #
-# The fast-forward mechanics live in bin/fm-ff-lib.sh (base_mode "origin" here);
-# the same library drives local and remote parent-targeted secondmate sync, so
-# there is one ff implementation, not several.
+# The fast-forward mechanics live in bin/fm-ff-lib.sh: base_mode "origin" here,
+# or, under a self-update source, the fetched source ref for the primary and the
+# primary's resulting commit for its local secondmates. The same library drives
+# local and remote parent-targeted secondmate sync, so there is one ff
+# implementation, not several.
 #
 # It does NOT re-read AGENTS.md or nudge secondmates itself - those are LLM /
 # tmux actions the skill performs. The script's job is the safe git mechanics
