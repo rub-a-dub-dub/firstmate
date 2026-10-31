@@ -3,10 +3,10 @@
 # for session-provider backends whose container has ONE namespace shared by
 # every firstmate home on the machine, with no native per-home split (cmux's
 # one app-global workspace list, zellij's one shared "firstmate" session's
-# tab bar, tern's one window-global session list). Without a per-home
-# discriminator embedded in the actual title/name, two firstmate homes (two
-# secondmates, a primary plus a secondmate, or two independent primary
-# installations) whose task ids
+# tab bar, tern's one window-global session list, hc's one core-global terminal
+# list). Without a per-home discriminator embedded in the actual title, name, or
+# label, two firstmate homes (two secondmates, a primary plus a secondmate, or
+# two independent primary installations) whose task ids
 # happen to collide can send/peek/close each other's tabs - the gap a
 # captain-directed no-mistakes review gate caught for cmux
 # (docs/cmux-backend.md) and this same tag mechanism was later ported to
