@@ -347,9 +347,9 @@ ff_sync_origin_fork() { # <dir>
   FF_FETCH_ERROR="fork sync refused: $repo/$branch diverged from $parent/$parent_branch"
   if ! git -C "$dir" merge-base --is-ancestor "$fork_tip" "$parent_tip" 2>/dev/null; then
     # A true divergence is reconcile work, not a dead end: record the counts so
-    # fm-update.sh can name it. Counts that cannot be read report as "unknown".
-    counts=$(git -C "$dir" rev-list --left-right --count "$fork_tip...$parent_tip" 2>/dev/null | tr '\t' ' ') || counts=""
-    FF_FORK_DIVERGENCE="$repo/$branch $parent/$parent_branch ${counts:-unknown unknown}"
+    # fm-update.sh can name it.
+    counts=$(git -C "$dir" rev-list --left-right --count "$fork_tip...$parent_tip" 2>/dev/null) || return 1
+    FF_FORK_DIVERGENCE="$repo/$branch $parent/$parent_branch ${counts/$'\t'/ }"
     return 1
   fi
   if ! out=$(git -C "$dir" -c push.followTags=false push --porcelain -- "$url" "$parent_tip:refs/heads/$branch" 2>&1); then
