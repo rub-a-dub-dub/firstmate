@@ -271,7 +271,7 @@ ff_discovery_warn() { # <repo> <reason>
 # carries an actionable failure to ff_target.
 ff_sync_origin_fork() { # <dir>
   local dir=$1 url status repo metadata record fork name branch parent
-  local parent_branch source fork_tip parent_tip out
+  local parent_branch source fork_tip parent_tip out counts
   FF_ORIGIN_DEFAULT=""
   FF_FORK_UNVERIFIED=""
   # Several values is the ordinary push-to-mirrors config; Git fetches from the
@@ -345,7 +345,13 @@ ff_sync_origin_fork() { # <dir>
   parent_tip=$(git -C "$dir" rev-parse --verify FETCH_HEAD) || return 1
   git -C "$dir" merge-base --is-ancestor "$parent_tip" "$fork_tip" 2>/dev/null && return 0
   FF_FETCH_ERROR="fork sync refused: $repo/$branch diverged from $parent/$parent_branch"
-  git -C "$dir" merge-base --is-ancestor "$fork_tip" "$parent_tip" 2>/dev/null || return 1
+  if ! git -C "$dir" merge-base --is-ancestor "$fork_tip" "$parent_tip" 2>/dev/null; then
+    # A true divergence is reconcile work, not a dead end: record the counts so
+    # fm-update.sh can name it.
+    counts=$(git -C "$dir" rev-list --left-right --count "$fork_tip...$parent_tip" 2>/dev/null) || return 1
+    FF_FORK_DIVERGENCE="$repo/$branch $parent/$parent_branch ${counts/$'\t'/ }"
+    return 1
+  fi
   if ! out=$(git -C "$dir" -c push.followTags=false push --porcelain -- "$url" "$parent_tip:refs/heads/$branch" 2>&1); then
     FF_FETCH_ERROR="fork sync failed: cannot fast-forward $repo/$branch: $(first_line "$out")"
     return 1
@@ -361,6 +367,12 @@ ff_sync_origin_fork() { # <dir>
 # recently fetched.
 FETCHED=""
 FF_FETCH_ERROR=""
+# Set only by a true fork/parent divergence: "<fork> <parent> <ahead> <behind>"
+# (ahead/behind from the fork's side). fm-update.sh turns it into its
+# fork-reconcile action line; every other outcome leaves it empty. Sticky for
+# the run, like FF_UPDATE_FAILED, so a later clean store cannot erase it.
+# shellcheck disable=SC2034 # Read by bin/fm-update.sh (the fork-reconcile line) after sourcing this library.
+FF_FORK_DIVERGENCE=""
 # Sticky origin failure flag consumed by fm-update.sh after its fleet sweep.
 # Raised at exactly TWO places, both carrying the SAME verdict - an established
 # fork that could not be synchronized: the fork-synchronization branch below,
