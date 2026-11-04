@@ -44,7 +44,8 @@ This touches only the firstmate repo and its own worktrees, never anything under
    ```
    It fast-forwards this firstmate repo's default branch from origin, or from the configured self-update source, then updates every registered local or remote secondmate home through its placement-specific guarded path.
    When a source is configured it prints a `self-update source:` line first, and an unusable config file stops the whole update before anything moves; report that file to the captain rather than editing or removing it.
-   It prints one status line per target (`updated <old>..<new>` / `reconciled redundant divergence <old>..<new>` / `already current` / `skipped: <reason>`), followed by three action lines that tell you exactly what to do next:
+   It prints one status line per target (`updated <old>..<new>` / `reconciled redundant divergence <old>..<new>` / `already current` / `skipped: <reason>`), followed by four action lines that tell you exactly what to do next:
+   - `fork-reconcile: none` or `fork-reconcile: needed <fork> <parent> ahead=<n> behind=<n>`
    - `reread-firstmate: yes|no`
    - `restart-secondmates: fm-<id>...|none`
    - `nudge-secondmates: fm-<id>...|none`
@@ -54,12 +55,20 @@ This touches only the firstmate repo and its own worktrees, never anything under
    A mate reaches neither set only because its home was skipped, because it has no live endpoint recorded here, or because its endpoint was positively classified as dead or missing.
    A skipped genuine divergence still requires attention through its durable reconciliation record; the other two cases need no update action from you.
 
-2. **Re-read AGENTS.md if your own instructions changed.**
+2. **Treat `fork-reconcile: needed` as work to schedule, not a dead end.**
+   It means the fork has genuinely diverged from its parent, so the update was refused and nothing moved, and the fork needs a reconcile merge before it can update.
+   Do not stop at "refused" and do not dispatch on your own.
+   Tell the captain the counts in plain outcomes (how many commits the fork has that upstream lacks, and how many upstream has that the fork lacks), then discuss scheduling the reconcile now rather than waiting for its date gate.
+   Look up the backlog's standing weekly upstream-reconcile item to name its date and the last merged reconcile PR as the template, and report that the update will succeed once that reconcile lands.
+   On the captain's go-ahead, dispatch it through the normal ship lifecycle (a captain word is the dispatch authority; the standing item and its brief template own the reconcile recipe).
+   When it says `none`, skip this step.
+
+3. **Re-read AGENTS.md if your own instructions changed.**
    When the updater printed `reread-firstmate: yes`, the tracked instruction surface (`AGENTS.md`, `bin/`, or `.agents/skills/`) just advanced under you.
    **Read `AGENTS.md` now** (CLAUDE.md is a real `@AGENTS.md` pointer to it) to refresh your operating instructions before doing anything else, so you are acting on the new instructions rather than the stale ones you were started with.
    When it printed `reread-firstmate: no`, nothing changed for you - skip the re-read.
 
-3. **Restart every second mate the updater named.**
+4. **Restart every second mate the updater named.**
    Pass the whole `restart-secondmates:` list to one command (skip this step entirely when it says `none`):
    ```sh
    FM_HOME=<this-firstmate-home> bin/fm-secondmate-restart.sh <fm-id>...
@@ -79,7 +88,7 @@ This touches only the firstmate repo and its own worktrees, never anything under
      Never report one of these as a clean reload.
    - `unreached: <id>: <reason>` - no safe running outcome could be confirmed, including an ambiguous relaunch result.
 
-4. **Send the re-read message to the rest.**
+5. **Send the re-read message to the rest.**
    For every target on the `nudge-secondmates:` line (do nothing when it says `none`), send the one-line re-read steer:
    ```sh
    FM_HOME=<this-firstmate-home> bin/fm-send.sh <id> 'firstmate was updated to the latest - please re-read your AGENTS.md to pick up the new instructions.'
@@ -88,7 +97,7 @@ This touches only the firstmate repo and its own worktrees, never anything under
    It is a gentle steer, not an interruption: the mate already got a safe tracked-files fast-forward, and the steer never forces, tears down, or discards its work.
    Never describe one of these as reloaded; its agent is still running the wiring it launched with.
 
-5. **Report to the captain in plain outcomes, in one line where you can.**
+6. **Report to the captain in plain outcomes, in one line where you can.**
    Summarize what landed under `AGENTS.md` section 9 without firstmate's internal vocabulary: which parts of the fleet are now on the latest, and which were left as-is and why.
    For example: "Captain, firstmate and both second mates are now on the latest."
    Say plainly when a mate got the message rather than a clean reload, and why - never let a partial reload read as a full one.

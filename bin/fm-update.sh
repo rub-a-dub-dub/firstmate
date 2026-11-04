@@ -59,6 +59,11 @@
 #     summary, while an ordinary transport failure stays a reported skip
 #   - origin-verified: yes|no    (did this run actually verify currency anywhere
 #     it fast-forwarded from origin, locally and on every remote host)
+#   - fork-reconcile: none | needed <fork> <parent> ahead=<n> behind=<n>
+#     (needed only when the fork has truly diverged from its parent, so the
+#     fast-forward was refused and the fork needs a reconcile merge; the skill
+#     raises scheduling that reconcile with the captain instead of stopping at
+#     the refusal)
 #   - reread-firstmate: yes|no    (did the running firstmate's instructions change)
 #   - restart-secondmates: fm-<id>...|none (every live secondmate this pass left
 #     on the update target's tip - advanced OR already there - whose recorded
@@ -376,6 +381,12 @@ fi
 # then also steered about the instructions it just relaunched on.
 
 echo "origin-verified: $FF_RUN_VERIFIED"
+if [ -n "$FF_FORK_DIVERGENCE" ]; then
+  read -r div_fork div_parent div_ahead div_behind <<< "$FF_FORK_DIVERGENCE"
+  echo "fork-reconcile: needed $div_fork $div_parent ahead=$div_ahead behind=$div_behind"
+else
+  echo "fork-reconcile: none"
+fi
 echo "reread-firstmate: $reread_firstmate"
 echo "restart-secondmates:${FF_RESTART_WINDOWS:- none}"
 echo "nudge-secondmates:${FF_STEER_WINDOWS:- none}"

@@ -946,6 +946,12 @@ test_fork_failures() {
     assert_contains "$out" 'firstmate: skipped: fork' "$mode is actionable"
     assert_not_contains "$out" 'already current' "$mode must not report current"
     assert_contains "$out" 'restart-secondmates: none' "$mode must not restart"
+    if [ "$mode" = diverged ]; then
+      assert_contains "$out" 'fork-reconcile: needed operator/firstmate/main author/firstmate/main ahead=1 behind=1' \
+        "a true divergence names the reconcile work and its size"
+    else
+      assert_contains "$out" 'fork-reconcile: none' "$mode is not reconcile work"
+    fi
     [ "$(git -C "$w/main" rev-parse HEAD)" = "$before" ] || fail "$mode moved local HEAD"
     [ "$(git -C "$w/fork.git" rev-parse main)" = "$fork_before" ] || fail "$mode lost fork work"
     pass "fork $mode failure is visible and preserves both tips"
