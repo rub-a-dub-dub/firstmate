@@ -1,0 +1,60 @@
+
+==================================================================
+SCENARIO A - fork has diverged from upstream (2 fork-only commits, 1 upstream commit)
+==================================================================
+local firstmate HEAD before : b68033b43841282f10ec3b58f7772c07836f3783
+fork operator/firstmate main: ac74f2ca637f13f7815a6807f8f0e9d1fdccc2b7
+
+$ FM_HOME=<firstmate-home> bin/fm-update.sh
+firstmate: skipped: fork sync refused: operator/firstmate/main diverged from author/firstmate/main
+origin-verified: no
+fork-reconcile: needed operator/firstmate/main author/firstmate/main ahead=2 behind=1
+reread-firstmate: no
+restart-secondmates: none
+nudge-secondmates: none
+(exit status: 1)
+
+local firstmate HEAD after  : b68033b43841282f10ec3b58f7772c07836f3783
+fork operator/firstmate main: ac74f2ca637f13f7815a6807f8f0e9d1fdccc2b7
+REFUSAL UNCHANGED: nothing moved locally
+FORK WORK PRESERVED: fork tip untouched
+EXIT NONZERO: the update still reports failure
+
+--- git ahead/behind, independently computed from the same fixture ---
+git rev-list --left-right --count <fork>...<parent> => 2 1
+
+--- the action line grammar the skill relays: counts are always numeric ---
+NUMERIC GRAMMAR OK: fork-reconcile: needed operator/firstmate/main author/firstmate/main ahead=2 behind=1
+
+==================================================================
+SCENARIO B - fork merely behind upstream (unchanged fast-forward path)
+==================================================================
+local firstmate HEAD before : 124e848e9c9e3e88e1ccbc0df90d6deba7823a46
+fork operator/firstmate main: 124e848e9c9e3e88e1ccbc0df90d6deba7823a46
+
+$ FM_HOME=<firstmate-home> bin/fm-update.sh
+fork sync: fast-forwarded operator/firstmate/main from author/firstmate/main
+firstmate: updated 124e848..4e196b0
+no watches registered
+origin-verified: yes
+fork-reconcile: none
+reread-firstmate: no
+restart-secondmates: none
+nudge-secondmates: none
+(exit status: 0)
+
+local firstmate HEAD after   : 4e196b052cd3d1ff4f7f054195a7ecb7f611a8d2
+fork operator/firstmate main : 4e196b052cd3d1ff4f7f054195a7ecb7f611a8d2
+FAST-FORWARD STILL WORKS: primary is on upstream tip
+
+==================================================================
+What the mate is told to do with `fork-reconcile: needed` (.agents/skills/updatefirstmate/SKILL.md)
+==================================================================
+2. **Treat `fork-reconcile: needed` as work to schedule, not a dead end.**
+   It means the fork has genuinely diverged from its parent, so the update was refused and nothing moved, and the fork needs a reconcile merge before it can update.
+   Do not stop at "refused" and do not dispatch on your own.
+   Tell the captain the counts in plain outcomes (how many commits the fork has that upstream lacks, and how many upstream has that the fork lacks), then discuss scheduling the reconcile now rather than waiting for its date gate.
+   Look up the backlog's standing weekly upstream-reconcile item to name its date and the last merged reconcile PR as the template, and report that the update will succeed once that reconcile lands.
+   On the captain's go-ahead, dispatch it through the normal ship lifecycle (a captain word is the dispatch authority; the standing item and its brief template own the reconcile recipe).
+   When it says `none`, skip this step.
+
