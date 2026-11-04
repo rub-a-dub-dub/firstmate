@@ -960,6 +960,51 @@ test_fork_failures() {
   done
 }
 
+# The fork-reconcile line must survive the rest of the fleet sweep. The
+# divergence belongs to ONE object store, but a later home with its own clean,
+# non-fork origin runs the same synchronization again; if that second pass reset
+# the record the way it resets the per-store fork verdict, the run would print
+# `fork-reconcile: none` while the refusal it just reported is still standing,
+# and the skill would skip the scheduling discussion entirely.
+test_fork_divergence_survives_a_clean_store() {
+  local w before fork_before out rc
+  w=$(new_world fork-diverged-multi-store)
+  new_fork_world "$w"
+  git clone -q "$w/fork.git" "$w/fork-writer"
+  printf 'fork-only\n' > "$w/fork-writer/unique"
+  git -C "$w/fork-writer" add unique
+  git -C "$w/fork-writer" commit -qm fork-only
+  printf 'fork-only-again\n' >> "$w/fork-writer/unique"
+  git -C "$w/fork-writer" commit -qam fork-only-again
+  git -C "$w/fork-writer" push -q origin main
+  advance_parent "$w"
+  before=$(git -C "$w/main" rev-parse HEAD)
+  fork_before=$(git -C "$w/fork.git" rev-parse main)
+  # Its own origin is a local path, so its synchronization is clean and runs
+  # AFTER the diverged primary store (homes are swept in sorted order).
+  git clone -q "$w/origin.git" "$w/zclone"
+  git -C "$w/zclone" checkout -q --detach HEAD
+  printf 'zclone\n' > "$w/zclone/.fm-secondmate-home"
+  {
+    printf 'window=main:fm-zclone\n'
+    printf 'endpoint_task_id=zclone\n'
+    printf 'kind=secondmate\n'
+    printf 'harness=claude\n'
+    printf 'home=%s/zclone\n' "$w"
+  } > "$w/home/state/zclone.meta"
+  printf 'fm-zclone\n' >> "$w/fake/windows"
+  rc=0
+  out=$(run_update "$w") || rc=$?
+  [ "$rc" -ne 0 ] || fail 'a standing divergence must still fail the update'
+  assert_contains "$out" 'secondmate zclone: already current' \
+    'the clean store is synchronized on its own terms after the diverged one'
+  assert_contains "$out" 'fork-reconcile: needed operator/firstmate/main author/firstmate/main ahead=2 behind=1' \
+    'a later clean store must not erase the reconcile record'
+  [ "$(git -C "$w/main" rev-parse HEAD)" = "$before" ] || fail 'the refused primary moved'
+  [ "$(git -C "$w/fork.git" rev-parse main)" = "$fork_before" ] || fail 'the diverged fork moved'
+  pass 'the fork-reconcile record outlives a later clean object store'
+}
+
 # Discovery that cannot answer leaves fork-ness UNKNOWN, not absent. The ordinary
 # Git origin update must still run rather than taking the home down, but the run
 # must never claim currency it did not verify: with upstream ahead of the fork,
@@ -1185,6 +1230,7 @@ test_self_update_source_rewrite_is_skipped
 test_fork_update
 test_authoritative_origin_noop
 test_fork_failures
+test_fork_divergence_survives_a_clean_store
 test_fork_discovery_fallback
 test_gh_axi_record_contract
 test_fork_sync_with_mirror_origin
