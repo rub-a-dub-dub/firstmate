@@ -931,6 +931,8 @@ test_fork_failures() {
         printf 'fork-only\n' > "$w/fork-writer/unique"
         git -C "$w/fork-writer" add unique
         git -C "$w/fork-writer" commit -qm fork-only
+        printf 'fork-only-again\n' >> "$w/fork-writer/unique"
+        git -C "$w/fork-writer" commit -qam fork-only-again
         git -C "$w/fork-writer" push -q origin main
         ;;
       reject)
@@ -947,7 +949,7 @@ test_fork_failures() {
     assert_not_contains "$out" 'already current' "$mode must not report current"
     assert_contains "$out" 'restart-secondmates: none' "$mode must not restart"
     if [ "$mode" = diverged ]; then
-      assert_contains "$out" 'fork-reconcile: needed operator/firstmate/main author/firstmate/main ahead=1 behind=1' \
+      assert_contains "$out" 'fork-reconcile: needed operator/firstmate/main author/firstmate/main ahead=2 behind=1' \
         "a true divergence names the reconcile work and its size"
     else
       assert_contains "$out" 'fork-reconcile: none' "$mode is not reconcile work"
