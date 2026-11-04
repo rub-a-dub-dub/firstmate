@@ -2356,7 +2356,7 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
           if ! busy_stream_snapshot_current "$task" "$stream_snapshot"; then
             wedge_episode_end "$_wkey"
             rm -f "$STATE/.model-stream-episode-$_wkey"
-            clear_write_tracking "$_wkey"
+            clear_deferral_tracking "$_wkey"
             return 0
           fi
           read -r _ _ _ stream_ts <<< "$stream_snapshot"
@@ -2406,7 +2406,7 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
             # its count exactly like a rejected escalation append.
             wedge_episode_end "$_wkey"
             rm -f "$STATE/.model-stream-episode-$_wkey"
-            clear_write_tracking "$_wkey"
+            clear_deferral_tracking "$_wkey"
             return 0
           fi
           if [ "$_wrb_cap_status" -eq 3 ]; then
@@ -2461,7 +2461,7 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
           if [ "$append_status" -eq 3 ]; then
             wedge_episode_end "$_wkey"
             rm -f "$STATE/.model-stream-episode-$_wkey"
-            clear_write_tracking "$_wkey"
+            clear_deferral_tracking "$_wkey"
             return 0
           fi
           [ "$append_status" -eq 0 ] || exit 1
@@ -2682,14 +2682,14 @@ busy_turn_bound_check() {  # <window> <task> <hash> <since-file> <escalation-fil
   if [ -n "$stream_snapshot" ]; then
     if [ "$(cat "$stream_episode" 2>/dev/null || true)" != "$stream_snapshot" ]; then
       wedge_episode_end "$(window_key "$win")"
-      clear_write_tracking "$(window_key "$win")"
+      clear_deferral_tracking "$(window_key "$win")"
       printf '%s' "$stream_snapshot" > "$stream_episode"
     fi
     label="busy (model stream silent)"
   else
     if [ -e "$stream_episode" ]; then
       wedge_episode_end "$(window_key "$win")"
-      clear_write_tracking "$(window_key "$win")"
+      clear_deferral_tracking "$(window_key "$win")"
     fi
     rm -f "$stream_episode"
   fi
