@@ -106,7 +106,8 @@ test_token_is_read_through_in_every_position_it_is_written_in() {
   view=$(drain_open "$state" "$out")
   case "$view" in *'t1'*'[key=before]'*) ;; *) fail "token before the key did not open: $view" ;; esac
   case "$view" in *'t2'*'[key=after]'*) ;; *) fail "token after the key did not open: $view" ;; esac
-  # The drain prints the default key explicitly, same as any other key.
+  # Every entry states the key it folded, "default" included, so the key the
+  # listing shows is always the key its advised fm-send command closes.
   case "$view" in *'t3 [key=default] blocked:'*) ;; *) fail "token with no key did not open the default key: $view" ;; esac
   case "$view" in *'t4'*'[key=twice]'*) ;; *) fail "two tokens on one line did not open: $view" ;; esac
   case "$view" in *'t5 [key=default] needs-decision:'*) ;; *) fail "the bracketed helper token did not open: $view" ;; esac
