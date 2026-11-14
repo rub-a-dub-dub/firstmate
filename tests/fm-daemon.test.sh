@@ -4051,7 +4051,7 @@ test_pause_reconcile_clears_the_run_activity_deferral_chain() {
   state="$dir/state"
   mkdir -p "$state"
   win='firstmate:fm-x'
-  key=$(_stale_key "$win")
+  key=$(watch_window_key "$win")
 
   : > "$state/.paused-$key"
   for marker in .stale- .stale-since- .wedge-escalations- .writing-since- \
