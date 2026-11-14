@@ -1793,7 +1793,7 @@ EOF
             FM_PR_NO_CI_EVIDENCE_WAIVED=true
             waived_notice="notice: --waive-no-ci-evidence accepted head $live_head with no pull_request-triggered check reported yet, younger than the grace window; this merge will be recorded as attended-ci-waived merge authority once the forge accepts it"
           else
-            FM_PR_GITHUB_OTHER_REFUSAL=true
+            FM_PR_GITHUB_UNREPORTED=true
             refusals="$refusals  - no pull_request-triggered check has reported for head $live_head yet, and its delivery is younger than the grace window; re-check shortly, or once attended and certain, merge again with --waive-no-ci-evidence $URL (refused while away; recorded as attended-ci-waived merge authority)
 "
           fi
