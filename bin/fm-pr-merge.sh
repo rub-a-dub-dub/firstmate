@@ -105,7 +105,11 @@
 # the delivery chooses the wording: "not arrived yet, re-check" while it is
 # younger than the grace window, a suspected dropped event once it is older,
 # because GitHub's own pull_request delivery to Actions can silently drop for a
-# given push. Older than the Actions run retention window, though, a zero count
+# given push. That age also decides how the branch-update wait below treats the
+# refusal: inside the grace window it is an unreported check like any other, so
+# the polling budget re-checks it, while the older dropped-event verdict is a
+# non-transient refusal that stops the wait at once. Older than the Actions run
+# retention window, though, a zero count
 # is expired evidence rather than a confirmed absence - GitHub has purged the
 # runs, no retry can ever bring them back, and a refusal no retry can clear
 # would leave merging outside firstmate as the operator's only route - so that
