@@ -1298,7 +1298,7 @@ fm_backlog_close_marker_validate() {  # <marker-path> <authorized-data-dir> <exp
       ;;
     *) FM_BACKLOG_TRANSITION_ERROR="invalid pending-close arguments in $marker"; return 1 ;;
   esac
-  if [ "${args[0]-}" = --note ]; then
+  if [ "${args[0]-}" = --note ] && [ "${args[1]-}" = "local%20main" ]; then
     args[1]="local main"
   fi
   FM_BACKLOG_CLOSE_VALIDATED_ID=$id

@@ -254,7 +254,6 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 PR_DEGRADED_WATCH_ENABLED=0
 [ ! -e "$CONFIG/pr-degraded-watch" ] || PR_DEGRADED_WATCH_ENABLED=1
-DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 mkdir -p "$STATE"
 # Hold this state directory open for the main loop's teardown check: a
 # directory recreated at the same path is then a different directory, and the
@@ -2738,7 +2737,7 @@ busy_turn_bound_check() {  # <window> <task> <hash> <since-file> <escalation-fil
   statusf="$STATE/$task.status"
   if pause_overdue_reconcile "$task" "$statusf"; then
     wedge_episode_end "$(window_key "$win")"
-    clear_write_tracking "$(window_key "$win")"
+    clear_deferral_tracking "$(window_key "$win")"
     return 0
   fi
   if status_is_paused_or_captain_held "$(status_declared_wait_line "$statusf")"; then
