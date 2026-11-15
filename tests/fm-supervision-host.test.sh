@@ -16,6 +16,57 @@ set -u
 # shellcheck source=tests/supervision-host-helpers.sh
 . "$(dirname "${BASH_SOURCE[0]}")/supervision-host-helpers.sh"
 
+test_handback_wait_timeouts_dump_diagnostics() {
+  local home output dumped waiter waited rc file
+  home=$(make_home timeout-diagnostics attended)
+  output="$home/timeout.err"
+  dumped="$home/timeout-files.err"
+  for file in host.out hook.out hook.err state/.supervision-host.log state/.supervision-host-health; do
+    printf 'diagnostic fixture: %s\n' "$file" > "$home/$file"
+  done
+  for waiter in wait_until wait_until_deadline; do
+    for waited in host_exited hook_exited; do
+      rc=0
+      if [ "$waiter" = wait_until ]; then
+        "$waiter" 1 "$waited" "$home" 2> "$output" || rc=$?
+      else
+        "$waiter" 0 "$waited" "$home" 2> "$output" || rc=$?
+      fi
+      assert_equals 1 "$rc" "a hand-back timeout must still fail"
+      assert_grep "$waiter: $waited timed out for $home" "$output" "timeout must identify its wait and home"
+      for file in host.out state/.supervision-host.log state/.supervision-host-health; do
+        assert_grep "diagnostic fixture: $file" "$output" "timeout must dump $file"
+      done
+      assert_grep '--- host.out ---' "$output" "timeout must label host output"
+      assert_grep '--- .supervision-host.log ---' "$output" "timeout must label the host log"
+      assert_grep '--- .supervision-host-health ---' "$output" "timeout must label host health"
+      assert_grep '--- process tree ---' "$output" "timeout must label the process tree"
+      assert_re 'PID[[:space:]]+PPID' "$output" "timeout must include process data"
+      sed -n '/^--- process tree ---$/q;p' "$output" > "$dumped"
+      assert_no_grep 'printf:' "$dumped" "diagnostic headings must be valid Bash printf calls"
+      if [ "$waited" = hook_exited ]; then
+        for file in hook.out hook.err; do
+          assert_grep "--- $file ---" "$output" "hook timeout must label $file"
+          assert_grep "diagnostic fixture: $file" "$output" "hook timeout must dump $file"
+        done
+      else
+        assert_no_grep 'diagnostic fixture: hook.' "$dumped" "host timeout must not dump hook output"
+      fi
+    done
+  done
+  printf '0\n' > "$home/host.rc"
+  printf '0\n' > "$home/hook.rc"
+  wait_until 1 host_exited "$home" 2> "$output" || fail "completed host wait must succeed"
+  [ ! -s "$output" ] || fail "successful host wait must stay quiet"
+  wait_until 1 hook_exited "$home" 2> "$output" || fail "completed hook wait must succeed"
+  [ ! -s "$output" ] || fail "successful hook wait must stay quiet"
+  rc=0
+  wait_until 1 false 2> "$output" || rc=$?
+  assert_equals 1 "$rc" "ordinary wait timeout must still fail"
+  [ ! -s "$output" ] || fail "ordinary wait timeout must not dump host diagnostics"
+  pass "host: hand-back wait timeouts dump diagnostics while successful and ordinary waits stay quiet"
+}
+
 test_park_exit_probe_uses_half_second_child_sleeps() {
   local home host_pid
   home=$(make_home park-cadence attended)
@@ -917,6 +968,7 @@ test_incomplete_engine_result_hands_the_wake_to_main() {
 }
 
 fm_test_run \
+  test_handback_wait_timeouts_dump_diagnostics \
   test_park_exit_probe_uses_half_second_child_sleeps \
   test_attended_routine_wake_is_handled_on_the_engine_and_stays_off_main \
   test_host_stopped_right_after_a_handled_wake_exits_and_frees_the_queue \

@@ -152,7 +152,7 @@ test_attended_latch_keeps_closes_on_main_and_records_recovery_off_main() {
   wait_until 250 handled_at_least "$home" $((handled + 1)) \
     || fail "latch: the successful probe was not handled: $(cat "$home/host.out"; tail -n 5 "$home/state/.supervision-host.log")"
   assert_re '	recovered	after a successful probe$' "$home/state/.supervision-host.log" "the ledger must record the recovery"
-  ! wait_until 20 host_exited "$home" || fail "a routine probe's recovery reached main: $(cat "$home/host.out")"
+  ! wait_until 20 host_exited "$home" 2>/dev/null || fail "a routine probe's recovery reached main: $(cat "$home/host.out")"
   assert_no_re '^supervision-host' "$home/host.out" "a recovery must stay off main"
   assert_grep 'cooldown=0' "$home/state/.supervision-host-health" "a successful probe must clear the latch"
   assert_grep 'errors=0' "$home/state/.supervision-host-health" "a successful probe must clear the error streak"
@@ -218,7 +218,7 @@ test_idle_engine_conversation_is_compacted_once_across_hosts() {
     fi
     [ "$(compact_calls "$home")" = 1 ] || fail "warm-compact: run $run compacted the same idle episode again"
     stop_home_processes "$home"
-    wait_until 100 host_exited "$home" || true
+    wait_until 100 host_exited "$home" 2>/dev/null || true
   done
   pass "host: an idle engine conversation is compacted once across hosts"
 }
@@ -486,7 +486,7 @@ test_first_cycle_status_streams_and_owner_options_reach_it() {
   fresh=$(sed -n 's/^watcher: started pid=\([0-9]*\).*/\1/p' "$home/host.out")
   [ "$fresh" != "$stale" ] || fail "stream: --restart attached to the watcher it should have replaced"
   wait_until 100 sh -c '! kill -0 "$1" 2>/dev/null' _ "$stale" || fail "stream: --restart left the old watcher running"
-  wait_until 200 host_exited "$home" || append_status "$home" 'second close' 'done'
+  wait_until 200 host_exited "$home" 2>/dev/null || append_status "$home" 'second close' 'done'
   wait_until 600 host_exited "$home" || fail "stream: the restarting host's close did not reach main"
   assert_re '^(signal: .*demo.status|check: rearm-resurface)$' "$home/host.out" "stream: the restarting host's close must reach main"
 

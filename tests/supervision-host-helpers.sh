@@ -294,6 +294,8 @@ assert_no_re() {  # <regex> <file> <msg>
   ! grep -E -- "$1" "$2" >/dev/null || fail "$3"$'\n'"--- $2 ---"$'\n'"$(cat "$2" 2>/dev/null)"
 }
 
+# Keep iteration-counted waits so their budget stretches under load, and dump
+# hand-back diagnostics only when a host/Stop-hook exit wait exhausts its polls.
 wait_until() {  # <polls of 0.1s> <command...>
   local limit=$1 i=0
   shift
@@ -302,14 +304,13 @@ wait_until() {  # <polls of 0.1s> <command...>
     sleep 0.1
     i=$((i + 1))
   done
+  case "${1:-}" in
+    host_exited|hook_exited) dump_host_handback_diagnostics "${2:-}" "$1" wait_until ;;
+  esac
   return 1
 }
 
-# Time-based wait used for host hand-back. The previous poll-count waits
-# (wait_until 200|250 host_exited, ~20-25s) flake on a slow runner; this
-# helper polls at the same 0.1s interval until the deadline. On timeout of
-# host_exited it dumps the fixture host log, supervision-host log, health
-# file, and a process tree so a CI failure is diagnosable.
+# Explicit wall-clock alternative with the same hand-back timeout diagnostics.
 wait_until_deadline() {  # <seconds> <command...>
   local limit=$1 start
   shift
@@ -328,42 +329,42 @@ wait_until_deadline() {  # <seconds> <command...>
   return 1
 }
 
-dump_host_handback_diagnostics() {  # <home> [wait-name]
+dump_host_handback_diagnostics() {  # <home> [wait-name] [wait-helper]
   local home=${1:-} waited=${2:-host_exited}
-  printf 'wait_until_deadline: %s timed out for %s\n' "$waited" "${home:-<missing home>}" >&2
-  printf '--- host.out ---\n' >&2
+  printf '%s: %s timed out for %s\n' "${3:-wait_until_deadline}" "$waited" "${home:-<missing home>}" >&2
+  printf '%s\n' '--- host.out ---' >&2
   if [ -n "$home" ] && [ -f "$home/host.out" ]; then
     cat "$home/host.out" >&2
   else
     printf '(missing)\n' >&2
   fi
-  printf '--- .supervision-host.log ---\n' >&2
+  printf '%s\n' '--- .supervision-host.log ---' >&2
   if [ -n "$home" ] && [ -f "$home/state/.supervision-host.log" ]; then
     cat "$home/state/.supervision-host.log" >&2
   else
     printf '(missing)\n' >&2
   fi
-  printf '--- .supervision-host-health ---\n' >&2
+  printf '%s\n' '--- .supervision-host-health ---' >&2
   if [ -n "$home" ] && [ -f "$home/state/.supervision-host-health" ]; then
     cat "$home/state/.supervision-host-health" >&2
   else
     printf '(missing)\n' >&2
   fi
   if [ "$waited" = hook_exited ]; then
-    printf '--- hook.out ---\n' >&2
+    printf '%s\n' '--- hook.out ---' >&2
     if [ -n "$home" ] && [ -f "$home/hook.out" ]; then
       cat "$home/hook.out" >&2
     else
       printf '(missing)\n' >&2
     fi
-    printf '--- hook.err ---\n' >&2
+    printf '%s\n' '--- hook.err ---' >&2
     if [ -n "$home" ] && [ -f "$home/hook.err" ]; then
       cat "$home/hook.err" >&2
     else
       printf '(missing)\n' >&2
     fi
   fi
-  printf '--- process tree ---\n' >&2
+  printf '%s\n' '--- process tree ---' >&2
   if ps -axo pid,ppid,pgid,etime,command >/dev/null 2>&1; then
     ps -axo pid,ppid,pgid,etime,command >&2
   else
