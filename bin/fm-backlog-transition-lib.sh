@@ -225,26 +225,30 @@ fm_backlog_file() {  # <data-dir>
   fi
 }
 
-# The fixed sibling of fm_backlog_file: <data>/done-archive.md, the default name
-# `tasks-axi prune` archives pruned Done rows to (the same fixed name
-# bin/fm-bootstrap.sh's detect_code_root_backlog_fork already hardcodes), read
-# without consulting `.tasks.toml`, exactly as fm_backlog_file itself never
-# consults `.tasks.toml`'s own `path=` override.
-# tasks-axi does honour a `[markdown] archive` key, which
-# captain_markdown_archive_path in bin/fm-captain-hold.sh resolves for the
-# completion gate, so in a home that relocates the archive this path is not the
-# file tasks-axi prunes into and the row probe below finds nothing there.
+# The archive tasks-axi writes: project [markdown] archive first, then user
+# config, else done-archive.md beside the addressed backlog. Relative archive
+# settings resolve against the backlog root, including user-level settings.
+# Shared by pending-close recovery and the captain-hold completion gate.
 fm_backlog_archive_file() {  # <data-dir>
-  local data
+  local data root archive file
   data=$(fm_backlog_data_absolute "$1") || {
     FM_BACKLOG_TRANSITION_ERROR="data directory cannot be resolved: $1"
     return 1
   }
-  if [ "$data" = / ]; then
-    printf '/done-archive.md\n'
-  else
-    printf '%s/done-archive.md\n' "$data"
+  root=$(fm_backlog_root "$data") || return 1
+  archive=$(fm_tasks_axi_toml_section_entries "$root/.tasks.toml" markdown archive | sed -n 's/^archive //p' | head -1)
+  if [ -z "$archive" ] && [ -n "${HOME:-}" ]; then
+    archive=$(fm_tasks_axi_toml_section_entries "$HOME/.tasks-axi/config.toml" markdown archive | sed -n 's/^archive //p' | head -1)
   fi
+  case "$archive" in
+    '')
+      file=$(fm_backlog_file "$data") || return 1
+      archive="${file%/*}/done-archive.md"
+      ;;
+    /*) ;;
+    *) archive="$root/$archive" ;;
+  esac
+  printf '%s\n' "$archive"
 }
 
 # The directory a backlog's own `.tasks.toml` is resolved from.

@@ -73,12 +73,16 @@ make_home() {  # <name> [task-id...]
     > "$home/data/backlog.md"
   # Pin the adapter per case: without it fm_tasks_axi_backend would fall through
   # to the developer's ambient tasks-axi config and silently exercise a
-  # different transition path.
+  # different transition path. The archive is pinned for the same reason:
+  # fm_backlog_archive_file falls through to ~/.tasks-axi/config.toml, so an
+  # unpinned archive would let an operator's relocated archive make the cases
+  # that write or read data/done-archive.md pass vacuously.
   cat > "$home/.tasks.toml" <<'EOF'
 backend = "markdown"
 
 [markdown]
 path = "data/backlog.md"
+archive = "data/done-archive.md"
 EOF
   for id in "$@"; do
     mkdir -p "$home/data/$id"
@@ -2490,6 +2494,52 @@ test_recovery_recognizes_a_retain_row_answered_then_archived() {
   pass "recovery does not ask the captain to re-decide a call already answered before its row aged into the archive"
 }
 
+test_recovery_recognizes_an_answer_in_a_configured_archive() {
+  local config_source case_dir home id archive marker out HOME=${HOME:-}
+  for config_source in project-relative project-absolute user-relative; do
+    id="atomic-heal-relocated-$config_source"
+    case_dir=$(make_home "heal-relocated-$config_source")
+    home=$(home_of "$case_dir")
+    export HOME="$case_dir/axi-home"
+    mkdir -p "$HOME/.tasks-axi" "$home/archives"
+    archive="$home/archives/answered calls.md"
+    printf '%s\n' 'backend = "markdown"' '' '[markdown]' \
+      'path = "data/backlog.md"' 'done_keep = 10' > "$home/.tasks.toml"
+    case "$config_source" in
+      project-relative)
+        printf '%s\n' 'archive = "archives/answered calls.md"' >> "$home/.tasks.toml"
+        printf '%s\n' '[markdown]' 'archive = "archives/wrong.md"' > "$HOME/.tasks-axi/config.toml"
+        ;;
+      project-absolute)
+        printf 'archive = "%s"\n' "$archive" >> "$home/.tasks.toml"
+        ;;
+      user-relative)
+        printf '%s\n' '[markdown]' 'archive = "archives/answered calls.md"' > "$HOME/.tasks-axi/config.toml"
+        ;;
+    esac
+    add_item "$case_dir" "$id"
+    (cd "$home" \
+      && tasks-axi hold "$id" --reason "captain decision pending" --kind captain --file "$home/data/backlog.md" >/dev/null \
+      && tasks-axi "done" "$id" --file "$home/data/backlog.md" >/dev/null \
+      && tasks-axi prune --keep 0 --state "done" --file "$home/data/backlog.md" >/dev/null) \
+      || fail "could not archive the answered call using $config_source config"
+    assert_grep "$id" "$archive" "the configured archive did not receive the answered call"
+    assert_absent "$home/data/done-archive.md" "the fixture unexpectedly used the default archive"
+    [ -z "$(row_state "$case_dir" "$id")" ] || fail "the archived call is still in the live backlog"
+    marker="$home/state/$id.backlog-close"
+    printf 'id=%s\ndata=%s\nspawn_gen=spawn-relocated\nrecorded_utc=2020-01-01\nmode=retain\narg=--pr\narg=https://github.com/example/repo/pull/26\n' \
+      "$id" "$home/data" > "$marker"
+
+    out=$(run_bootstrap "$case_dir")
+    assert_absent "$home/state/$id.backlog-reconcile" \
+      "an answered call in the $config_source archive was re-escalated"
+    assert_contains "$out" "the captain had already answered its call" \
+      "the $config_source archived answer was not recognized"
+    assert_absent "$marker" "the answered call's retain marker was not retired"
+  done
+  pass "recovery finds archived answers using project and user archive configuration"
+}
+
 # The archive bound compares the record's stamp against tasks-axi's own
 # `## Archived <date>` heading, so the two must share a clock base. tasks-axi
 # dates in local time on purpose, which is why the stamp is taken with `date`
@@ -4059,6 +4109,7 @@ test_recovery_replays_a_gerrit_close_with_its_change_url_as_a_note
 test_recovery_backfills_a_recorded_link_on_an_already_done_item
 test_recovery_reports_incomplete_cleanup_for_an_answered_retain
 test_recovery_recognizes_a_retain_row_answered_then_archived
+test_recovery_recognizes_an_answer_in_a_configured_archive
 test_recovery_recognizes_a_same_day_archived_answer
 test_recovery_escalates_a_reused_id_whose_archived_answer_predates_the_record
 test_recovery_escalates_an_unstamped_record_over_an_unattributable_archived_answer
