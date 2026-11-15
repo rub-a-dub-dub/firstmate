@@ -32,7 +32,7 @@ test_handback_wait_timeouts_dump_diagnostics() {
       else
         "$waiter" 0 "$waited" "$home" 2> "$output" || rc=$?
       fi
-      assert_equals "$rc" 1 "a hand-back timeout must still fail"
+      assert_equals 1 "$rc" "a hand-back timeout must still fail"
       assert_grep "$waiter: $waited timed out for $home" "$output" "timeout must identify its wait and home"
       for file in host.out state/.supervision-host.log state/.supervision-host-health; do
         assert_grep "diagnostic fixture: $file" "$output" "timeout must dump $file"
@@ -62,7 +62,7 @@ test_handback_wait_timeouts_dump_diagnostics() {
   [ ! -s "$output" ] || fail "successful hook wait must stay quiet"
   rc=0
   wait_until 1 false 2> "$output" || rc=$?
-  assert_equals "$rc" 1 "ordinary wait timeout must still fail"
+  assert_equals 1 "$rc" "ordinary wait timeout must still fail"
   [ ! -s "$output" ] || fail "ordinary wait timeout must not dump host diagnostics"
   pass "host: hand-back wait timeouts dump diagnostics while successful and ordinary waits stay quiet"
 }
