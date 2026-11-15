@@ -73,12 +73,16 @@ make_home() {  # <name> [task-id...]
     > "$home/data/backlog.md"
   # Pin the adapter per case: without it fm_tasks_axi_backend would fall through
   # to the developer's ambient tasks-axi config and silently exercise a
-  # different transition path.
+  # different transition path. The archive is pinned for the same reason:
+  # fm_backlog_archive_file falls through to ~/.tasks-axi/config.toml, so an
+  # unpinned archive would let an operator's relocated archive make the cases
+  # that write or read data/done-archive.md pass vacuously.
   cat > "$home/.tasks.toml" <<'EOF'
 backend = "markdown"
 
 [markdown]
 path = "data/backlog.md"
+archive = "data/done-archive.md"
 EOF
   for id in "$@"; do
     mkdir -p "$home/data/$id"
