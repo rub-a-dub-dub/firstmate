@@ -677,32 +677,8 @@ CAPTAIN_MIGRATION_SCAN_LOADED=0
 CAPTAIN_MIGRATION_SCAN_JSON=
 NL_SEP=$'\n'
 
-# Section-aware extraction from a .tasks.toml: only the named keys inside the
-# named section, comments stripped. Prints "<key> <value>" lines.
-captain_toml_section_entries() {  # <toml-file> <section> <key-alternation>
-  [ -f "$1" ] || return 0
-  LC_ALL=C awk -v section="[$2]" -v keys="^($3)[[:space:]]*=" '
-    function trim(v) { sub(/^[[:space:]]+/, "", v); sub(/[[:space:]]+$/, "", v); return v }
-    BEGIN { insection = 0 }
-    {
-      line = $0
-      sub(/[[:space:]]*#.*/, "", line)
-      line = trim(line)
-      if (line ~ /^\[[^]]+\]$/) { insection = (line == section); next }
-      if (!insection) next
-      if (line ~ keys) {
-        key = line
-        sub(/[[:space:]]*=.*/, "", key)
-        sub(/^[^=]*=[[:space:]]*/, "", line)
-        gsub(/^"|"$/, "", line); gsub(/^'\''|'\''$/, "", line)
-        printf "%s %s\n", key, line
-      }
-    }
-  ' "$1"
-}
-
 captain_beads_toml_entries() {  # <toml-file>
-  captain_toml_section_entries "$1" beads 'prefix|path|binary'
+  fm_tasks_axi_toml_section_entries "$1" beads 'prefix|path|binary'
 }
 
 captain_beads_setting() {  # <entries-output> <setting>
@@ -1007,39 +983,13 @@ refuse_self_inventory() {
 # archived row is closed, so it can satisfy the gate solely through a recorded
 # resolution, and every mutating path keeps seeing it as absent.
 
-# The [markdown] archive key tasks-axi would honour, resolved with tasks-axi's
-# own source precedence: the backlog root's .tasks.toml first, then the
-# user-level $HOME/.tasks-axi/config.toml. Empty when neither sets it; a relative
-# value resolves against the backlog root wherever it was configured, the way
-# tasks-axi resolves it.
-captain_markdown_archive_setting() {  # <backlog-root>
-  local root=$1 archive
-  archive=$(captain_toml_section_entries "$root/.tasks.toml" markdown archive | sed -n 's/^archive //p' | head -1)
-  if [ -z "$archive" ] && [ -n "${HOME:-}" ]; then
-    archive=$(captain_toml_section_entries "$HOME/.tasks-axi/config.toml" markdown archive | sed -n 's/^archive //p' | head -1)
-  fi
-  printf '%s\n' "$archive"
-}
-
-# The archive tasks-axi writes: the [markdown] archive key resolved against the
-# backlog root, else done-archive.md beside the addressed backlog file. Returns
-# 1 when the configured backend keeps no markdown archive.
+# Archive-path resolution is shared with pending-close recovery.
 captain_markdown_archive_path() {
-  local data root backend archive file
-  data=$(fm_backlog_data_absolute "$DATA") || return 1
-  root=$(fm_backlog_root "$data") || return 1
+  local root backend
+  root=$(fm_backlog_root "$DATA") || return 1
   backend=$(fm_tasks_axi_backend "$root" 2>/dev/null) || return 1
   [ "$backend" = markdown ] || return 1
-  archive=$(captain_markdown_archive_setting "$root")
-  case "$archive" in
-    '')
-      file=$(fm_backlog_file "$data") || return 1
-      archive="${file%/*}/done-archive.md"
-      ;;
-    /*) ;;
-    *) archive="$root/$archive" ;;
-  esac
-  printf '%s\n' "$archive"
+  fm_backlog_archive_file "$DATA"
 }
 
 # Resolve one entry and verify the row it names is durably captain-held.
