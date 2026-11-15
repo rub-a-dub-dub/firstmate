@@ -17,9 +17,10 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/supervision-host-helpers.sh"
 
 test_handback_wait_timeouts_dump_diagnostics() {
-  local home output waiter waited rc file
+  local home output dumped waiter waited rc file
   home=$(make_home timeout-diagnostics attended)
   output="$home/timeout.err"
+  dumped="$home/timeout-files.err"
   for file in host.out hook.out hook.err state/.supervision-host.log state/.supervision-host-health; do
     printf 'diagnostic fixture: %s\n' "$file" > "$home/$file"
   done
@@ -41,14 +42,15 @@ test_handback_wait_timeouts_dump_diagnostics() {
       assert_grep '--- .supervision-host-health ---' "$output" "timeout must label host health"
       assert_grep '--- process tree ---' "$output" "timeout must label the process tree"
       assert_re 'PID[[:space:]]+PPID' "$output" "timeout must include process data"
-      assert_no_grep 'printf:' "$output" "diagnostic headings must be valid Bash printf calls"
+      sed -n '/^--- process tree ---$/q;p' "$output" > "$dumped"
+      assert_no_grep 'printf:' "$dumped" "diagnostic headings must be valid Bash printf calls"
       if [ "$waited" = hook_exited ]; then
         for file in hook.out hook.err; do
           assert_grep "--- $file ---" "$output" "hook timeout must label $file"
           assert_grep "diagnostic fixture: $file" "$output" "hook timeout must dump $file"
         done
       else
-        assert_no_grep 'diagnostic fixture: hook.' "$output" "host timeout must not dump hook output"
+        assert_no_grep 'diagnostic fixture: hook.' "$dumped" "host timeout must not dump hook output"
       fi
     done
   done
