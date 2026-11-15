@@ -1,0 +1,37 @@
+Regression test: tests/fm-backlog-atomicity.test.sh
+  test_recovery_recognizes_an_answer_in_a_configured_archive
+(covers project-relative, project-absolute and user-relative [markdown] archive settings)
+
+Run as a filtered single-case driver against the worktree's real bin/ scripts and the
+real tasks-axi CLI (v0.2.6).
+
+--- WITH bin/fm-backlog-transition-lib.sh REVERTED TO BASE e78e3d61 ---
+not ok - an answered call in the project-relative archive was re-escalated
+
+--- WITH THE FIX IN PLACE (target 055ca8e1) ---
+ok - recovery finds archived answers using project and user archive configuration
+
+
+Captain-hold completion gate, after the probe was refactored to share
+fm_backlog_archive_file (tests/fm-captain-hold-lifecycle.test.sh subset):
+
+1..6
+ok - an answered captain call archived by Done retention still satisfies the completion gate
+ok - an answered captain call archived to a user-configured location still satisfies the completion gate
+ok - an unsupported relocated report does not wedge the captain's answer
+ok - cleanup retains captain calls in the configured backlog
+ok - the completion gate attests captain-held inventory and transfers open status decisions
+ok - merge approval releases before zero-retention cleanup records completion
+
+
+Sibling archive cases in tests/fm-backlog-atomicity.test.sh, re-run after the
+fixture pinned `archive = "data/done-archive.md"` (so default-archive cases can
+no longer pass vacuously against an operator's ambient tasks-axi config):
+
+ok - recovery finds archived answers using project and user archive configuration
+ok - recovery does not ask the captain to re-decide a call already answered before its row aged into the archive
+ok - an answer archived the same day the close was recorded is recognized, so the stamp shares tasks-axi's clock base
+ok - recovery escalates an unanswered call whose only archived line belongs to an earlier incarnation of a reused id
+ok - an unstamped pending-close record escalates rather than claiming an archived answer
+ok - completion accepts a row retention already archived as the close it was reaching for
+ok - restart retiring an archived row's close still warns that cleanup never finished

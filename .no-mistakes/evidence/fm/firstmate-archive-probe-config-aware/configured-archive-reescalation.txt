@@ -1,0 +1,54 @@
+Configured [markdown] archive path — answered captain call is no longer re-escalated
+======================================================================================
+
+Scenario: an operator home relocates the Done archive via a [markdown] archive key.
+The captain already answered a held call; tasks-axi prune moved the row into the
+configured archive. bin/fm-bootstrap.sh session start replays the pending close.
+
+
+----------------------------------------------------------------------
+BEFORE the fix  (bin/fm-backlog-transition-lib.sh at base e78e3d61)
+----------------------------------------------------------------------
+### operator's $HOME/.tasks.toml (archive relocated)
+    backend = "markdown"
+    
+    [markdown]
+    path = "data/backlog.md"
+    done_keep = 10
+    archive = "archives/answered calls.md"
+
+### where tasks-axi actually put the answered row
+    configured archive: archives/answered calls.md
+    3:- [x] relocated-archive-demo - item for relocated-archive-demo (kind: ship) (done 2026-11-14) (hold: captain decision pending) (hold-kind: captain)
+    default archive data/done-archive.md exists? no
+
+### fm-bootstrap.sh session start (what the operator sees)
+    BACKLOG_RECONCILE: relocated-archive-demo: the captain-held call could not be returned to Queued because its backlog row is on record nowhere, live or archived; its recorded deliverable (PR https://github.com/example/repo/pull/26) should be reconciled with the captain. Run bin/fm-backlog-reconcile.sh ack relocated-archive-demo once reconciled.
+
+### resulting state/ after session start
+    relocated-archive-demo.backlog-reconcile
+    escalation record state/relocated-archive-demo.backlog-reconcile present? YES
+    pending-close marker state/relocated-archive-demo.backlog-close retired? YES
+
+----------------------------------------------------------------------
+AFTER the fix  (target 055ca8e1)
+----------------------------------------------------------------------
+### operator's $HOME/.tasks.toml (archive relocated)
+    backend = "markdown"
+    
+    [markdown]
+    path = "data/backlog.md"
+    done_keep = 10
+    archive = "archives/answered calls.md"
+
+### where tasks-axi actually put the answered row
+    configured archive: archives/answered calls.md
+    3:- [x] relocated-archive-demo - item for relocated-archive-demo (kind: ship) (done 2026-11-14) (hold: captain decision pending) (hold-kind: captain)
+    default archive data/done-archive.md exists? no
+
+### fm-bootstrap.sh session start (what the operator sees)
+    BOOTSTRAP_INFO: finished the interrupted cleanup for relocated-archive-demo; the captain had already answered its call
+
+### resulting state/ after session start
+    escalation record state/relocated-archive-demo.backlog-reconcile present? no
+    pending-close marker state/relocated-archive-demo.backlog-close retired? YES
