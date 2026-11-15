@@ -1,0 +1,59 @@
+# Supervision-host hand-back hang: what a developer sees, before vs. after
+
+Scenario, identical in both runs: a real fixture home, a real supervision host
+started under the fake harness, and a hand-back wait on host_exited that never
+completes because no close is ever appended - the hang this change is about.
+The failing call site is written exactly as tests/fm-supervision-host-park.test.sh:490:
+
+  wait_until <polls> host_exited "$home" || fail "stream: the restarting host's close did not reach main"
+
+Fixture temp paths are rewritten to $TMPDIR; the process-tree dump is filtered to
+the fixture's own processes and each row clipped to 160 columns for readability.
+
+================================================================
+BEFORE - base e78e3d61 wait_until. Everything the run printed:
+================================================================
+not ok - stream: the restarting host's close did not reach main
+
+================================================================
+AFTER - this change. The same hang, now self-describing:
+================================================================
+wait_until: host_exited timed out for $TMPDIR/fm-supervision-host.61GJj8/hang-repro
+--- host.out ---
+watcher: started pid=83702 (beacon fresh)
+--- .supervision-host.log ---
+1794722676	start	gen=host-83355-1794722676	primary=claude
+--- .supervision-host-health ---
+(missing)
+--- process tree ---
+  PID  PPID  PGID     ELAPSED COMMAND
+27344 46818 27344       04:36 bash ~/git/firstmate/bin/fm-watch-arm.sh
+27436 27344 27344       04:36 bash ~/git/firstmate/bin/fm-watch.sh
+28206 46299 28206       01:21 /bin/zsh -c source ~/.claude/shell-snapshots/snapshot-zsh-1794722076691-er8vw4.sh 2>/dev/null || true && \builtin setopt NO_EXTEND
+28220 28206 28206       01:21 bash tests/fm-supervision-host.test.sh
+30998 28220 28206       01:15 $TMPDIR/fm-supervision-host.qJhPYC/fakebin/fakebin/claude -c \012      printf "%s\n" "$$" > "$FM_HOME/state/.lock"\012      printf
+31261 30998 28206       01:15 bash ~/.no-mistakes/worktrees/00644a303d6a/01M7ESWJ993NMPTRYAYSZYVBEG/bin/fm-supervision-host.sh park
+33914 31261 33914       01:11 bash ~/.no-mistakes/worktrees/00644a303d6a/01M7ESWJ993NMPTRYAYSZYVBEG/bin/fm-watch-arm.sh
+33952 33914 33914       01:11 bash ~/.no-mistakes/worktrees/00644a303d6a/01M7ESWJ993NMPTRYAYSZYVBEG/bin/fm-watch.sh
+46818 45857 45857       15:42 bash ~/git/firstmate/bin/fm-supervision-host.sh park
+56562 28220 28206       00:39 $TMPDIR/fm-supervision-host.qJhPYC/fakebin/fakebin/claude -c \012      printf "%s\n" "$$" > "$FM_HOME/state/.lock"\012      printf
+57118 56562 28206       00:39 bash ~/.no-mistakes/worktrees/00644a303d6a/01M7ESWJ993NMPTRYAYSZYVBEG/bin/fm-supervision-host.sh park
+61253 57118 61253       00:34 bash ~/.no-mistakes/worktrees/00644a303d6a/01M7ESWJ993NMPTRYAYSZYVBEG/bin/fm-watch-arm.sh
+61303 61253 61253       00:34 bash ~/.no-mistakes/worktrees/00644a303d6a/01M7ESWJ993NMPTRYAYSZYVBEG/bin/fm-watch.sh
+73405 46299 73405       00:18 /bin/zsh -c source ~/.claude/shell-snapshots/snapshot-zsh-1794722076691-er8vw4.sh 2>/dev/null || true && \builtin setopt NO_EXTEND
+81576 73455 73405       00:08 bash /tmp/nm-fm-test.mmg9DV/hang-repro.sh
+81578 73455 73405       00:08 awk \012  /^--- process tree ---$/ {tree=1; print; next}\012  tree && !/fm-supervision-host|fm-watch|hang-repro|PID[ ]+PPID/ {next
+82688 81576 73405       00:06 $TMPDIR/fm-supervision-host.61GJj8/fakebin/fakebin/claude -c \012      printf "%s\n" "$$" > "$FM_HOME/state/.lock"\012      printf
+83355 82688 73405       00:05 bash ~/.no-mistakes/worktrees/00644a303d6a/01M7ESWJ993NMPTRYAYSZYVBEG/bin/fm-supervision-host.sh park
+83626 83355 73405       00:05 bash ~/.no-mistakes/worktrees/00644a303d6a/01M7ESWJ993NMPTRYAYSZYVBEG/bin/fm-watch-arm.sh
+83702 83626 73405       00:05 bash ~/.no-mistakes/worktrees/00644a303d6a/01M7ESWJ993NMPTRYAYSZYVBEG/bin/fm-watch.sh
+84413     1 84323       08:04 $TMPDIR/fm-supervision-host.xb7TSc/fakebin/fakebin/claude -c \012      printf "%s\n" "$$" > "$FM_HOME/state/.lock"\012      printf
+84645 84413 84323       08:04 bash ~/.no-mistakes/worktrees/00644a303d6a/01M7ESWJ993NMPTRYAYSZYVBEG/bin/fm-supervision-host.sh park
+84717 28220 28206       00:04 $TMPDIR/fm-supervision-host.qJhPYC/fakebin/fakebin/claude -c \012      printf "%s\n" "$$" > "$FM_HOME/state/.lock"\012      printf
+84833 84645 84323       08:03 bash ~/.no-mistakes/worktrees/00644a303d6a/01M7ESWJ993NMPTRYAYSZYVBEG/bin/fm-watch-arm.sh
+84869 84833 84323       08:03 bash ~/.no-mistakes/worktrees/00644a303d6a/01M7ESWJ993NMPTRYAYSZYVBEG/bin/fm-watch.sh
+85665 84717 28206       00:03 bash ~/.no-mistakes/worktrees/00644a303d6a/01M7ESWJ993NMPTRYAYSZYVBEG/bin/fm-supervision-host.sh park
+86136 85665 28206       00:03 bash ~/.no-mistakes/worktrees/00644a303d6a/01M7ESWJ993NMPTRYAYSZYVBEG/bin/fm-watch-arm.sh
+86211 86136 28206       00:03 bash ~/.no-mistakes/worktrees/00644a303d6a/01M7ESWJ993NMPTRYAYSZYVBEG/bin/fm-watch.sh
+88664 61303 61253       00:00 bash ~/.no-mistakes/worktrees/00644a303d6a/01M7ESWJ993NMPTRYAYSZYVBEG/bin/fm-watch.sh
+78160 74463 78160    01:15:41 codex --model gpt-6.1-sol -c model_reasoning_effort="high" -c service_tier="default" --dangerously-bypass-approvals-and-sandbox --

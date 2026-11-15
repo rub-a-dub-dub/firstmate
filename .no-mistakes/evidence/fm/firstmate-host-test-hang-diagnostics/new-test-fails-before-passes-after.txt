@@ -1,0 +1,17 @@
+# Regression proof for test_handback_wait_timeouts_dump_diagnostics
+# (tests/fm-supervision-host.test.sh:19)
+#
+# The new case is run twice against the same test body. The only difference is
+# which tests/supervision-host-helpers.sh definitions of wait_until and
+# dump_host_handback_diagnostics are in scope.
+
+--- against the pre-fix helpers (base e78e3d61) -------------------
+1..1
+not ok - timeout must identify its wait and home
+exit=1
+
+--- against this change ------------------------------------------
+1..1
+ok - host: hand-back wait timeouts dump diagnostics while successful and ordinary waits stay quiet
+FM_TEST_COMPLETE
+exit=0

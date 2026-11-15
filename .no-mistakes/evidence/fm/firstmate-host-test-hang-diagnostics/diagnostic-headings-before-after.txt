@@ -1,0 +1,42 @@
+# dump_host_handback_diagnostics: section headings, before vs. after
+#
+# Called directly on a fixture home with every diagnostic file present, with the
+# process-tree section dropped. At base the headings were printf '--- x ---\n',
+# which Bash parses as an option, so no heading was ever printed - only a printf
+# usage error. This change prints them as printf '%s\n' '--- x ---'.
+
+--- base e78e3d61 dump_host_handback_diagnostics -----------------
+wait_until_deadline: hook_exited timed out for $home
+helpers: printf: --: invalid option
+printf: usage: printf [-v var] format [arguments]
+watcher: started pid=1234 (beacon fresh)
+supervision-host: parked
+helpers: printf: --: invalid option
+printf: usage: printf [-v var] format [arguments]
+1794722198	start	gen=host-1-1794722198	primary=claude
+helpers: printf: --: invalid option
+printf: usage: printf [-v var] format [arguments]
+cooldown=0
+errors=0
+helpers: printf: --: invalid option
+printf: usage: printf [-v var] format [arguments]
+Stop hook: handing back
+helpers: printf: --: invalid option
+printf: usage: printf [-v var] format [arguments]
+helpers: printf: --: invalid option
+printf: usage: printf [-v var] format [arguments]
+
+--- this change --------------------------------------------------
+wait_until: hook_exited timed out for $home
+--- host.out ---
+watcher: started pid=1234 (beacon fresh)
+supervision-host: parked
+--- .supervision-host.log ---
+1794722198	start	gen=host-1-1794722198	primary=claude
+--- .supervision-host-health ---
+cooldown=0
+errors=0
+--- hook.out ---
+Stop hook: handing back
+--- hook.err ---
+--- process tree ---
