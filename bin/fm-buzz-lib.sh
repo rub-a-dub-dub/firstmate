@@ -17,20 +17,18 @@
 #
 # Settings live in the private, gitignored config/buzz-bridge.env (KEY=VALUE,
 # read with fmx_env_get). Environment variables never override them:
-#   BUZZ_RELAY_URL       relay base URL (wss/ws/https/http)
+#   BUZZ_RELAY_URL       relay base URL (https)
 #   BUZZ_COMMUNITY       community host; must equal the relay URL's host
 #   BUZZ_CHANNEL         private Stream channel UUID
 #   BUZZ_OWNER_PUBKEY    owner pubkey, 64-char lowercase hex
 #   BUZZ_BRIDGE_PUBKEY   bridge pubkey, 64-char lowercase hex
 #   BUZZ_BRIDGE_KEY_FILE absolute path to the bridge's buzz-admin key file
 #   BUZZ_CLI             absolute path to the buzz CLI built at relay-v0.3.0
-#   BUZZ_MAX_AGE_SECS    optional intake age limit (default 86400, max 518400)
-#   BUZZ_REPLY_MAX_CHARS optional per-message reply budget (default 1000)
 #
 # Defines:
 #   fm_buzz_enabled                 - 0 when the on marker exists
-#   fm_buzz_load_config             - populate BUZZ_* (and BUZZ_HTTP_URL); on a
-#                                     problem return 1 with FM_BUZZ_CONFIG_ERROR
+#   fm_buzz_load_config             - populate BUZZ_*; on a problem return 1
+#                                     with FM_BUZZ_CONFIG_ERROR
 #   fm_buzz_request_id <event-id>   - the stable request id for an event
 #   fm_buzz_rid_valid <rid>         - 0 for a well-formed Buzz request id
 #   fm_buzz_binding_dir             - state/buzz/requests
@@ -53,6 +51,11 @@ fi
 FM_BUZZ_CHECK_ID=buzz-bridge
 # shellcheck disable=SC2034
 FM_BUZZ_CONFIG_ERROR=
+# The intake window stays inside the seven-day binding and offer retention.
+# shellcheck disable=SC2034
+BUZZ_MAX_AGE_SECS=86400
+# shellcheck disable=SC2034
+BUZZ_REPLY_MAX_CHARS=1000
 
 # CONFIG is set by the sourcing script.
 # shellcheck disable=SC2153
@@ -69,17 +72,14 @@ fm_buzz_load_config() {
     return 1
   fi
   for key in BUZZ_RELAY_URL BUZZ_COMMUNITY BUZZ_CHANNEL BUZZ_OWNER_PUBKEY \
-    BUZZ_BRIDGE_PUBKEY BUZZ_BRIDGE_KEY_FILE BUZZ_CLI BUZZ_MAX_AGE_SECS BUZZ_REPLY_MAX_CHARS; do
+    BUZZ_BRIDGE_PUBKEY BUZZ_BRIDGE_KEY_FILE BUZZ_CLI; do
     printf -v "$key" '%s' "$(fmx_env_get "$key" "$file")"
   done
   case "$BUZZ_RELAY_URL" in
-    wss://*) BUZZ_HTTP_URL="https://${BUZZ_RELAY_URL#wss://}" ;;
-    ws://*) BUZZ_HTTP_URL="http://${BUZZ_RELAY_URL#ws://}" ;;
-    https://*|http://*) BUZZ_HTTP_URL=$BUZZ_RELAY_URL ;;
-    *) FM_BUZZ_CONFIG_ERROR="BUZZ_RELAY_URL must be a ws, wss, http or https URL"; return 1 ;;
+    https://*) BUZZ_RELAY_URL=${BUZZ_RELAY_URL%/} ;;
+    *) FM_BUZZ_CONFIG_ERROR="BUZZ_RELAY_URL must be an https URL"; return 1 ;;
   esac
-  BUZZ_HTTP_URL=${BUZZ_HTTP_URL%/}
-  host=${BUZZ_HTTP_URL#*://}
+  host=${BUZZ_RELAY_URL#https://}
   host=${host%%/*}
   host=${host%%:*}
   case "$host" in
@@ -108,13 +108,6 @@ fm_buzz_load_config() {
       || { FM_BUZZ_CONFIG_ERROR="BUZZ_CLI is not an executable file"; return 1; } ;;
     *) FM_BUZZ_CONFIG_ERROR="BUZZ_CLI must be an absolute path to the relay-v0.3.0 buzz CLI"; return 1 ;;
   esac
-  case "$BUZZ_MAX_AGE_SECS" in ''|*[!0-9]*) BUZZ_MAX_AGE_SECS=86400 ;; esac
-  # Bindings and offer records live seven days; intake must never reach past them.
-  [ "${#BUZZ_MAX_AGE_SECS}" -le 7 ] && [ "$BUZZ_MAX_AGE_SECS" -le 518400 ] || BUZZ_MAX_AGE_SECS=518400
-  [ "$BUZZ_MAX_AGE_SECS" -ge 60 ] || BUZZ_MAX_AGE_SECS=60
-  case "$BUZZ_REPLY_MAX_CHARS" in ''|*[!0-9]*) BUZZ_REPLY_MAX_CHARS=1000 ;; esac
-  [ "${#BUZZ_REPLY_MAX_CHARS}" -le 5 ] && [ "$BUZZ_REPLY_MAX_CHARS" -le 4000 ] || BUZZ_REPLY_MAX_CHARS=4000
-  [ "$BUZZ_REPLY_MAX_CHARS" -ge 50 ] || BUZZ_REPLY_MAX_CHARS=50
   return 0
 }
 
@@ -178,15 +171,16 @@ fm_buzz_binding_prune() {
   return 0
 }
 
-# The key file is buzz-admin generate-key output: a "Secret key:" line. The value
-# is printed only into the caller's command substitution, which hands it to the
-# one signing CLI call's environment; it is never logged or put in argv.
+# The key file is buzz-admin generate-key output: a "Secret key:" line holding
+# 64-character lowercase hex, the one encoding the pinned CLI takes. The value is
+# printed only into the caller's command substitution, which hands it to the one
+# signing CLI call's environment; it is never logged or put in argv.
 fm_buzz_secret_read() {
   local line secret
   line=$(grep -m1 -E '^[[:space:]]*Secret key:' "$BUZZ_BRIDGE_KEY_FILE" 2>/dev/null) || return 1
   secret=${line#*:}
   secret=${secret//[[:space:]]/}
-  [[ "$secret" =~ ^([0-9a-f]{64}|nsec1[02-9ac-hj-np-z]{58})$ ]] || return 1
+  [[ "$secret" =~ ^[0-9a-f]{64}$ ]] || return 1
   printf '%s' "$secret"
 }
 
@@ -197,11 +191,11 @@ fm_buzz_secret_read() {
 # Returns the CLI's exit code (2 relay/network, 3 auth), or 10 when the secret
 # cannot be read.
 fm_buzz_cli() {
-  local secret
+  local secret relay=$BUZZ_RELAY_URL
   secret=$(fm_buzz_secret_read) || return 10
   (
     unset BUZZ_AUTH_TAG BUZZ_FEDERATED_IDENTITY_TOKEN BUZZ_FEDERATED_IDENTITY_ADAPTER \
       BUZZ_OUTPUT_FORMAT BUZZ_RELAY_URL
-    BUZZ_PRIVATE_KEY=$secret exec "$BUZZ_CLI" --relay "$BUZZ_HTTP_URL" --format json "$@"
+    BUZZ_PRIVATE_KEY=$secret exec "$BUZZ_CLI" --relay "$relay" --format json "$@"
   )
 }

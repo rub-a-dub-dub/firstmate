@@ -3053,15 +3053,15 @@ While enabled, the registered check also makes this home require live supervisio
 
 | Key | Meaning |
 | --- | --- |
-| `BUZZ_RELAY_URL` | Relay base URL, `wss://`, `ws://`, `https://`, or `http://` |
+| `BUZZ_RELAY_URL` | Relay base URL, `https://` |
 | `BUZZ_COMMUNITY` | Community host; must equal the relay URL's host, because Buzz derives the community from the host |
 | `BUZZ_CHANNEL` | The private Stream channel UUID |
 | `BUZZ_OWNER_PUBKEY` | The owner's pubkey as 64-character lowercase hex; only its signed messages are accepted |
 | `BUZZ_BRIDGE_PUBKEY` | The bridge identity's pubkey as 64-character lowercase hex; messages must `p`-tag it |
-| `BUZZ_BRIDGE_KEY_FILE` | Absolute path to the bridge key file in `buzz-admin generate-key` format (a `Secret key:` line) |
+| `BUZZ_BRIDGE_KEY_FILE` | Absolute path to the bridge key file in `buzz-admin generate-key` format (a `Secret key:` line holding 64-character lowercase hex) |
 | `BUZZ_CLI` | Absolute path to the `buzz` CLI built from tag `relay-v0.3.0` |
-| `BUZZ_MAX_AGE_SECS` | Optional intake age limit, default 86400, at most 518400 |
-| `BUZZ_REPLY_MAX_CHARS` | Optional per-message reply budget, default 1000 |
+
+The intake age limit is 86400 seconds and the per-message reply budget is 1000 characters; both are fixed, and each request's binding records the budget it was created with.
 
 The secret is read from the key file only for each signing CLI call and reaches the CLI only through its environment, never argv, logs, tracked files, or status output.
 The bridge never modifies or rotates the key file.

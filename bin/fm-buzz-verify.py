@@ -9,15 +9,16 @@ direct owner mentions, oldest first:
   {event_id, created_at, content, signer, parent, thread_root}
 
 Signature verification is the one expensive stage and the relay is not trusted
-to have checked it, so at most VERIFY_LIMIT candidates are verified per run,
-oldest first. Exit 3 means the run was truncated that way: the printed events
-are still complete and verified, but the caller must not treat the read as
-drained (bin/fm-buzz-poll.sh holds its cursor).
+to have checked it, so every distinct candidate the caller hands over is
+verified. The input is what bounds the work: bin/fm-buzz-poll.sh pages backward
+from now, so an over-budget window arrives capped at its NEWEST page budget and
+the owner's latest mention is always inside it.
 
-The paging overlap re-delivers the same event, so candidates are counted and
-budgeted per distinct (id, sig) pair. The id alone would not do: it fixes every
-signed field, so a copy of a real event carrying a junk signature shares it, and
-collapsing the two would let that copy evict the owner's own message.
+The paging overlap re-delivers the same event, so candidates are deduplicated
+per distinct (id, sig) pair before the signature stage. The id alone would not
+do: it fixes every signed field, so a copy of a real event carrying a junk
+signature shares it, and collapsing the two would let that copy displace the
+owner's own message.
 
 An event is accepted only when ALL of these hold; anything else is dropped
 silently, because the bridge's contract is "drop everything else":
@@ -48,9 +49,6 @@ G = (
 )
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 HEX128 = re.compile(r"^[0-9a-f]{128}$")
-# One owner cannot plausibly mention the bridge this often inside one poll
-# window, and this many verifications stay far inside the watcher check budget.
-VERIFY_LIMIT = 200
 
 
 def point_add(a, b):
@@ -183,11 +181,9 @@ def main(argv):
     for ev in events:
         if candidate(ev, args["--owner"], args["--bridge"], args["--channel"], floor):
             unique.setdefault((ev["id"], ev["sig"]), ev)
-    candidates = sorted(unique.values(), key=lambda ev: (ev["created_at"], ev["id"]))
-    truncated = len(candidates) > VERIFY_LIMIT
     seen = set()
     out = []
-    for ev in candidates[:VERIFY_LIMIT]:
+    for ev in sorted(unique.values(), key=lambda ev: (ev["created_at"], ev["id"])):
         if ev["id"] in seen or not signed(ev):
             continue
         seen.add(ev["id"])
@@ -201,7 +197,7 @@ def main(argv):
         })
     json.dump(out, sys.stdout, ensure_ascii=False)
     sys.stdout.write("\n")
-    return 3 if truncated else 0
+    return 0
 
 
 if __name__ == "__main__":

@@ -90,7 +90,7 @@ new_home() {
   printf 'Public key: %s\nSecret key: %s\n\nSet BUZZ_PRIVATE_KEY to the secret key to use this identity.\n' \
     "$BRIDGE" "$BRIDGE_SK" > "$home/bridge.key"
   cat > "$home/config/buzz-bridge.env" <<EOF
-BUZZ_RELAY_URL=wss://relay.test.invalid
+BUZZ_RELAY_URL=https://relay.test.invalid
 BUZZ_COMMUNITY=relay.test.invalid
 BUZZ_CHANNEL=${2:-$CHANNEL}
 BUZZ_OWNER_PUBKEY=$OWNER
@@ -159,6 +159,12 @@ test_enable_validates_config() {
   assert_contains "$out" "BUZZ_COMMUNITY must equal the relay URL host" "enable must name the config problem"
   assert_absent "$home/config/buzz-bridge.enabled" "a refused enable must not turn the bridge on"
   assert_absent "$home/state/buzz-bridge.check.sh" "a refused enable must not arm the watcher check"
+  mv "$home/config/buzz-bridge.env.bak" "$home/config/buzz-bridge.env"
+  sed -i.bak 's#^BUZZ_RELAY_URL=.*#BUZZ_RELAY_URL=wss://relay.test.invalid#' "$home/config/buzz-bridge.env"
+  out=$(run_in "$home" "$ROOT/bin/fm-buzz.sh" enable 2>&1); rc=$?
+  expect_code 1 "$rc" "enable with a websocket relay URL"
+  assert_contains "$out" "BUZZ_RELAY_URL must be an https URL" "only the relay's https endpoint is configurable"
+  assert_absent "$home/config/buzz-bridge.enabled" "a refused enable must not turn the bridge on"
   mv "$home/config/buzz-bridge.env.bak" "$home/config/buzz-bridge.env"
   sed -i.bak '/^BUZZ_CLI=/d' "$home/config/buzz-bridge.env"
   out=$(run_in "$home" "$ROOT/bin/fm-buzz.sh" enable 2>&1); rc=$?
@@ -250,41 +256,53 @@ test_poll_pages_backward_through_a_full_window() {
   pass "the poll pages backward across a full page and advances only after the window drains"
 }
 
-test_poll_bounds_signature_verification_per_run() {
+test_poll_delivers_the_newest_mention_past_the_page_budget() {
   local home out forged
   home=$(new_home flood)
   enable "$home"
-  # A relay that serves owner-attributed events it never verified: the ids
-  # recompute, so only the signature check can reject them.
-  forged=$(python3 -I "$SIGN" forge "$OWNER" $((NOW - 250)) 9 "$(mention_tags)" 'forged' 240)
-  sign_event "$OWNER_SK" $((NOW - 300)) 9 "$(mention_tags)" 'the one real request' \
-    | jq -c --argjson f "$forged" '[.] + $f' > "$home/events.json"
-  out=$(poll "$home")
-  assert_contains "$out" "buzz-mention buzz-" "the oldest genuine mention is still delivered"
-  assert_contains "$out" "buzz-bridge-error too many owner-signed candidates" \
-    "an over-budget candidate count is a diagnostic wake"
-  assert_absent "$home/state/buzz/cursor.json" "a truncated verification must not advance the cursor"
-  assert_equals 1 "$(only_rid "$home" | wc -l | tr -d ' ')" "only the signed event reaches the inbox"
-  pass "the poll verifies a bounded number of candidates per run and holds the cursor when it truncates"
-}
-
-test_poll_budget_ignores_the_page_boundary_duplicate() {
-  local home out forged
-  home=$(new_home boundary)
-  enable "$home"
-  # Exactly one full page of distinct candidates, so paging's inclusive --before
-  # re-delivers the oldest one and the run sees 201 entries for 200 events. The
-  # genuine mention is the newest, the first thing an over-counted budget drops.
-  forged=$(python3 -I "$SIGN" forge "$OWNER" $((NOW - 400)) 9 "$(mention_tags)" 'forged' 199)
+  # A relay serving owner-attributed events it never verified: the ids recompute,
+  # so only the signature check can reject them. More of them than the page
+  # budget can read, and all older than the owner's mention.
+  forged=$(python3 -I "$SIGN" forge "$OWNER" $((NOW - 5000)) 9 "$(mention_tags)" 'forged' 1001)
   sign_event "$OWNER_SK" $((NOW - 100)) 9 "$(mention_tags)" 'the newest real request' \
     | jq -c --argjson f "$forged" '[.] + $f' > "$home/events.json"
   out=$(poll "$home")
-  assert_contains "$out" "buzz-mention buzz-" "a re-read duplicate must not evict a distinct candidate"
-  assert_not_contains "$out" "buzz-bridge-error" "a full page of distinct candidates is not over budget"
-  assert_equals "$NOW" "$(jq -r .since "$home/state/buzz/cursor.json")" "the drained window advances the cursor"
+  assert_contains "$out" "buzz-mention buzz-" "a flood older than the mention must not bury it"
+  assert_contains "$out" "buzz-bridge-error catch-up range exceeds" "an undrained window is a diagnostic wake"
+  assert_absent "$home/state/buzz/cursor.json" "an undrained window must not advance the cursor"
   assert_equals 'the newest real request' "$(jq -r .text "$home/state/x-inbox/$(only_rid "$home").json")" \
-    "the newest signed mention is the one that reaches the inbox"
-  pass "the verify budget counts distinct events, so a page-boundary duplicate evicts nothing"
+    "the owner's signed mention is the one that reaches the inbox"
+  pass "reading newest-first keeps the owner's latest mention verifiable under a flood"
+}
+
+test_poll_keeps_a_real_event_beside_its_junk_signature_copy() {
+  local home out ev
+  home=$(new_home twin)
+  enable "$home"
+  # A copy carrying a junk signature shares the real event's id, because the id
+  # fixes every signed field but the signature.
+  ev=$(sign_event "$OWNER_SK" $((NOW - 60)) 9 "$(mention_tags)" 'the real request')
+  printf '%s\n' "$ev" | jq -c '.sig = ("0" * 128)' \
+    | jq -sc --argjson real "$ev" '. + [$real]' > "$home/events.json"
+  out=$(poll "$home")
+  assert_contains "$out" "buzz-mention buzz-" "a junk-signature copy must not displace the real event"
+  assert_equals 'the real request' "$(jq -r .text "$home/state/x-inbox/$(only_rid "$home").json")" \
+    "the verified event is the one that reaches the inbox"
+  pass "deduplication keys on id and signature, so a forged copy cannot stand in for a real event"
+}
+
+test_poll_refuses_a_key_file_that_is_not_hex() {
+  local home out
+  home=$(new_home nonhex)
+  enable "$home"
+  set_events "$home" "$(sign_event "$OWNER_SK" $((NOW - 60)) 9 "$(mention_tags)" 'never read')"
+  printf 'Public key: %s\nSecret key: nsec1%s\n' "$BRIDGE" "$(printf 'q%.0s' $(seq 58))" > "$home/bridge.key"
+  out=$(poll "$home")
+  assert_contains "$out" "buzz-bridge-error cannot read the bridge secret" \
+    "a secret the pinned CLI cannot take must be refused before any read"
+  assert_absent "$home/state/buzz/cursor.json" "an unusable secret must not advance the cursor"
+  assert_equals "" "$(only_rid "$home")" "nothing may be ingested without a usable bridge key"
+  pass "only the 64-hex secret the pinned buzz-admin emits is accepted"
 }
 
 test_poll_holds_cursor_on_read_failure() {
@@ -424,8 +442,9 @@ fm_test_run \
   test_poll_drops_everything_else \
   test_poll_deduplicates_across_restarts \
   test_poll_pages_backward_through_a_full_window \
-  test_poll_bounds_signature_verification_per_run \
-  test_poll_budget_ignores_the_page_boundary_duplicate \
+  test_poll_delivers_the_newest_mention_past_the_page_budget \
+  test_poll_keeps_a_real_event_beside_its_junk_signature_copy \
+  test_poll_refuses_a_key_file_that_is_not_hex \
   test_poll_holds_cursor_on_read_failure \
   test_reply_ack_and_one_final_in_thread \
   test_reply_dry_run_records_without_sending \
