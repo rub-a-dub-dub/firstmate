@@ -90,7 +90,7 @@ Everything in this playbook applies, with these differences:
 - A dismiss under `FMX_DRY_RUN` is a preview that leaves the request answerable: leave the inbox file in place instead of clearing it in step 2f, because nothing re-offers a Buzz request once the bridge has offered it.
 - The channel is private but readable by the relay operator, so replies stay public-safe.
 - Second-mate promised finals are not available for Buzz requests; for work routed to a second mate, acknowledge in the thread and report the outcome to the captain through the trusted channel.
-- A reply refused because the bridge is disabled sends nothing; leave the inbox file and do not retry until the bridge is enabled again.
+- A reply or dismiss refused because the bridge is disabled sends and records nothing; leave the inbox file and do not retry either until the bridge is enabled again. A refused dismiss is not a failed dismiss to escalate.
 
 ## The reply is public. Treat it as such.
 

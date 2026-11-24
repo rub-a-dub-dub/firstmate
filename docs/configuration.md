@@ -3044,7 +3044,7 @@ A home without Buzz configured is therefore off.
 - `bin/fm-buzz.sh enable` validates the configuration, registers the watcher check `state/buzz-bridge.check.sh` through `bin/fm-check-register.sh`, and then creates the marker.
 - `bin/fm-buzz.sh status` reports on/off, check registration, configuration validity, the poll cursor, pending Buzz requests, and the last poll diagnostic, and never prints the secret.
 
-Disabling keeps pending requests and their bindings; a reply attempted while disabled is refused and sends nothing.
+Disabling keeps pending requests and their bindings; a reply or a dismiss attempted while disabled is refused, sends nothing, and records nothing, so a request pending across the off period stays answerable once the bridge is enabled again.
 While enabled, the registered check also makes this home require live supervision, so mentions can wake it without fleet work.
 
 **Configuration**
@@ -3100,7 +3100,7 @@ The destination comes only from the binding and the current configuration; a bin
 
 Each request gets one answer (the acknowledgement or the outcome) and one follow-up (the final outcome); a second follow-up exits 9, which `bin/fm-x-followup.sh` treats as an exhausted binding.
 Replies are text only and split into at most three messages of the reply budget.
-A dismiss is a local terminal receipt and contacts nothing.
+A dismiss is a local terminal receipt and contacts nothing, and because it is terminal it is refused while the bridge is disabled.
 `FMX_DRY_RUN` records the would-be reply to `state/x-outbox/<request_id>.json` without sending, exactly as for the other surfaces.
 A dry-run dismissal is recorded there too, and previews only: it leaves the binding undismissed and its reply context intact, so a real reply still works afterwards.
 

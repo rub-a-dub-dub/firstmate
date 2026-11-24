@@ -10,7 +10,9 @@
 # through the pinned Buzz CLI (`messages get`, signed NIP-98 reads with the
 # bridge key): the newest PAGE_LIMIT events below a fixed upper fence, down to
 # the durable cursor minus a 300-second overlap and never past the age limit
-# (BUZZ_MAX_AGE_SECS). One newest-first read is what keeps a sweep inside the
+# (BUZZ_MAX_AGE_SECS). It asks the relay for one more than that budget so a
+# window that exactly fits is not mistaken for one that does not, and processes
+# at most the newest PAGE_LIMIT. One newest-first read is what keeps a sweep inside the
 # watcher's per-check timeout, because every distinct candidate it returns is
 # BIP-340 verified. The read is scoped by channel and kind, not by author, so the
 # owner's latest mention is inside it unless more than PAGE_LIMIT channel
@@ -88,7 +90,7 @@ trap 'rm -rf "$WORK"' EXIT
 trap 'rm -rf "$WORK"; exit 0' HUP INT TERM
 
 fm_buzz_cli messages get --channel "$BUZZ_CHANNEL" --kinds 9 \
-  --since "$LOWER" --before "$NOW" --limit "$PAGE_LIMIT" > "$WORK/all" 2>/dev/null
+  --since "$LOWER" --before "$NOW" --limit "$((PAGE_LIMIT + 1))" > "$WORK/read" 2>/dev/null
 rc=$?
 case "$rc" in
   0) ;;
@@ -97,10 +99,13 @@ case "$rc" in
   10) emit_error_once "cannot read the bridge secret from BUZZ_BRIDGE_KEY_FILE"; exit 0 ;;
   *) emit_error_once "buzz CLI read failed (exit $rc)"; exit 0 ;;
 esac
-COUNT=$(jq -er 'if type == "array" then length else error("not an array") end' "$WORK/all" 2>/dev/null) \
+COUNT=$(jq -er 'if type == "array" then length else error("not an array") end' "$WORK/read" 2>/dev/null) \
   || { emit_error_once "buzz CLI returned a malformed read"; exit 0; }
-# A full page means the window held more than one read covers.
-if [ "$COUNT" -lt "$PAGE_LIMIT" ]; then COMPLETE=1; else COMPLETE=0; fi
+# The read asks for one more than the budget purely to tell a window that fits
+# from one that does not; only that extra event proves the window is over budget.
+if [ "$COUNT" -le "$PAGE_LIMIT" ]; then COMPLETE=1; else COMPLETE=0; fi
+jq -c --argjson n "$PAGE_LIMIT" 'sort_by(.created_at) | .[-$n:]' "$WORK/read" > "$WORK/all" 2>/dev/null \
+  || { emit_error_once "buzz CLI returned a malformed read"; exit 0; }
 python3 -I "$SCRIPT_DIR/fm-buzz-verify.py" --owner "$BUZZ_OWNER_PUBKEY" --bridge "$BUZZ_BRIDGE_PUBKEY" \
   --channel "$BUZZ_CHANNEL" --floor "$FLOOR" < "$WORK/all" > "$WORK/accepted" 2>/dev/null \
   || { emit_error_once "event verification failed to run"; exit 0; }

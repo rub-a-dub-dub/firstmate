@@ -267,6 +267,85 @@ test_poll_deduplicates_across_restarts() {
   pass "event-id bindings deduplicate a re-read even after the cursor and inbox are gone"
 }
 
+# tests/fixtures/buzz-sign.py signs every "valid" fixture with bin/fm-buzz-verify.py's
+# own curve arithmetic and id serialization, so the rest of this file cannot tell a
+# correct verifier from a self-consistent wrong one. These are the external oracles:
+# the BIP-340 specification's own vectors, and one kind-9 event whose id and
+# signature were produced by the pinned buzz CLI's Rust nostr SDK.
+test_verifier_matches_external_bip340_and_nip01_oracles() {
+  local out
+  out=$(python3 -I - "$ROOT/bin/fm-buzz-verify.py" <<'ORACLE'
+import importlib.util
+import json
+import sys
+
+spec = importlib.util.spec_from_file_location("fm_buzz_verify", sys.argv[1])
+v = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(v)
+h = bytes.fromhex
+
+# BIP-340 test vectors: index 1 verifies, index 6 must not (its R has odd y).
+PK = h("DFF1D77F2A671C5F36183726DB2341BE58FEAE1DA2DECED843240F7B502BA659")
+MSG = h("243F6A8885A308D313198A2E03707344A4093822299F31D0082EFA98EC4E6C89")
+VALID = h("6896BD60EEAE296DB48A229FF71DFE071BDE413E6D43F917DC8DCF8C78DE3341"
+          "8906D11AC976ABCCB20B091292BFF4EA897EFCB639EA871CFA95F6DE339E4B0A")
+ODD_Y_R = h("FFF97BD5755EEEA420453A14355235D382F6472F8568A18B2F057A1460297556"
+            "3CC27944640AC607CD107AE10923D9EF7A73C643E166BE5EBEAFA34B1AC553E2")
+
+# A kind-9 channel message the pinned buzz CLI produced and signed with an
+# invented key, so its id fixes NIP-01 serialization and its sig fixes BIP-340
+# independently of this repository.
+EV = json.loads(
+    '{"id":"cfff11735c08f496a29c282b755c0e08dccd2b8a1f599c8ba5f399020018e735",'
+    '"pubkey":"466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",'
+    '"created_at":1795496866,"kind":9,'
+    '"tags":[["h","0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b"],'
+    '["e","145ff9426ca62abbd3136d55b9f4c107660aa2b3600557ea0a78cd2086c4a6ca","","reply"]],'
+    '"content":"Aye, on it.",'
+    '"sig":"5551dead4ad1348cb144e8bd906562cc9cc0cf5297c30e1c3fa92092438e9ed7'
+    '12279fb9c99a4e642856f0a5fa879e72d15ffb5522d31b4eadca5bcb5027c930"}'
+)
+TAMPERED = dict(EV, content="Bye, on it.")
+
+print(
+    "bip340-valid=%s bip340-odd-y-r=%s nip01-id=%s event-sig=%s tampered-id=%s tampered-sig=%s"
+    % (
+        v.schnorr_verify(MSG, PK, VALID),
+        v.schnorr_verify(MSG, PK, ODD_Y_R),
+        v.event_id(EV) == EV["id"],
+        v.schnorr_verify(h(EV["id"]), h(EV["pubkey"]), h(EV["sig"])),
+        v.event_id(TAMPERED) == EV["id"],
+        v.schnorr_verify(h(v.event_id(TAMPERED)), h(EV["pubkey"]), h(EV["sig"])),
+    )
+)
+ORACLE
+  ) || fail "the external BIP-340 and NIP-01 oracle check did not run"
+  assert_equals \
+    "bip340-valid=True bip340-odd-y-r=False nip01-id=True event-sig=True tampered-id=False tampered-sig=False" \
+    "$out" "the verifier must agree with the BIP-340 vectors and an independently signed event"
+  pass "signature verification and event ids agree with external BIP-340 and NIP-01 oracles"
+}
+
+test_poll_treats_an_exactly_full_window_as_drained() {
+  local home out filler
+  home=$(new_home exact)
+  enable "$home"
+  # Exactly the read budget of channel messages, the owner's mention among them:
+  # nothing is missing, so this must not be reported as an over-budget window.
+  filler=$(jq -cn --arg ch "$CHANNEL" --argjson now "$NOW" '[range(0; 199)
+    | {id: (tostring | ("0" * (64 - length)) + .), pubkey: ("f" * 64),
+       created_at: ($now - 400 + .), kind: 9, tags: [["h", $ch]],
+       content: "chatter", sig: ("0" * 128)}]')
+  sign_event "$OWNER_SK" $((NOW - 60)) 9 "$(mention_tags)" 'the only real request' \
+    | jq -c --argjson f "$filler" '[.] + $f' > "$home/events.json"
+  out=$(poll "$home")
+  assert_contains "$out" "buzz-mention buzz-" "the mention in an exactly full window is delivered"
+  assert_not_contains "$out" "buzz-bridge-error" "an exactly full window is not an over-budget window"
+  assert_equals "$NOW" "$(jq -r .since "$home/state/buzz/cursor.json")" \
+    "an exactly full window is drained, so the cursor advances"
+  pass "a window holding exactly the read budget is drained, not reported as over budget"
+}
+
 test_poll_delivers_the_newest_mention_past_the_read_budget() {
   local home out rc forged
   home=$(new_home flood)
@@ -560,6 +639,8 @@ fm_test_run \
   test_poll_drops_everything_else \
   test_poll_deduplicates_across_restarts \
   test_poll_delivers_the_newest_mention_past_the_read_budget \
+  test_poll_treats_an_exactly_full_window_as_drained \
+  test_verifier_matches_external_bip340_and_nip01_oracles \
   test_poll_keeps_a_real_event_beside_its_junk_signature_copy \
   test_poll_refuses_a_key_file_that_is_not_hex \
   test_poll_wakes_for_every_request_as_it_is_persisted \
