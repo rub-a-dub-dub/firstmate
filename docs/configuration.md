@@ -2877,7 +2877,7 @@ Firstmate holds the follow-up and retries once both values are recoverable; it n
 
 **Carry a link to a successor task**
 
-Fresh links start with `x_followups=0` and the current timestamp; when relinking the same relay request onto a successor task, pass paired `--carry-count <n> --carry-ts <epoch>` flags plus any prior `x_platform=` and `x_reply_max_chars=` as `--carry-platform <x|discord> --carry-max <n>` so the successor preserves the already-consumed follow-up count, original 7-day window, and reply split budget.
+Fresh links start with `x_followups=0` and the current timestamp; when relinking the same relay request onto a successor task, pass paired `--carry-count <n> --carry-ts <epoch>` flags plus any prior `x_platform=` and `x_reply_max_chars=` as `--carry-platform <x|discord|buzz> --carry-max <n>` so the successor preserves the already-consumed follow-up count, original 7-day window, and reply split budget.
 
 **Dismiss mentions**
 

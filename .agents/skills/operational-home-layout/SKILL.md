@@ -132,6 +132,7 @@ state/               runtime records and signals; gitignored
   .supervision-handoff-pending .supervision-handoff-owner .supervision-handoff.log  the opt-in acknowledged hand-back's unacknowledged token, retry-owner process record, and bounded retry log; bin/fm-supervision-handoff.sh owns them; never touch
   .lease-<task>        per-task supervision lease naming which actor (main or branch) may change that task; bin/fm-lease-lib.sh owns the contract the guarded scripts enforce
   x-watch.check.sh   generated Relay poll shim; present only when opted in (section 14)
+  buzz-bridge.check.sh  generated Buzz bridge poll shim and its .check-trust binding; present only after bin/fm-buzz.sh enable, retired by bin/fm-buzz.sh disable (docs/configuration.md "Buzz bridge")
   tool-updates.check.sh  generated watched-tool update poll shim and its .check-trust binding; present only after bin/fm-tool-update-check.sh arm; its report record .tool-updates is what keeps one pending update from being reported on every poll
   mail.check.sh      generated received-mail poll shim and its .check-trust binding; present only after bin/fm-mail-check.sh arm; report record .mail-check (mail schema: docs/configuration.md "Mail plane")
   usage-warner.check.sh  generated Claude usage threshold poll shim and its .check-trust binding; present only after bin/fm-usage-warner.sh arm; its de-dupe record .usage-warner is what keeps one threshold crossing from warning on every poll, and .usage-warner.lock serializes overlapping checks
