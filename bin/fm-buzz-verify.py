@@ -14,6 +14,11 @@ oldest first. Exit 3 means the run was truncated that way: the printed events
 are still complete and verified, but the caller must not treat the read as
 drained (bin/fm-buzz-poll.sh holds its cursor).
 
+The paging overlap re-delivers the same event, so candidates are counted and
+budgeted per distinct (id, sig) pair. The id alone would not do: it fixes every
+signed field, so a copy of a real event carrying a junk signature shares it, and
+collapsing the two would let that copy evict the owner's own message.
+
 An event is accepted only when ALL of these hold; anything else is dropped
 silently, because the bridge's contract is "drop everything else":
   - kind 9 (Stream message); edits (40003), DMs, gift wraps and other kinds drop
@@ -174,11 +179,11 @@ def main(argv):
     if not isinstance(events, list):
         print("fm-buzz-verify: input is not an event array", file=sys.stderr)
         return 1
-    candidates = [
-        ev for ev in events
-        if candidate(ev, args["--owner"], args["--bridge"], args["--channel"], floor)
-    ]
-    candidates.sort(key=lambda ev: (ev["created_at"], ev["id"]))
+    unique = {}
+    for ev in events:
+        if candidate(ev, args["--owner"], args["--bridge"], args["--channel"], floor):
+            unique.setdefault((ev["id"], ev["sig"]), ev)
+    candidates = sorted(unique.values(), key=lambda ev: (ev["created_at"], ev["id"]))
     truncated = len(candidates) > VERIFY_LIMIT
     seen = set()
     out = []

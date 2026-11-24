@@ -268,6 +268,25 @@ test_poll_bounds_signature_verification_per_run() {
   pass "the poll verifies a bounded number of candidates per run and holds the cursor when it truncates"
 }
 
+test_poll_budget_ignores_the_page_boundary_duplicate() {
+  local home out forged
+  home=$(new_home boundary)
+  enable "$home"
+  # Exactly one full page of distinct candidates, so paging's inclusive --before
+  # re-delivers the oldest one and the run sees 201 entries for 200 events. The
+  # genuine mention is the newest, the first thing an over-counted budget drops.
+  forged=$(python3 -I "$SIGN" forge "$OWNER" $((NOW - 400)) 9 "$(mention_tags)" 'forged' 199)
+  sign_event "$OWNER_SK" $((NOW - 100)) 9 "$(mention_tags)" 'the newest real request' \
+    | jq -c --argjson f "$forged" '[.] + $f' > "$home/events.json"
+  out=$(poll "$home")
+  assert_contains "$out" "buzz-mention buzz-" "a re-read duplicate must not evict a distinct candidate"
+  assert_not_contains "$out" "buzz-bridge-error" "a full page of distinct candidates is not over budget"
+  assert_equals "$NOW" "$(jq -r .since "$home/state/buzz/cursor.json")" "the drained window advances the cursor"
+  assert_equals 'the newest real request' "$(jq -r .text "$home/state/x-inbox/$(only_rid "$home").json")" \
+    "the newest signed mention is the one that reaches the inbox"
+  pass "the verify budget counts distinct events, so a page-boundary duplicate evicts nothing"
+}
+
 test_poll_holds_cursor_on_read_failure() {
   local home out
   home=$(new_home hold)
@@ -406,6 +425,7 @@ fm_test_run \
   test_poll_deduplicates_across_restarts \
   test_poll_pages_backward_through_a_full_window \
   test_poll_bounds_signature_verification_per_run \
+  test_poll_budget_ignores_the_page_boundary_duplicate \
   test_poll_holds_cursor_on_read_failure \
   test_reply_ack_and_one_final_in_thread \
   test_reply_dry_run_records_without_sending \
