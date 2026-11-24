@@ -3028,6 +3028,93 @@ The session-start digest separately prints a "Public commitments" subsection fro
 `FM_PF_RETRY_BACKOFF_SECS` (default 900) sets the next-attempt time recorded with a retryable delivery error.
 See [verification/public-followup.md](verification/public-followup.md) for the current maintainer evidence behind restart recovery, failed terminal outcomes, retained-loop disposition, and the relay-disabled zero-overhead guarantee.
 
+## Buzz bridge (config/buzz-bridge.env)
+
+The Buzz bridge is a home-local Relay surface for one private Stream channel on a self-hosted [Buzz](https://github.com/block/buzz) relay.
+The owner mentions the bridge identity in that channel, the bridge verifies the message is signed by the owner, and the request lands in the same `state/x-inbox/` the X and Discord surfaces use, with `platform` `buzz`.
+Firstmate works it through the normal lifecycle and `fmx-respond`, and the reply goes back into the original Buzz thread as a signed message from the bridge key.
+It is independent of the hosted Relay pairing token: a home can run either, both, or neither, and X and Discord behavior is unchanged.
+
+**Off by default, and one command turns it off**
+
+The bridge runs only while `config/buzz-bridge.enabled` exists, and only `bin/fm-buzz.sh enable` creates it.
+A home without Buzz configured is therefore off.
+
+- `bin/fm-buzz.sh disable` turns it off: intake and replies stop at once, the watcher check is unregistered, and nothing turns it back on - not bootstrap, a restart, or an update - until `bin/fm-buzz.sh enable`.
+- `bin/fm-buzz.sh enable` validates the configuration, registers the watcher check `state/buzz-bridge.check.sh` through `bin/fm-check-register.sh`, and then creates the marker.
+- `bin/fm-buzz.sh status` reports on/off, check registration, configuration validity, the poll cursor, pending Buzz requests, and the last poll diagnostic, and never prints the secret.
+
+Disabling keeps pending requests and their bindings; a reply attempted while disabled is refused and sends nothing.
+While enabled, the registered check also makes this home require live supervision, so mentions can wake it without fleet work.
+
+**Configuration**
+
+`config/buzz-bridge.env` is private, gitignored `KEY=VALUE` configuration; environment variables never override it.
+
+| Key | Meaning |
+| --- | --- |
+| `BUZZ_RELAY_URL` | Relay base URL, `wss://`, `ws://`, `https://`, or `http://` |
+| `BUZZ_COMMUNITY` | Community host; must equal the relay URL's host, because Buzz derives the community from the host |
+| `BUZZ_CHANNEL` | The private Stream channel UUID |
+| `BUZZ_OWNER_PUBKEY` | The owner's pubkey as 64-character lowercase hex; only its signed messages are accepted |
+| `BUZZ_BRIDGE_PUBKEY` | The bridge identity's pubkey as 64-character lowercase hex; messages must `p`-tag it |
+| `BUZZ_BRIDGE_KEY_FILE` | Absolute path to the bridge key file in `buzz-admin generate-key` format (a `Secret key:` line) |
+| `BUZZ_CLI` | Absolute path to the `buzz` CLI built from tag `relay-v0.3.0` |
+| `BUZZ_MAX_AGE_SECS` | Optional intake age limit, default 86400, at most 518400 |
+| `BUZZ_REPLY_MAX_CHARS` | Optional per-message reply budget, default 1000 |
+
+The secret is read from the key file only for each signing CLI call and reaches the CLI only through its environment, never argv, logs, tracked files, or status output.
+The bridge never modifies or rotates the key file.
+
+`BUZZ_CLI` is explicit so the newer CLI bundled with the Buzz desktop app is never picked up by accident.
+Build it from a fresh clone at the pinned tag, never from the checkout that hosts a running relay:
+
+```sh
+git clone --depth 1 --branch relay-v0.3.0 https://github.com/block/buzz.git <build-dir>/buzz-src
+(cd <build-dir>/buzz-src && CARGO_TARGET_DIR=<build-dir>/target cargo build --release -p buzz-cli)
+# BUZZ_CLI=<build-dir>/target/release/buzz
+```
+
+The bridge pubkey must be a member of the private channel; the owner adds it from Buzz, outside firstmate.
+
+**Intake**
+
+Each watcher check sweep runs one bounded `bin/fm-buzz-poll.sh`, whose header owns the paging, cursor, and persistence order.
+It reads kind-9 messages in the configured channel through `buzz messages get` as the bridge identity, and `bin/fm-buzz-verify.py` keeps only messages that are signed by the owner, `p`-tag the bridge key, sit in that one channel, carry no media, fall inside the age limit, and have a valid event id and BIP-340 signature.
+Everything else, including edits (kind 40003), DMs and gift wraps, workflow messages, other members and agents, and the bridge's own messages, is dropped silently.
+
+Each accepted message gets a stable request id derived from the transport, community, bridge key, and event id, and a binding in `state/buzz/requests/<request_id>.json` recording the channel, parent event, thread root, verified signer, and reply budget.
+The binding is written before the inbox record, the cursor in `state/buzz/cursor.json` advances only after a complete range is persisted, and an existing binding deduplicates a re-read.
+A new request wakes firstmate with `buzz-mention <request_id>`; a configuration, authorization, or catch-up problem wakes once per distinct message with `buzz-bridge-error <reason>`, while a relay or network failure stays silent until the next sweep.
+
+The check runs at the watcher's `FM_CHECK_INTERVAL` cadence, 300 seconds by default and 30 seconds in a home with hosted Relay on.
+For faster pickup in a Buzz-only home, add `export FM_CHECK_INTERVAL=30` to `config/watch.env` and restart the watcher through the emitted supervision protocol.
+
+**Replies**
+
+`bin/fm-x-reply.sh`, `bin/fm-x-followup.sh`, and `bin/fm-x-dismiss.sh` hand any Buzz request id to `bin/fm-buzz-reply.sh`, so `fmx-respond` uses the same commands as for X and Discord, and a Buzz id never reaches the hosted relay.
+The reply is a signed kind-9 message from the bridge key, sent with `buzz messages send --reply-to` to the original event, so it lands in the original thread.
+The destination comes only from the binding and the current configuration; a binding whose community, bridge key, or channel no longer matches the configuration is refused.
+
+Each request gets one answer (the acknowledgement or the outcome) and one follow-up (the final outcome); a second follow-up exits 9, which `bin/fm-x-followup.sh` treats as an exhausted binding.
+Replies are text only and split into at most three messages of the reply budget.
+A dismiss is a local terminal receipt and contacts nothing.
+`FMX_DRY_RUN` records the would-be reply to `state/x-outbox/<request_id>.json` without sending, exactly as for the other surfaces.
+
+Stage 1 limits: a send that fails ambiguously can duplicate a message if it is retried, and second-mate-routed promised finals are not available for Buzz requests.
+
+**Attended smoke test**
+
+Run this once with the owner after the bridge lands, against the owner's relay:
+
+1. Build the pinned CLI as above, write `config/buzz-bridge.env`, and confirm `bin/fm-buzz.sh status` reports `config: ok`.
+2. Confirm with the owner that the bridge pubkey is a member of the private channel.
+3. Run `bin/fm-buzz.sh enable` and confirm the watcher is live.
+4. The owner posts a message in the channel mentioning the bridge identity, for example a status question.
+5. Confirm firstmate wakes with `buzz-mention`, answers through `fmx-respond`, and the reply appears in that message's thread in Buzz, signed by the bridge identity.
+6. For a request that spawns work, confirm the acknowledgement arrives first and the final outcome follows in the same thread.
+7. Run `bin/fm-buzz.sh disable`, have the owner post another mention, and confirm no wake and no reply follow, `bin/fm-buzz.sh status` reports `bridge: disabled`, and it still does after a new session starts.
+
 ## Trusted external process-event adapters (config/extensions.d)
 
 A home can explicitly enable a trusted external `process-event-adapter/1` package without adding package code to Firstmate.

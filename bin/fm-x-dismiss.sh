@@ -24,6 +24,8 @@
 # (required), FMX_RELAY_URL (default https://myfirstmate.io). Auth:
 # Authorization: Bearer <token>.
 #
+# A Buzz request id is dismissed locally by bin/fm-buzz-reply.sh --dismiss.
+#
 # Preview / dry-run: with FMX_DRY_RUN set (truthy), nothing is posted. Instead the
 # would-be POST body ({request_id}) is recorded to state/x-outbox/<request_id>.json
 # with an "endpoint":"dismiss" marker so the preview is self-describing (the live
@@ -51,6 +53,11 @@ esac
 if [ "$#" -gt 1 ]; then
   usage
   exit 2
+fi
+# A Buzz request is dismissed locally by its native backend; nothing reaches the
+# hosted relay.
+if [[ "$REQ" =~ ^buzz-[0-9a-f]{40}$ ]]; then
+  exec "$SCRIPT_DIR/fm-buzz-reply.sh" "$REQ" --dismiss
 fi
 
 fmx_load_config
