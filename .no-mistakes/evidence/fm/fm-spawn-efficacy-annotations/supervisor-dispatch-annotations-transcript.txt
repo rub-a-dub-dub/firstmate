@@ -1,0 +1,49 @@
+==============================================================
+1. Supervisor dispatches a worker WITH the new annotations
+==============================================================
+$ fm-spawn.sh pef-digest-b7 <project> --mode no-mistakes --yolo off --harness claude \
+      --tier fast --quota-substitution "codex quota tight, used claude" \
+      --escalated-from pef-digest-a3
+warning: <firstmate-home>/home/data/pef-digest-b7/launch-brief.md records no ship branch; defaulting to legacy branch fm/pef-digest-b7
+warning: <firstmate-home>/home/data/pef-digest-b7/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+spawned pef-digest-b7 harness=claude kind=ship mode=no-mistakes yolo=off window=firstmate:fm-pef-digest-b7 worktree=<firstmate-home>/wt
+exit: 0
+
+--- state/pef-digest-b7.meta (dispatch annotations recorded at spawn) ---
+harness=claude
+kind=ship
+model=default
+tier=fast
+quota_substitution=codex quota tight, used claude
+escalated_from=pef-digest-a3
+
+==============================================================
+2. Same supervisor forgets --tier while tier routing is configured
+==============================================================
+$ fm-spawn.sh nightly-sweep-c2 <project> --mode no-mistakes --yolo off --harness claude
+warning: config/crew-dispatch.json has rules but task nightly-sweep-c2 was given no --tier <label>; pass --tier so the dispatch is annotated
+warning: <firstmate-home>/home/data/nightly-sweep-c2/launch-brief.md records no ship branch; defaulting to legacy branch fm/nightly-sweep-c2
+warning: <firstmate-home>/home/data/nightly-sweep-c2/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+exit: 0 (a warning, never a refusal - the worker still launched)
+
+--- state/nightly-sweep-c2.meta (no annotation keys when none were given) ---
+annotation keys present: 0
+
+==============================================================
+3. The dispatch log the supervisor no longer has to keep by hand
+==============================================================
+--- raw state/fleet-ledger.jsonl task.dispatched events ---
+{"task":"pef-digest-b7","kind":"ship","harness":"claude","tier":"fast","quota_substitution":"codex quota tight, used claude","escalated_from":"pef-digest-a3"}
+{"task":"nightly-sweep-c2","kind":"ship","harness":"claude","tier":null,"quota_substitution":null,"escalated_from":null}
+
+--- rendered as the supervisor dispatch log ---
+TASK               KIND   HARNESS  TIER   QUOTA SUBSTITUTION                 ESCALATED FROM    
+pef-digest-b7      ship   claude   fast   codex quota tight, used claude     pef-digest-a3     
+nightly-sweep-c2   ship   claude   -      -                                  -                 
+
+==============================================================
+4. A relaunch keeps the recorded annotations and refuses to rewrite them
+==============================================================
+$ fm-spawn.sh pef-digest-b7 --relaunch --tier slow
+exit: 1
+error: --relaunch keeps the task's recorded dispatch annotations; --tier, --quota-substitution, and --escalated-from cannot change them
