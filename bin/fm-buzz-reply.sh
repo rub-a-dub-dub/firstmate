@@ -33,11 +33,12 @@
 #
 # Dry-run: with FMX_DRY_RUN truthy (environment or .env, as for every Relay
 # reply), nothing is sent; the would-be messages are recorded to
-# state/x-outbox/<request_id>.json, a DRY RUN summary goes to stderr, the binding
-# budget advances exactly as a live post would, and stdout echoes the request id.
-# A dry-run --dismiss is a preview only: because a dismissal is terminal and no
-# relay re-offers a Buzz request, it records the would-be dismiss and leaves the
-# binding and the reply context alone, so a real reply still works afterwards.
+# state/x-outbox/<request_id>.json, a DRY RUN summary goes to stderr, the
+# caller's receipt is written with dry_run true, and stdout echoes the request id.
+# Every dry run here is a preview only, answers and follow-ups as well as
+# --dismiss: each of those is terminal and no relay re-offers a Buzz request, so
+# a preview leaves the binding and the reply context alone and the real reply,
+# follow-up or dismiss still works afterwards.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -157,16 +158,24 @@ CHUNKS=$(printf '%s' "$TEXT" | fmx_split_thread "$MAX" "$MAX_MESSAGES") \
 N=$(printf '%s' "$CHUNKS" | jq 'length')
 [ "$N" -gt 0 ] || { echo "fm-buzz-reply: empty reply text" >&2; exit 2; }
 
+# The caller's typed delivery receipt (bin/fm-public-followup.sh requires one for
+# every reply it drives, dry run included), so it is written on its own rather
+# than with the budget a preview must not spend.
+write_receipt() {
+  [ -n "$RECEIPT_FILE" ] || return 0
+  if ! (umask 077; jq -n --arg r "$REQ" --arg e "$ENDPOINT" --argjson c "$N" --argjson d "$1" \
+      '{request_id:$r, endpoint:$e, chunks:$c, dry_run:($d == 1)}' > "$RECEIPT_FILE"); then
+    echo "fm-buzz-reply: warning: could not write the receipt to $RECEIPT_FILE" >&2
+  fi
+}
+
 record_budget() {
   printf '%s' "$BINDING" | jq -c --arg k "$BUDGET_KEY" '.[$k] = true' | fm_buzz_binding_put "$REQ" \
     || echo "fm-buzz-reply: warning: sent but could not record the reply budget for $REQ" >&2
   if [ "$FOLLOWUP" -eq 0 ]; then
     fmx_context_registry_set "$STATE" "$REQ" buzz "$MAX" 1 2>/dev/null || true
   fi
-  if [ -n "$RECEIPT_FILE" ] && ! (umask 077; jq -n --arg r "$REQ" --arg e "$ENDPOINT" --argjson c "$N" --argjson d "$1" \
-      '{request_id:$r, endpoint:$e, chunks:$c, dry_run:($d == 1)}' > "$RECEIPT_FILE"); then
-    echo "fm-buzz-reply: warning: sent but could not write the receipt to $RECEIPT_FILE" >&2
-  fi
+  write_receipt "$1"
 }
 
 if [ -n "$FMX_DRY" ]; then
@@ -177,7 +186,7 @@ if [ -n "$FMX_DRY" ]; then
     || { echo "fm-buzz-reply: cannot write dry-run outbox: state/x-outbox/$REQ.json" >&2; exit 1; }
   printf 'fm-buzz-reply: DRY RUN - would send %s Buzz %s message(s) in reply to the original event (recorded: state/x-outbox/%s.json)\n' \
     "$N" "$ENDPOINT" "$REQ" >&2
-  record_budget 1
+  write_receipt 1
   printf '%s\n' "$REQ"
   exit 0
 fi

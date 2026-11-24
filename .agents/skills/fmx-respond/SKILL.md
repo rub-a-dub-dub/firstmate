@@ -87,7 +87,7 @@ Everything in this playbook applies, with these differences:
 - A Buzz request gets one acknowledgement or outcome reply and one final follow-up; post no milestone follow-ups, and post the final with `--final`.
 - A Buzz request carries no media to fetch; replies are text only.
 - A dismiss is local, so a pure acknowledgment is dismissed with no relay call.
-- A dismiss under `FMX_DRY_RUN` is a preview that leaves the request answerable: leave the inbox file in place instead of clearing it in step 2f, because nothing re-offers a Buzz request once the bridge has offered it.
+- Any Buzz reply, follow-up, or dismiss under `FMX_DRY_RUN` is a preview that leaves the request answerable and spends no reply budget: leave the inbox file in place instead of clearing it in step 2f, because nothing re-offers a Buzz request once the bridge has offered it.
 - The channel is private but readable by the relay operator, so replies stay public-safe.
 - Second-mate promised finals are not available for Buzz requests; for work routed to a second mate, acknowledge in the thread and report the outcome to the captain through the trusted channel.
 - A reply or dismiss refused because the bridge is disabled sends and records nothing; leave the inbox file and do not retry either until the bridge is enabled again. A refused dismiss is not a failed dismiss to escalate.

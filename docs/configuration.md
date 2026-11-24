@@ -3080,9 +3080,10 @@ The bridge pubkey must be a member of the private channel; the owner adds it fro
 
 Each watcher check sweep runs one bounded `bin/fm-buzz-poll.sh`, whose header owns the read, cursor, and persistence order.
 One poll makes one read of the newest 200 kind-9 messages in the configured channel through `buzz messages get` as the bridge identity, down to the cursor's overlap and never past the age limit; every distinct message it returns is signature-verified, so a single newest-first read is what keeps a sweep inside the watcher's check timeout.
-A window holding more than those 200 holds the cursor and wakes the catch-up diagnostic below, and the next sweep reads the same newest 200 again.
+A full page of 200 or more holds the cursor and wakes the catch-up diagnostic below, and the next sweep reads the same newest 200 again; a window that happens to hold exactly 200 is over-reported that way, because a capped read cannot see past its own page.
 The read is scoped by channel and kind, not by author, so the owner's latest mention is inside those 200 unless more than 200 channel messages from any member are newer than that mention; a private stage-1 channel does not carry that much traffic between sweeps.
-`bin/fm-buzz-verify.py` keeps only messages that are signed by the owner, `p`-tag the bridge key, sit in that one channel, carry no media, fall inside the age limit, and have a valid event id and BIP-340 signature.
+`bin/fm-buzz-verify.py` keeps only messages that are signed by the owner, `p`-tag the bridge key, sit in that one channel, carry non-empty text, fall inside the age limit, and have a valid event id and BIP-340 signature.
+An attachment is ignored rather than refused: the text is the request, so a mention that carries a screenshot is ingested by its caption alone and the bridge never fetches the media.
 Everything else, including edits (kind 40003), DMs and gift wraps, workflow messages, other members and agents, and the bridge's own messages, is dropped silently.
 
 Each accepted message gets a stable request id derived from the transport, community, bridge key, and event id, and a binding in `state/buzz/requests/<request_id>.json` recording the channel, parent event, thread root, verified signer, and reply budget.
@@ -3101,8 +3102,8 @@ The destination comes only from the binding and the current configuration; a bin
 Each request gets one answer (the acknowledgement or the outcome) and one follow-up (the final outcome); a second follow-up exits 9, which `bin/fm-x-followup.sh` treats as an exhausted binding.
 Replies are text only and split into at most three messages of the reply budget.
 A dismiss is a local terminal receipt and contacts nothing, and because it is terminal it is refused while the bridge is disabled.
-`FMX_DRY_RUN` records the would-be reply to `state/x-outbox/<request_id>.json` without sending, exactly as for the other surfaces.
-A dry-run dismissal is recorded there too, and previews only: it leaves the binding undismissed and its reply context intact, so a real reply still works afterwards.
+`FMX_DRY_RUN` records the would-be reply to `state/x-outbox/<request_id>.json` without sending, exactly as for the other surfaces, and writes the caller's receipt with `dry_run` true.
+Every dry run on this surface previews only, answers and follow-ups as well as dismissals: because each is terminal and nothing re-offers a Buzz request, a preview spends no reply budget and leaves the binding and its reply context intact, so the real reply still works afterwards.
 
 Stage 1 limits: a send that fails ambiguously can duplicate a message if it is retried, and second-mate-routed promised finals are not available for Buzz requests.
 

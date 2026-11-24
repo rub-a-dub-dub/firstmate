@@ -242,7 +242,6 @@ test_poll_drops_everything_else() {
     "$(sign_event "$OWNER_SK" $((NOW - 51)) 9 "[[\"h\",\"$CHANNEL\"]]" 'no bridge mention')" \
     "$(sign_event "$OWNER_SK" $((NOW - 52)) 9 "$(mention_tags "$OTHER_CHANNEL")" 'other channel')" \
     "$(sign_event "$OWNER_SK" $((NOW - 53)) 40003 "$(mention_tags)" 'an edit')" \
-    "$(sign_event "$OWNER_SK" $((NOW - 54)) 9 "[[\"h\",\"$CHANNEL\"],[\"p\",\"$BRIDGE\"],[\"imeta\",\"url https://x.invalid/a.png\"]]" 'with media')" \
     "$(sign_event "$BRIDGE_SK" $((NOW - 55)) 9 "$(mention_tags)" 'the bridge itself')" \
     "$(sign_event "$OWNER_SK" $((NOW - 90000)) 9 "$(mention_tags)" 'older than the age limit')" \
     "$(sign_event "$OWNER_SK" $((NOW - 56)) 9 "$(mention_tags)" 'bad signature' | jq -c '.sig = ("0" * 128)')"
@@ -250,7 +249,23 @@ test_poll_drops_everything_else() {
   assert_equals 1 "$(find "$home/state/x-inbox" -name 'buzz-*.json' | wc -l | tr -d ' ')" "only the valid owner mention may be staged"
   assert_equals 'the one real request' "$(jq -r .text "$home/state/x-inbox/$(only_rid "$home").json")" "the staged request is the valid one"
   assert_not_contains "$out" "buzz-bridge-error" "dropped events are silent"
-  pass "the poll drops non-owner, untagged, other-channel, edit, media, own, stale, tampered and badly signed events silently"
+  pass "the poll drops non-owner, untagged, other-channel, edit, own, stale, tampered and badly signed events silently"
+}
+
+test_poll_ingests_a_mention_that_carries_an_attachment() {
+  local home rid out
+  home=$(new_home media)
+  enable "$home"
+  set_events "$home" "$(sign_event "$OWNER_SK" $((NOW - 60)) 9 \
+    "[[\"h\",\"$CHANNEL\"],[\"p\",\"$BRIDGE\"],[\"imeta\",\"url https://x.invalid/a.png\"]]" \
+    '@Firstmate what broke here?')"
+  out=$(poll "$home")
+  assert_contains "$out" "buzz-mention buzz-" "an owner mention with an attachment must still wake firstmate"
+  rid=$(only_rid "$home")
+  [ -n "$rid" ] || fail "an owner mention with an attachment must be staged"
+  assert_equals '@Firstmate what broke here?' "$(jq -r .text "$home/state/x-inbox/$rid.json")" \
+    "the caption is the request; the attachment is ignored, not fetched"
+  pass "an owner mention carrying an attachment is ingested by its text"
 }
 
 test_poll_deduplicates_across_restarts() {
@@ -496,7 +511,35 @@ test_reply_dry_run_records_without_sending() {
   assert_equals "" "$(cat "$home/sent.jsonl")" "a dry run sends nothing"
   assert_equals "buzz answer Would answer." "$(jq -r '[.platform, .endpoint, .text] | join(" ")' "$home/state/x-outbox/$rid.json")" \
     "a dry run records the would-be Buzz reply"
-  pass "dry-run records the would-be Buzz reply without sending"
+  assert_equals false "$(jq -r .answer_posted "$home/state/buzz/requests/$rid.json")" \
+    "a previewed answer must not spend the one answer the request gets"
+  out=$(run_in "$home" "$ROOT/bin/fm-x-reply.sh" "$rid" - <<<"Answered for real."); rc=$?
+  expect_code 0 "$rc" "a real answer after a dry-run answer"
+  assert_equals "Answered for real." "$(jq -r .content "$home/sent.jsonl")" \
+    "the owner still gets the answer the preview did not consume"
+  assert_equals true "$(jq -r .answer_posted "$home/state/buzz/requests/$rid.json")" \
+    "the real answer is the one that spends the budget"
+  pass "dry-run records the would-be Buzz reply without sending or spending the budget"
+}
+
+test_reply_dry_run_writes_a_receipt_without_spending_the_budget() {
+  local home rid rc
+  home=$(new_home dryreceipt)
+  enable "$home"
+  set_events "$home" "$(sign_event "$OWNER_SK" $((NOW - 60)) 9 "$(mention_tags)" 'receipt please')"
+  poll "$home" >/dev/null
+  rid=$(only_rid "$home")
+  # bin/fm-public-followup.sh refuses to close a delivery whose receipt is
+  # missing or untyped, dry run included, so a preview must still write one.
+  FMX_DRY_RUN=1 run_in "$home" "$ROOT/bin/fm-x-reply.sh" "$rid" --followup \
+    --receipt-file "$home/receipt.json" - <<<"Would follow up." >/dev/null 2>&1; rc=$?
+  expect_code 0 "$rc" "dry-run follow-up with a receipt"
+  assert_equals "$rid followup 1 true" \
+    "$(jq -r '[.request_id, .endpoint, .chunks, .dry_run] | join(" ")' "$home/receipt.json")" \
+    "a previewed follow-up still writes its typed receipt, marked dry_run"
+  assert_equals false "$(jq -r .followup_posted "$home/state/buzz/requests/$rid.json")" \
+    "a previewed follow-up must not spend the final"
+  pass "a dry-run reply writes the caller's receipt while leaving the budget alone"
 }
 
 test_disable_stops_intake_and_replies_until_enabled() {
@@ -624,6 +667,7 @@ fm_test_run \
   test_enable_validates_config \
   test_enable_poll_ingests_verified_owner_mention \
   test_poll_drops_everything_else \
+  test_poll_ingests_a_mention_that_carries_an_attachment \
   test_poll_deduplicates_across_restarts \
   test_poll_delivers_the_newest_mention_past_the_read_budget \
   test_poll_holds_the_cursor_on_an_exactly_full_window \
@@ -635,6 +679,7 @@ fm_test_run \
   test_poll_holds_cursor_on_read_failure \
   test_reply_ack_and_one_final_in_thread \
   test_reply_dry_run_records_without_sending \
+  test_reply_dry_run_writes_a_receipt_without_spending_the_budget \
   test_disable_stops_intake_and_replies_until_enabled \
   test_dismiss_is_local_and_final \
   test_dry_run_dismiss_previews_and_leaves_the_request_answerable \

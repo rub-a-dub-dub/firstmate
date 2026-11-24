@@ -30,8 +30,7 @@ silently, because the bridge's contract is "drop everything else":
   - a `p` tag naming the bridge pubkey
   - signer (pubkey) equals the configured owner pubkey, and is not the bridge
   - created_at at or after the age floor
-  - no media (`imeta`) tags
-  - non-empty content
+  - non-empty content; an `imeta` attachment is ignored, the text is the request
   - the event id recomputes per NIP-01 and the BIP-340 signature verifies
 
 Only the Python standard library is used: the secp256k1 arithmetic below is the
@@ -160,7 +159,7 @@ def candidate(ev, owner, bridge, channel, floor):
         return False
     if not any(t[0] == "p" and len(t) >= 2 and t[1] == bridge for t in tags):
         return False
-    if any(t[0] == "imeta" for t in tags) or not ev["content"].strip():
+    if not ev["content"].strip():
         return False
     return event_id(ev) == ev["id"]
 
