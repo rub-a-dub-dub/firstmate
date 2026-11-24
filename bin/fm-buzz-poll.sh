@@ -6,11 +6,14 @@
 # keep sleeping. A HARD no-op (exit 0, no output) while the bridge is disabled
 # (no config/buzz-bridge.enabled), so a stray shim can never poll.
 #
-# Each poll reads kind-9 events in the one configured channel through the
-# pinned Buzz CLI (`messages get`, signed NIP-98 reads with the bridge key),
-# paging backward from a fixed upper fence to the durable cursor minus a
-# 300-second overlap, never past the age limit (BUZZ_MAX_AGE_SECS). Every page
-# is filtered and verified by bin/fm-buzz-verify.py: only owner-signed kind-9
+# Each poll makes ONE read of kind-9 events in the one configured channel
+# through the pinned Buzz CLI (`messages get`, signed NIP-98 reads with the
+# bridge key): the newest PAGE_LIMIT events below a fixed upper fence, down to
+# the durable cursor minus a 300-second overlap and never past the age limit
+# (BUZZ_MAX_AGE_SECS). One newest-first read is what keeps a sweep inside the
+# watcher's per-check timeout, because every distinct candidate it returns is
+# BIP-340 verified; the owner's latest mention is always inside it. The read is
+# filtered and verified by bin/fm-buzz-verify.py: only owner-signed kind-9
 # messages that p-tag the bridge key, with a valid event id and signature,
 # survive; everything else is dropped silently.
 #
@@ -45,7 +48,6 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 fm_buzz_enabled || exit 0
 
 PAGE_LIMIT=200
-MAX_PAGES=5
 OVERLAP=300
 
 emit_error_once() {
@@ -81,41 +83,22 @@ LOWER=$((SINCE - OVERLAP))
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/fm-buzz-poll.XXXXXX") || exit 0
 trap 'rm -rf "$WORK"' EXIT
+trap 'rm -rf "$WORK"; exit 0' HUP INT TERM
 
-# Page backward from the fence. `until` is inclusive, so a full page restarts at
-# its oldest timestamp and the verifier deduplicates the overlap by event id.
-UNTIL=$NOW
-COMPLETE=0
-page=0
-: > "$WORK/pages"
-while [ "$page" -lt "$MAX_PAGES" ]; do
-  page=$((page + 1))
-  fm_buzz_cli messages get --channel "$BUZZ_CHANNEL" --kinds 9 \
-    --since "$LOWER" --before "$UNTIL" --limit "$PAGE_LIMIT" > "$WORK/page" 2>/dev/null
-  rc=$?
-  case "$rc" in
-    0) ;;
-    2) exit 0 ;;
-    3) emit_error_once "relay refused the bridge key (auth error); check channel membership"; exit 0 ;;
-    10) emit_error_once "cannot read the bridge secret from BUZZ_BRIDGE_KEY_FILE"; exit 0 ;;
-    *) emit_error_once "buzz CLI read failed (exit $rc)"; exit 0 ;;
-  esac
-  count=$(jq -er 'if type == "array" then length else error("not an array") end' "$WORK/page" 2>/dev/null) \
-    || { emit_error_once "buzz CLI returned a malformed read"; exit 0; }
-  cat "$WORK/page" >> "$WORK/pages"
-  if [ "$count" -lt "$PAGE_LIMIT" ]; then
-    COMPLETE=1
-    break
-  fi
-  oldest=$(jq -r '[.[].created_at | numbers] | min // empty' "$WORK/page")
-  case "$oldest" in ''|*[!0-9]*) break ;; esac
-  # More than a full page inside one second cannot be paged by timestamp alone.
-  [ "$oldest" -lt "$UNTIL" ] || break
-  UNTIL=$oldest
-done
-
-jq -s 'add // []' "$WORK/pages" > "$WORK/all" 2>/dev/null \
+fm_buzz_cli messages get --channel "$BUZZ_CHANNEL" --kinds 9 \
+  --since "$LOWER" --before "$NOW" --limit "$PAGE_LIMIT" > "$WORK/all" 2>/dev/null
+rc=$?
+case "$rc" in
+  0) ;;
+  2) exit 0 ;;
+  3) emit_error_once "relay refused the bridge key (auth error); check channel membership"; exit 0 ;;
+  10) emit_error_once "cannot read the bridge secret from BUZZ_BRIDGE_KEY_FILE"; exit 0 ;;
+  *) emit_error_once "buzz CLI read failed (exit $rc)"; exit 0 ;;
+esac
+COUNT=$(jq -er 'if type == "array" then length else error("not an array") end' "$WORK/all" 2>/dev/null) \
   || { emit_error_once "buzz CLI returned a malformed read"; exit 0; }
+# A full page means the window held more than one read covers.
+if [ "$COUNT" -lt "$PAGE_LIMIT" ]; then COMPLETE=1; else COMPLETE=0; fi
 python3 -I "$SCRIPT_DIR/fm-buzz-verify.py" --owner "$BUZZ_OWNER_PUBKEY" --bridge "$BUZZ_BRIDGE_PUBKEY" \
   --channel "$BUZZ_CHANNEL" --floor "$FLOOR" < "$WORK/all" > "$WORK/accepted" 2>/dev/null \
   || { emit_error_once "event verification failed to run"; exit 0; }
@@ -169,9 +152,9 @@ elif [ "$COMPLETE" -eq 1 ]; then
     emit_error_once "cannot advance the poll cursor"
   fi
 else
-  # shortcut: the newest pages are still delivered, but the cursor holds until
-  # the uncovered range falls under the page budget or behind the age limit.
-  emit_error_once "catch-up range exceeds $((PAGE_LIMIT * MAX_PAGES)) messages; older messages in the window were not read"
+  # shortcut: the newest page is still delivered, but the cursor holds until
+  # the uncovered range falls under the read budget or behind the age limit.
+  emit_error_once "catch-up range exceeds $PAGE_LIMIT messages; older messages in the window were not read"
 fi
 
 exit 0

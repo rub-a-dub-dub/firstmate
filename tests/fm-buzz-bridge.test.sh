@@ -121,6 +121,25 @@ poll() {
   run_in "$1" "$ROOT/bin/fm-buzz-poll.sh"
 }
 
+# The watcher caps every custom check at FM_CHECK_TIMEOUT (30s by default) with
+# timeout(1), gtimeout(1), or a perl alarm, in that order (bin/fm-watch.sh
+# run_check_process); stock macOS has no timeout(1). Resolved to an absolute
+# path here because run_in restricts PATH.
+CHECK_TIMEOUT_BIN=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
+
+# poll_bounded <home> [seconds]: the poll under the watcher's bound. Exits 124
+# when the bound cut it short, exactly as the watcher's own runner reports.
+poll_bounded() {
+  local home=$1 limit=${2:-30}
+  if [ -n "$CHECK_TIMEOUT_BIN" ]; then
+    run_in "$home" "$CHECK_TIMEOUT_BIN" "$limit" "$ROOT/bin/fm-buzz-poll.sh"
+  else
+    # shellcheck disable=SC2016  # single quotes are deliberate: Perl expands its own variables.
+    run_in "$home" perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } my $stop = sub { $SIG{TERM} = "IGNORE"; kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; waitpid $pid, 0; exit 124 }; local $SIG{ALRM} = $stop; alarm $t; waitpid $pid, 0; exit($? >> 8)' \
+      "$limit" bash "$ROOT/bin/fm-buzz-poll.sh"
+  fi
+}
+
 enable() {
   run_in "$1" "$ROOT/bin/fm-buzz.sh" enable >/dev/null || fail "enable failed for $1"
 }
@@ -248,38 +267,25 @@ test_poll_deduplicates_across_restarts() {
   pass "event-id bindings deduplicate a re-read even after the cursor and inbox are gone"
 }
 
-test_poll_pages_backward_through_a_full_window() {
-  local home out noise
-  home=$(new_home paging)
-  enable "$home"
-  noise=$(jq -cn --arg ch "$CHANNEL" --argjson now "$NOW" '[range(0; 250) | {id: (tostring | ("0" * (64 - length)) + .), pubkey: ("f" * 64),
-    created_at: ($now - 100 + (. % 90)), kind: 9, tags: [["h", $ch]], content: "chatter", sig: ("0" * 128)}]')
-  sign_event "$OWNER_SK" $((NOW - 200)) 9 "$(mention_tags)" 'buried under chatter' \
-    | jq -c --argjson n "$noise" '[.] + $n' > "$home/events.json"
-  out=$(poll "$home")
-  assert_contains "$out" "buzz-mention buzz-" "an owner mention older than the newest full page must still be found"
-  [ "$(grep -c 'messages get' "$home/cli.log")" -ge 2 ] || fail "a full page must trigger a second, older page"
-  assert_equals "$NOW" "$(jq -r .since "$home/state/buzz/cursor.json")" "a drained window advances the cursor"
-  pass "the poll pages backward across a full page and advances only after the window drains"
-}
-
-test_poll_delivers_the_newest_mention_past_the_page_budget() {
-  local home out forged
+test_poll_delivers_the_newest_mention_past_the_read_budget() {
+  local home out rc forged
   home=$(new_home flood)
   enable "$home"
   # A relay serving owner-attributed events it never verified: the ids recompute,
-  # so only the signature check can reject them. More of them than the page
-  # budget can read, and all older than the owner's mention.
-  forged=$(python3 -I "$SIGN" forge "$OWNER" $((NOW - 5000)) 9 "$(mention_tags)" 'forged' 1001)
+  # so every one of them reaches the signature check. More of them than one read
+  # covers, and all older than the owner's mention.
+  forged=$(python3 -I "$SIGN" forge "$OWNER" $((NOW - 5000)) 9 "$(mention_tags)" 'forged' 250)
   sign_event "$OWNER_SK" $((NOW - 100)) 9 "$(mention_tags)" 'the newest real request' \
     | jq -c --argjson f "$forged" '[.] + $f' > "$home/events.json"
-  out=$(poll "$home")
+  out=$(poll_bounded "$home"); rc=$?
+  expect_code 0 "$rc" "the poll must finish inside the watcher's check bound, not be cut at 124"
   assert_contains "$out" "buzz-mention buzz-" "a flood older than the mention must not bury it"
   assert_contains "$out" "buzz-bridge-error catch-up range exceeds" "an undrained window is a diagnostic wake"
   assert_absent "$home/state/buzz/cursor.json" "an undrained window must not advance the cursor"
   assert_equals 'the newest real request' "$(jq -r .text "$home/state/x-inbox/$(only_rid "$home").json")" \
     "the owner's signed mention is the one that reaches the inbox"
-  pass "reading newest-first keeps the owner's latest mention verifiable under a flood"
+  assert_equals 1 "$(grep -c 'messages get' "$home/cli.log")" "one poll makes exactly one read"
+  pass "one newest-first read delivers the owner's latest mention under a flood, inside the watcher's bound"
 }
 
 test_poll_keeps_a_real_event_beside_its_junk_signature_copy() {
@@ -541,8 +547,7 @@ fm_test_run \
   test_enable_poll_ingests_verified_owner_mention \
   test_poll_drops_everything_else \
   test_poll_deduplicates_across_restarts \
-  test_poll_pages_backward_through_a_full_window \
-  test_poll_delivers_the_newest_mention_past_the_page_budget \
+  test_poll_delivers_the_newest_mention_past_the_read_budget \
   test_poll_keeps_a_real_event_beside_its_junk_signature_copy \
   test_poll_refuses_a_key_file_that_is_not_hex \
   test_poll_wakes_for_every_request_as_it_is_persisted \

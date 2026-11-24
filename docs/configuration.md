@@ -3078,8 +3078,10 @@ The bridge pubkey must be a member of the private channel; the owner adds it fro
 
 **Intake**
 
-Each watcher check sweep runs one bounded `bin/fm-buzz-poll.sh`, whose header owns the paging, cursor, and persistence order.
-It reads kind-9 messages in the configured channel through `buzz messages get` as the bridge identity, and `bin/fm-buzz-verify.py` keeps only messages that are signed by the owner, `p`-tag the bridge key, sit in that one channel, carry no media, fall inside the age limit, and have a valid event id and BIP-340 signature.
+Each watcher check sweep runs one bounded `bin/fm-buzz-poll.sh`, whose header owns the read, cursor, and persistence order.
+One poll makes one read of the newest 200 kind-9 messages in the configured channel through `buzz messages get` as the bridge identity, down to the cursor's overlap and never past the age limit; every distinct message it returns is signature-verified, so a single newest-first read is what keeps a sweep inside the watcher's check timeout.
+A window holding more than those 200 holds the cursor and wakes the catch-up diagnostic below, and the next sweep reads the same newest 200 again; the owner's latest mention is always inside them.
+`bin/fm-buzz-verify.py` keeps only messages that are signed by the owner, `p`-tag the bridge key, sit in that one channel, carry no media, fall inside the age limit, and have a valid event id and BIP-340 signature.
 Everything else, including edits (kind 40003), DMs and gift wraps, workflow messages, other members and agents, and the bridge's own messages, is dropped silently.
 
 Each accepted message gets a stable request id derived from the transport, community, bridge key, and event id, and a binding in `state/buzz/requests/<request_id>.json` recording the channel, parent event, thread root, verified signer, and reply budget.

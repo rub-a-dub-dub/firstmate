@@ -10,9 +10,10 @@ direct owner mentions, oldest first:
 
 Signature verification is the one expensive stage and the relay is not trusted
 to have checked it, so every distinct candidate the caller hands over is
-verified. The input is what bounds the work: bin/fm-buzz-poll.sh pages backward
-from now, so an over-budget window arrives capped at its NEWEST page budget and
-the owner's latest mention is always inside it.
+verified. The input is what bounds the work: bin/fm-buzz-poll.sh makes one
+newest-first read of at most its page limit, so an over-budget window arrives
+capped at its newest events, the owner's latest mention is always inside it, and
+the whole sweep stays inside the watcher's per-check timeout.
 
 The paging overlap re-delivers the same event, so candidates are deduplicated
 per distinct (id, sig) pair before the signature stage. The id alone would not
