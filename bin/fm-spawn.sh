@@ -62,9 +62,9 @@
 #   nothing changes.
 #   --tier, --quota-substitution, and --escalated-from are optional dispatch
 #   annotations for a ship or scout spawn: single-line free text (no control
-#   characters, at most 300 characters) recording the routing tier label, any
-#   quota-driven substitution, and the task or profile this dispatch escalated
-#   from. Each given value is written to state/<id>.meta as tier=,
+#   characters) recording the routing tier label, any quota-driven
+#   substitution, and the task or profile this dispatch escalated from. Each
+#   given value is written to state/<id>.meta as tier=,
 #   quota_substitution=, and escalated_from=, and to the task.dispatched ledger
 #   event as optional members; absent when not given. They are annotations only:
 #   they never change the harness, model, effort, profile resolution, or the
@@ -1268,8 +1268,8 @@ fi
   exit 1
 }
 # Dispatch annotations are single-line free text written into the meta key=value
-# file and a JSON ledger line, so a control character (a newline included) or an
-# over-long value is refused here, before anything is published.
+# file and a JSON ledger line, so a control character (a newline included) is
+# refused here, before anything is published.
 validate_annotation() { # <flag> <set> <value>
   [ "$2" -eq 0 ] || [ -n "$3" ] || {
     echo "error: --$1 requires a non-empty value" >&2
@@ -1280,10 +1280,6 @@ validate_annotation() { # <flag> <set> <value>
     exit 1
     ;;
   esac
-  [ "${#3}" -le 300 ] || {
-    echo "error: --$1 must be at most 300 characters (got ${#3})" >&2
-    exit 1
-  }
 }
 validate_annotation tier "$TIER_SET" "$TIER"
 validate_annotation quota-substitution "$QUOTA_SUBSTITUTION_SET" "$QUOTA_SUBSTITUTION"
