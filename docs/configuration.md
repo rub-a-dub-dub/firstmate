@@ -2029,12 +2029,20 @@ Firstmate cannot see which part of a worker's life uses the resource, so the num
 `config/crew-dispatch.json` is an optional local, gitignored file containing natural-language rules that firstmate reads before dispatching a crewmate or scout.
 Firstmate chooses the best matching rule with judgment; shell scripts do not match the natural-language rules.
 Firstmate resolves the rule's profile object or array under `AGENTS.md` section 4 and `quota-array-dispatch`, then passes only concrete `--harness`, `--model`, and `--effort` flags to `fm-spawn.sh`.
+The optional `--tier`, `--quota-substitution`, and `--escalated-from` annotations below are separate from profile resolution and are passed alongside those flags so the dispatch is recorded.
 
 **Spawn requirements**
 
 - When the file exists, `fm-spawn.sh` enforces that contract by refusing crewmate and scout spawns that lack an explicit harness (`--harness`, a positional adapter, or a raw launch command).
 - Batch spawns satisfy the same requirement with a shared `--harness`.
 - Secondmate spawns are exempt and resolve through `config/secondmate-harness` using the registered mate's id; see [Choose the secondmate harness](#choose-the-secondmate-harness) for pin precedence and legacy parsing.
+
+**Dispatch annotations**
+
+A ship or scout spawn also accepts the optional `--tier <label>`, `--quota-substitution <text>`, and `--escalated-from <task-or-profile>` annotations, single-line text; an over-long value is truncated to 2000 characters rather than refused.
+Each given value is recorded in `state/<id>.meta` as `tier=`, `quota_substitution=`, and `escalated_from=` and in the task's `task.dispatched` ledger event (see [`fleet-ledger.md`](fleet-ledger.md)), and a relaunch keeps it.
+They change no harness, model, effort, or profile resolution and do not count as launch flags for `--dispatch-override`.
+When `config/crew-dispatch.json` carries a non-empty `rules` array and a fresh ship or scout spawn passes no `--tier`, `fm-spawn.sh` prints one warning line to stderr and continues; tier routing lives only in those rules, so a `default`-only file never warns.
 
 **Contract owners**
 

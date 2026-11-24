@@ -279,6 +279,37 @@ test_worker_status_line_with_the_flag_absent() {
   pass "flag off: the worker's status command is a plain append and leaves no ledger file, offset, or lock"
 }
 
+test_dispatched_annotations_stay_valid_json_and_optional() {
+  local rows status
+  make_case annotations on
+  in_home "$ROOT/bin/fm-fleet-ledger.sh" dispatched "$TASK" ship sample claude opus \
+    'tier "fast"' 'quota\back "slash" and ünï' 'prev-task' || fail "annotated dispatched record failed"
+  in_home "$ROOT/bin/fm-fleet-ledger.sh" dispatched "$TASK" scout sample claude '' tier-only \
+    || fail "tier-only dispatched record failed"
+  in_home "$ROOT/bin/fm-fleet-ledger.sh" dispatched "$TASK" scout sample claude '' \
+    || fail "unannotated dispatched record failed"
+  rows=$(ledger_rows '[.event, .tier, .quota_substitution, .escalated_from, has("tier")]')
+  assert_equals '["task.dispatched","tier \"fast\"","quota\\back \"slash\" and ünï","prev-task",true]
+["task.dispatched","tier-only",null,null,true]
+["task.dispatched",null,null,null,false]' "$rows" "dispatched annotations were not recorded as optional JSON members"
+  in_home "$ROOT/bin/fm-fleet-ledger.sh" dispatched "$TASK" ship sample claude opus a b c d >/dev/null 2>&1
+  status=$?
+  expect_code 2 "$status" "a tenth dispatched argument is a usage error"
+  pass "dispatched annotations are optional, JSON-safe members of task.dispatched"
+}
+
+test_dispatched_annotations_are_truncated_to_the_text_bound() {
+  local long
+  make_case annotation-bound on
+  long=$(printf 'y%.0s' $(seq 1 3000))
+  in_home "$ROOT/bin/fm-fleet-ledger.sh" dispatched "$TASK" ship sample claude opus \
+    "$long" "$long" "$long" || fail "an over-long annotated dispatched record failed"
+  assert_equals '[true,true,true]' \
+    "$(ledger_rows '[.tier == ("y" * 2000), .quota_substitution == ("y" * 2000), .escalated_from == ("y" * 2000)]')" \
+    "over-long dispatch annotations were not truncated to the ledger text bound"
+  pass "over-long dispatch annotations are truncated to 2000 characters, never refused"
+}
+
 test_flag_off_writes_nothing() {
   local leftovers
   make_case off-lifecycle off
@@ -297,4 +328,6 @@ test_worker_status_line_is_recorded_under_a_relative_config_override
 test_worker_status_command_fails_when_the_append_fails
 test_worker_status_line_lands_when_the_ledger_fails
 test_worker_status_line_with_the_flag_absent
+test_dispatched_annotations_stay_valid_json_and_optional
+test_dispatched_annotations_are_truncated_to_the_text_bound
 test_flag_off_writes_nothing

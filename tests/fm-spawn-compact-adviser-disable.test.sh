@@ -386,6 +386,63 @@ $launch") \
   pass "relaunch rebuilds the compact-adviser switch for the replacement agent in both allowlist postures"
 }
 
+# Dispatch annotations recorded at spawn (tier, quota substitution,
+# escalated-from) belong to the task, so the replacement agent keeps them.
+test_relaunch_keeps_dispatch_annotations() {
+  local dir home proj wt id out status
+  id=relaunch-annot-a1
+  dir="$TMP_ROOT/relaunch-annot"
+  home="$dir/home"
+  proj="$dir/proj"
+  wt="$dir/wt"
+  mkdir -p "$home/state" "$home/data" "$home/config" "$home/projects" "$dir/fake" "$dir/user-home"
+  touch "$home/state/.last-watcher-beat"
+  make_relaunch_stub "$dir"
+  fm_git_worktree "$proj" "$wt" "wt-relaunch-annot"
+  fm_test_spawn_brief "$home" "$id"
+  : > "$dir/fake/literal"
+  : > "$dir/fake/keys"
+  printf 'codex' > "$dir/fake/command"
+  printf '%s\n' "fm-$id" > "$dir/fake/windows"
+  printf '%s' "$wt" > "$dir/fake/cwd"
+  {
+    echo "window=fmses:fm-$id"
+    echo "endpoint_task_id=$id"
+    echo "worktree=$wt"
+    echo "project=$proj"
+    echo "harness=codex"
+    echo "kind=ship"
+    echo "mode=no-mistakes"
+    echo "yolo=off"
+    echo "tasktmp=$dir/tasktmp"
+    echo "model=default"
+    echo "effort=default"
+    echo "tier=fast"
+    echo "quota_substitution=codex tight, used claude"
+    echo "escalated_from=relaunch-prev-a0"
+  } > "$home/state/$id.meta"
+
+  out=$(env PATH="$dir/fakebin:$PATH" FM_HOME="$home" FM_FAKE_DIR="$dir/fake" \
+    HOME="$dir/user-home" CLAUDE_CONFIG_DIR='' FM_SPAWN_NO_GUARD=1 \
+    FM_CONTROL_POLL=0.01 FM_CONTROL_EXIT_WAIT=0.05 FM_CONTROL_LAUNCH_WAIT=0.05 \
+    "$CONTROL" "$id" relaunch --note 'replacement continues the same task' 2>&1)
+  status=$?
+  expect_code 0 "$status" "relaunch should succeed: $out"
+  assert_grep 'tier=fast' "$home/state/$id.meta" "relaunch dropped the tier"
+  assert_grep 'quota_substitution=codex tight, used claude' "$home/state/$id.meta" "relaunch dropped the quota substitution"
+  assert_grep 'escalated_from=relaunch-prev-a0' "$home/state/$id.meta" "relaunch dropped the escalated-from value"
+  [ "$(grep -c '^tier=' "$home/state/$id.meta")" -eq 1 ] || fail "relaunch duplicated the tier record"
+
+  out=$(env PATH="$dir/fakebin:$PATH" FM_HOME="$home" FM_FAKE_DIR="$dir/fake" \
+    HOME="$dir/user-home" CLAUDE_CONFIG_DIR='' FM_SPAWN_NO_GUARD=1 \
+    "$ROOT/bin/fm-spawn.sh" "$id" --relaunch --tier slow 2>&1)
+  status=$?
+  expect_code 1 "$status" "a relaunch must not rewrite the annotations"
+  assert_contains "$out" 'keeps the task' "relaunch refusal did not explain itself"
+  assert_grep 'tier=fast' "$home/state/$id.meta" "a refused relaunch changed the tier"
+  pass "relaunch keeps the recorded dispatch annotations and refuses to change them"
+}
+
 # A command-prefix assignment only covers the first simple command. A raw
 # compound launch such as `cd <dir> && <probe>` must still start the probe with
 # both required environment values, so execute the pane's launch under a
@@ -462,4 +519,5 @@ test_secondmate_launch
 test_launch_exports_task_inbox
 test_launch_exports_active_home
 test_relaunch_rebuilds_the_switch
+test_relaunch_keeps_dispatch_annotations
 test_raw_compound_launch_command_carries_the_switch
