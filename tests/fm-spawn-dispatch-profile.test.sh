@@ -3020,6 +3020,180 @@ test_codex_permission_invalid_refuses_before_mutation
 test_codex_permission_does_not_change_other_harnesses
 test_launch_preserves_inherited_git_config
 test_worker_launch_delivers_role_scope
+# Dispatch annotations (--tier, --quota-substitution, --escalated-from) are
+# recorded-only: they land in the task record and the ledger event and never
+# touch launch resolution.
+test_dispatch_annotations_land_in_meta_and_ledger() {
+  local rec id out status meta ledger
+  id=annot-record-z1
+  rec=$(make_spawn_case annot-record claude "$id")
+  read_case_record "$rec"
+  : > "$HOME_DIR/config/fleet-ledger"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+    --tier fast --quota-substitution='codex tight, used claude "opus"' --escalated-from annot-prev-z0)
+  status=$?
+  expect_code 0 "$status" "annotated spawn should succeed: $out"
+  meta="$HOME_DIR/state/$id.meta"
+  assert_grep 'tier=fast' "$meta" "meta omitted the tier"
+  assert_grep 'quota_substitution=codex tight, used claude "opus"' "$meta" "meta omitted the quota substitution"
+  assert_grep 'escalated_from=annot-prev-z0' "$meta" "meta omitted the escalated-from value"
+  assert_meta_profile "$meta" claude default default
+  ledger="$HOME_DIR/state/fleet-ledger.jsonl"
+  jq -e --arg id "$id" 'select(.event == "task.dispatched" and .task == $id)
+    | .tier == "fast" and .quota_substitution == "codex tight, used claude \"opus\""
+      and .escalated_from == "annot-prev-z0"' "$ledger" >/dev/null \
+    || fail "task.dispatched event omitted the annotations: $(cat "$ledger")"
+  pass "dispatch annotations are recorded in the task meta and the task.dispatched ledger event"
+}
+
+test_dispatch_annotations_are_absent_when_not_given() {
+  local rec id out status
+  id=annot-absent-z1
+  rec=$(make_spawn_case annot-absent claude "$id")
+  read_case_record "$rec"
+  : > "$HOME_DIR/config/fleet-ledger"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "spawn without annotations should succeed: $out"
+  assert_no_regex '^(tier|quota_substitution|escalated_from)=' "$HOME_DIR/state/$id.meta" "meta must carry no annotation keys"
+  jq -e --arg id "$id" 'select(.event == "task.dispatched" and .task == $id)
+    | (has("tier") or has("quota_substitution") or has("escalated_from")) | not' \
+    "$HOME_DIR/state/fleet-ledger.jsonl" >/dev/null || fail "ledger event must omit absent annotations"
+  pass "absent annotations write no meta keys and no ledger members"
+}
+
+test_dispatch_annotations_apply_to_scouts() {
+  local rec id out status
+  id=annot-scout-z1
+  rec=$(make_spawn_case annot-scout claude "$id")
+  read_case_record "$rec"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --scout --tier deep)
+  status=$?
+  expect_code 0 "$status" "annotated scout spawn should succeed: $out"
+  assert_grep 'tier=deep' "$HOME_DIR/state/$id.meta" "scout meta omitted the tier"
+  pass "a scout spawn records its dispatch annotations"
+}
+
+test_dispatch_annotation_bad_values_are_refused() {
+  local rec id out status flag value n=0
+  rec=$(make_spawn_case annot-bad claude annot-bad-z1)
+  read_case_record "$rec"
+  for flag in --tier --quota-substitution --escalated-from; do
+    for value in $'two\nlines' $'bell\a' $'tab\there' "$(printf 'x%.0s' $(seq 1 301))"; do
+      n=$((n + 1))
+      id=annot-bad-z1
+      out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" "$flag=$value")
+      status=$?
+      expect_code 1 "$status" "$flag value #$n should be refused"
+      assert_contains "$out" "error: ${flag} must be" "refusal did not name $flag"
+      assert_absent "$HOME_DIR/state/$id.meta" "a refused annotation must not publish the task"
+      assert_equals '' "$(cat "$LAUNCH_LOG")" "a refused annotation must not create a worker"
+    done
+    out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" "$flag=")
+    status=$?
+    expect_code 1 "$status" "an empty $flag should be refused"
+    assert_contains "$out" "error: ${flag} requires a non-empty value" "empty $flag refusal missing"
+  done
+  pass "newline, control-character, over-long, and empty annotation values are refused before launch"
+}
+
+test_dispatch_annotations_are_refused_for_secondmates() {
+  local rec id out status
+  id=annot-mate-z1
+  rec=$(make_spawn_case annot-mate claude "$id")
+  read_case_record "$rec"
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$CASE_DIR/not-yet-seeded" --secondmate --tier fast)
+  status=$?
+  expect_code 1 "$status" "a secondmate annotation should be refused"
+  assert_contains "$out" 'never a secondmate' "refusal did not explain the secondmate exclusion"
+  pass "dispatch annotations are refused on a secondmate spawn"
+}
+
+test_missing_tier_warns_only_when_dispatch_rules_exist() {
+  local rec id out status
+  id=annot-warn-z1
+  rec=$(make_spawn_case annot-warn claude "$id")
+  read_case_record "$rec"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "spawn without dispatch config should succeed: $out"
+  assert_not_contains "$out" '--tier' "no dispatch config must not warn about a missing tier"
+
+  id=annot-warn-z2
+  fm_test_spawn_brief "$HOME_DIR" "$id"
+  printf '%s\n' '{"rules":[]}' > "$HOME_DIR/config/crew-dispatch.json"
+  record_dispatch "$HOME_DIR" "$id" off
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --harness claude)
+  status=$?
+  expect_code 0 "$status" "empty rules should still spawn: $out"
+  assert_not_contains "$out" 'was given no --tier' "an empty rule list must not warn"
+
+  id=annot-warn-z3
+  fm_test_spawn_brief "$HOME_DIR" "$id"
+  enable_dispatch_profile "$HOME_DIR"
+  record_dispatch "$HOME_DIR" "$id" off
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --harness claude)
+  status=$?
+  expect_code 0 "$status" "a missing tier must warn, never refuse: $out"
+  assert_contains "$out" "warning: config/crew-dispatch.json has rules but task $id was given no --tier" "missing-tier warning absent"
+  [ "$(printf '%s\n' "$out" | grep -c 'was given no --tier')" -eq 1 ] || fail "the warning must be one line"
+
+  id=annot-warn-z4
+  fm_test_spawn_brief "$HOME_DIR" "$id"
+  record_dispatch "$HOME_DIR" "$id" off
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --harness claude --tier fast)
+  status=$?
+  expect_code 0 "$status" "a tiered spawn should succeed: $out"
+  assert_not_contains "$out" 'was given no --tier' "a given tier must not warn"
+  pass "the missing-tier warning appears only when dispatch rules exist and no tier is given"
+}
+
+test_dispatch_annotations_do_not_trigger_the_override_requirement() {
+  local rec id out status
+  id=annot-override-z1
+  rec=$(make_spawn_case annot-override claude "$id")
+  read_case_record "$rec"
+  enable_dispatch_profile "$HOME_DIR"
+  record_dispatch "$HOME_DIR" "$id" clear codex gpt-5 high
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+    --harness codex --model gpt-5 --effort high --tier fast --quota-substitution 'none' --escalated-from annot-prev)
+  status=$?
+  expect_code 0 "$status" "annotations beside the matching selection need no override: $out"
+  assert_meta_profile "$HOME_DIR/state/$id.meta" codex gpt-5 high
+  assert_no_grep 'dispatch_override=' "$HOME_DIR/state/$id.meta" "annotations must not record an override"
+
+  id=annot-override-z2
+  fm_test_spawn_brief "$HOME_DIR" "$id"
+  record_dispatch "$HOME_DIR" "$id" clear codex gpt-5 high
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+    --harness claude --model opus --effort high --tier fast)
+  status=$?
+  expect_code 1 "$status" "annotations must not excuse a mismatched selection"
+  assert_contains "$out" 'launch flags do not match the clear dispatch selection' "the override requirement must still apply"
+  pass "annotations neither trigger nor satisfy the --dispatch-override requirement"
+}
+
+test_batch_forwards_dispatch_annotations() {
+  local rec id1 id2 out status
+  id1=annot-batch-a-z1
+  id2=annot-batch-b-z1
+  rec=$(make_spawn_case annot-batch claude "$id1" "$id2")
+  read_case_record "$rec"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id1=$PROJ_DIR" "$id2=$PROJ_DIR" --tier fast --escalated-from annot-prev)
+  status=$?
+  expect_code 0 "$status" "annotated batch should succeed: $out"
+  assert_grep 'tier=fast' "$HOME_DIR/state/$id1.meta" "first batch task omitted the tier"
+  assert_grep 'escalated_from=annot-prev' "$HOME_DIR/state/$id2.meta" "second batch task omitted escalated-from"
+  pass "a batch spawn forwards the shared dispatch annotations to every task"
+}
+
 test_no_profile_keeps_claude_profile_defaults
 test_claude_launch_brief_publishes_record_doorbell
 test_claude_secondmate_launch_brief_publishes_into_its_own_home
@@ -3114,5 +3288,13 @@ test_keep_ai_trailers_omits_attribution_settings_and_strip_hooks
 test_keep_ai_trailers_reaches_secondmate_crew_launches
 test_claude_secondmate_launch_carries_the_attribution_policy
 test_active_dispatch_profile_does_not_block_secondmate_launch
+test_dispatch_annotations_land_in_meta_and_ledger
+test_dispatch_annotations_are_absent_when_not_given
+test_dispatch_annotations_apply_to_scouts
+test_dispatch_annotation_bad_values_are_refused
+test_dispatch_annotations_are_refused_for_secondmates
+test_missing_tier_warns_only_when_dispatch_rules_exist
+test_dispatch_annotations_do_not_trigger_the_override_requirement
+test_batch_forwards_dispatch_annotations
 
 echo "# all fm-spawn-dispatch-profile tests passed"

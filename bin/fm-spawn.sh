@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
-# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--branch-prefix <prefix>] [--base-branch <branch>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--dispatch-override <reason>] [--hermes-profile <name>] [--account <entry>] [--backend <name>] [--herdr-resume-lock-wait]
-#        fm-spawn.sh <task-id> <project-dir> --scout [--base-branch <branch>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--dispatch-override <reason>] [--hermes-profile <name>] [--account <entry>] [--backend <name>] [--herdr-resume-lock-wait]
+# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--branch-prefix <prefix>] [--base-branch <branch>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--dispatch-override <reason>] [--tier <label>] [--quota-substitution <text>] [--escalated-from <task-or-profile>] [--hermes-profile <name>] [--account <entry>] [--backend <name>] [--herdr-resume-lock-wait]
+#        fm-spawn.sh <task-id> <project-dir> --scout [--base-branch <branch>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--dispatch-override <reason>] [--tier <label>] [--quota-substitution <text>] [--escalated-from <task-or-profile>] [--hermes-profile <name>] [--account <entry>] [--backend <name>] [--herdr-resume-lock-wait]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
 #   spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
@@ -60,6 +60,18 @@
 #   base_branch= in state/<id>.meta, which a relaunch reuses and later review and
 #   cleanup read; it is refused on secondmates and relaunches, and without it
 #   nothing changes.
+#   --tier, --quota-substitution, and --escalated-from are optional dispatch
+#   annotations for a ship or scout spawn: single-line free text (no control
+#   characters, at most 300 characters) recording the routing tier label, any
+#   quota-driven substitution, and the task or profile this dispatch escalated
+#   from. Each given value is written to state/<id>.meta as tier=,
+#   quota_substitution=, and escalated_from=, and to the task.dispatched ledger
+#   event as optional members; absent when not given. They are annotations only:
+#   they never change the harness, model, effort, profile resolution, or the
+#   --dispatch-override requirement. A fresh ship or scout spawn given no --tier
+#   while config/crew-dispatch.json has rules prints one warning line to stderr
+#   and continues. A relaunch keeps the recorded values and refuses the flags;
+#   a secondmate refuses them.
 #   Ship/scout launches always put fm-dod-lib.sh's current worker role scope
 #   first in the private launch-brief overlay, including the exact task-owned
 #   steering inbox. This never rewrites a project's instruction files or a
@@ -1008,6 +1020,12 @@ HARNESS_ARG=
 MODEL=
 EFFORT=
 DISPATCH_OVERRIDE=
+TIER=
+TIER_SET=0
+QUOTA_SUBSTITUTION=
+QUOTA_SUBSTITUTION_SET=0
+ESCALATED_FROM=
+ESCALATED_FROM_SET=0
 BACKEND_ARG=
 MODE=
 YOLO=
@@ -1057,6 +1075,18 @@ for a in "$@"; do
       EFFORT_SET=1
       ;;
     dispatch-override) DISPATCH_OVERRIDE=$a ;;
+    tier)
+      TIER=$a
+      TIER_SET=1
+      ;;
+    quota-substitution)
+      QUOTA_SUBSTITUTION=$a
+      QUOTA_SUBSTITUTION_SET=1
+      ;;
+    escalated-from)
+      ESCALATED_FROM=$a
+      ESCALATED_FROM_SET=1
+      ;;
     hermes-profile)
       HERMES_PROFILE=$a
       HERMES_PROFILE_SET=1
@@ -1129,6 +1159,21 @@ for a in "$@"; do
     ;;
   --dispatch-override) want_value=dispatch-override ;;
   --dispatch-override=*) DISPATCH_OVERRIDE=${a#--dispatch-override=} ;;
+  --tier) want_value=tier ;;
+  --tier=*)
+    TIER=${a#--tier=}
+    TIER_SET=1
+    ;;
+  --quota-substitution) want_value=quota-substitution ;;
+  --quota-substitution=*)
+    QUOTA_SUBSTITUTION=${a#--quota-substitution=}
+    QUOTA_SUBSTITUTION_SET=1
+    ;;
+  --escalated-from) want_value=escalated-from ;;
+  --escalated-from=*)
+    ESCALATED_FROM=${a#--escalated-from=}
+    ESCALATED_FROM_SET=1
+    ;;
   --hermes-profile) want_value=hermes-profile ;;
   --hermes-profile=*) HERMES_PROFILE=${a#--hermes-profile=}; HERMES_PROFILE_SET=1 ;;
   --backend) want_value=backend ;;
@@ -1222,6 +1267,37 @@ fi
   echo "error: --account requires a non-empty value" >&2
   exit 1
 }
+# Dispatch annotations are single-line free text written into the meta key=value
+# file and a JSON ledger line, so a control character (a newline included) or an
+# over-long value is refused here, before anything is published.
+validate_annotation() { # <flag> <set> <value>
+  [ "$2" -eq 0 ] || [ -n "$3" ] || {
+    echo "error: --$1 requires a non-empty value" >&2
+    exit 1
+  }
+  case "$3" in *[[:cntrl:]]*)
+    echo "error: --$1 must be single-line text with no control characters" >&2
+    exit 1
+    ;;
+  esac
+  [ "${#3}" -le 300 ] || {
+    echo "error: --$1 must be at most 300 characters (got ${#3})" >&2
+    exit 1
+  }
+}
+validate_annotation tier "$TIER_SET" "$TIER"
+validate_annotation quota-substitution "$QUOTA_SUBSTITUTION_SET" "$QUOTA_SUBSTITUTION"
+validate_annotation escalated-from "$ESCALATED_FROM_SET" "$ESCALATED_FROM"
+if [ "$TIER_SET$QUOTA_SUBSTITUTION_SET$ESCALATED_FROM_SET" != 000 ]; then
+  [ "$KIND" != secondmate ] || {
+    echo "error: --tier, --quota-substitution, and --escalated-from annotate ship and scout dispatches, never a secondmate" >&2
+    exit 1
+  }
+  [ "$RELAUNCH" -eq 0 ] || {
+    echo "error: --relaunch keeps the task's recorded dispatch annotations; --tier, --quota-substitution, and --escalated-from cannot change them" >&2
+    exit 1
+  }
+fi
 # A secondmate, local or remote, launches on its own per-mate pin, so --account
 # is refused here, before the remote route could ignore it.
 [ "$ACCOUNT_SET" -eq 0 ] || [ "$KIND" != secondmate ] || {
@@ -2178,6 +2254,9 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
   [ -z "$MODEL" ] || shared_args+=(--model "$MODEL")
   [ -z "$EFFORT" ] || shared_args+=(--effort "$EFFORT")
   [ -z "$DISPATCH_OVERRIDE" ] || shared_args+=(--dispatch-override "$DISPATCH_OVERRIDE")
+  [ "$TIER_SET" -eq 0 ] || shared_args+=(--tier "$TIER")
+  [ "$QUOTA_SUBSTITUTION_SET" -eq 0 ] || shared_args+=(--quota-substitution "$QUOTA_SUBSTITUTION")
+  [ "$ESCALATED_FROM_SET" -eq 0 ] || shared_args+=(--escalated-from "$ESCALATED_FROM")
   [ "$HERMES_PROFILE_SET" -eq 0 ] || shared_args+=(--hermes-profile "$HERMES_PROFILE")
   [ -z "$BACKEND_ARG" ] || shared_args+=(--backend "$BACKEND_ARG")
   # One delivery contract applies to every pair in a batch, exactly like the shared
@@ -3287,6 +3366,13 @@ if [ "$KIND" != secondmate ] && [ "$RELAUNCH" -eq 0 ] && [ -f "$CONFIG/crew-disp
     echo "error: launch flags do not match the clear dispatch selection --harness $selected_harness${selected_model:+ --model $selected_model}${selected_effort:+ --effort $selected_effort} recorded in $DISPATCH_RECORD; pass those flags with no raw launch command, or record this task's override with --dispatch-override <reason>" >&2
     exit 1
   fi
+fi
+
+# Annotation reminder only: tier routing is configured but this dispatch named no
+# tier, so the supervisor's dispatch log would miss it. Never a refusal.
+if [ "$KIND" != secondmate ] && [ "$RELAUNCH" -eq 0 ] && [ "$TIER_SET" -eq 0 ] && [ -f "$CONFIG/crew-dispatch.json" ] \
+  && jq -e '(.rules // []) | length > 0' "$CONFIG/crew-dispatch.json" >/dev/null 2>&1; then
+  echo "warning: config/crew-dispatch.json has rules but task $ID was given no --tier <label>; pass --tier so the dispatch is annotated" >&2
 fi
 
 # muse, gemini, devin, commandcode, polytoken, cortex, and kiro are verified as CREWMATE/SCOUT adapters only. A secondmate is
@@ -7383,6 +7469,11 @@ preserve_relaunch_meta() {
   echo "model=${MODEL:-default}"
   echo "effort=${EFFORT:-default}"
   [ -z "$DISPATCH_OVERRIDE" ] || printf 'dispatch_override=%s\n' "$DISPATCH_OVERRIDE"
+  # Dispatch annotations (header); absent when not given, kept across a relaunch
+  # because preserve_relaunch_meta does not own these keys.
+  [ -z "$TIER" ] || printf 'tier=%s\n' "$TIER"
+  [ -z "$QUOTA_SUBSTITUTION" ] || printf 'quota_substitution=%s\n' "$QUOTA_SUBSTITUTION"
+  [ -z "$ESCALATED_FROM" ] || printf 'escalated_from=%s\n' "$ESCALATED_FROM"
   # The detected OpenCode major, recorded so fm-control sends the exit key this
   # agent's TUI understands. Written only when a version was resolved, so a
   # non-opencode or undetectable task record stays byte-identical.
@@ -8339,7 +8430,7 @@ SPAWN_ACCOUNT=
 [ -z "$WORKER_ACCOUNT_PROVIDER" ] || SPAWN_ACCOUNT="$SPAWN_ACCOUNT account_provider=$WORKER_ACCOUNT_PROVIDER"
 [ -z "$OMP_PROFILE_PIN" ] || SPAWN_ACCOUNT="$SPAWN_ACCOUNT omp_profile=$OMP_PROFILE_PIN"
 # Opt-in fleet activity ledger (docs/fleet-ledger.md); off costs one file test.
-[ ! -e "$CONFIG/fleet-ledger" ] || [ "$RELAUNCH" -eq 1 ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-fleet-ledger.sh" dispatched "$ID" "$KIND" "${PROJ_ABS##*/}" "$HARNESS" "$MODEL" || true
+[ ! -e "$CONFIG/fleet-ledger" ] || [ "$RELAUNCH" -eq 1 ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-fleet-ledger.sh" dispatched "$ID" "$KIND" "${PROJ_ABS##*/}" "$HARNESS" "$MODEL" "$TIER" "$QUOTA_SUBSTITUTION" "$ESCALATED_FROM" || true
 # Opt-in Herdr project groups (docs/herdr-backend.md "Project groups") tag the
 # new endpoint now rather than at the next watcher poll; off costs one file test.
 [ ! -e "$CONFIG/herdr-project-groups" ] || [ "$BACKEND" != herdr ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-herdr-groups.sh" sync "$ID" || true
