@@ -16,7 +16,8 @@
 #
 # For each accepted event, in order, before the cursor may advance:
 #   1. claim the request binding state/buzz/requests/<request_id>.json
-#      (state "staged"; an existing "offered" binding deduplicates the event)
+#      (state "staged"; any binding already offered, answered, followed up or
+#      dismissed deduplicates the event)
 #   2. publish the shared Relay inbox record state/x-inbox/<request_id>.json
 #      with platform "buzz" and the reply budget
 #   3. record the per-request reply context (state/x-context/<request_id>.json)
@@ -125,14 +126,16 @@ while IFS= read -r ev; do
   eid=$(printf '%s' "$ev" | jq -r '.event_id')
   rid=$(fm_buzz_request_id "$eid") || { FAILED=1; continue; }
   if binding=$(fm_buzz_binding_get "$rid"); then
-    [ "$(printf '%s' "$binding" | jq -r '.state')" = staged ] || continue
+    printf '%s' "$binding" \
+      | jq -e '.state == "staged" and .answer_posted != true and .followup_posted != true and .dismissed != true' \
+        >/dev/null || continue
   else
     printf '%s' "$ev" | jq -c --arg rid "$rid" --arg community "$BUZZ_COMMUNITY" \
-      --arg relay "$BUZZ_RELAY_URL" --arg bridge "$BUZZ_BRIDGE_PUBKEY" --arg channel "$BUZZ_CHANNEL" \
+      --arg bridge "$BUZZ_BRIDGE_PUBKEY" --arg channel "$BUZZ_CHANNEL" \
       --argjson max "$BUZZ_REPLY_MAX_CHARS" --argjson now "$NOW" '{
-        request_id:$rid, transport:"buzz", community:$community, relay_url:$relay,
+        request_id:$rid, community:$community,
         bridge_pubkey:$bridge, channel:$channel, event_id, parent, thread_root, signer,
-        source_class:"owner-direct", reply_max_chars:$max, created_at, recorded_at:$now,
+        reply_max_chars:$max, created_at, recorded_at:$now,
         state:"staged", answer_posted:false, followup_posted:false, dismissed:false}' > "$WORK/binding"
     fm_buzz_binding_claim "$rid" < "$WORK/binding"
     case $? in

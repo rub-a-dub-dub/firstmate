@@ -3099,6 +3099,7 @@ Each request gets one answer (the acknowledgement or the outcome) and one follow
 Replies are text only and split into at most three messages of the reply budget.
 A dismiss is a local terminal receipt and contacts nothing.
 `FMX_DRY_RUN` records the would-be reply to `state/x-outbox/<request_id>.json` without sending, exactly as for the other surfaces.
+A dry-run dismissal is recorded there too, and previews only: it leaves the binding undismissed and its reply context intact, so a real reply still works afterwards.
 
 Stage 1 limits: a send that fails ambiguously can duplicate a message if it is retried, and second-mate-routed promised finals are not available for Buzz requests.
 

@@ -459,6 +459,48 @@ test_disable_stops_intake_and_replies_until_enabled() {
   pass "disable stops intake and replies, stays off, and only enable turns the bridge back on"
 }
 
+test_dry_run_dismiss_previews_and_leaves_the_request_answerable() {
+  local home rid out rc
+  home=$(new_home drydismiss)
+  enable "$home"
+  set_events "$home" "$(sign_event "$OWNER_SK" $((NOW - 60)) 9 "$(mention_tags)" 'thanks!')"
+  poll "$home" >/dev/null
+  rid=$(only_rid "$home")
+  : > "$home/cli.log"
+  out=$(FMX_DRY_RUN=1 run_in "$home" "$ROOT/bin/fm-x-dismiss.sh" "$rid" 2>/dev/null); rc=$?
+  expect_code 0 "$rc" "dry-run dismiss"
+  assert_equals "$rid" "$out" "a dry-run dismiss echoes the request id"
+  assert_equals "buzz dismiss" "$(jq -r '[.platform, .endpoint] | join(" ")' "$home/state/x-outbox/$rid.json")" \
+    "a dry-run dismiss records the would-be dismiss"
+  assert_equals false "$(jq -r .dismissed "$home/state/buzz/requests/$rid.json")" \
+    "a dry-run dismiss must not record a terminal receipt"
+  assert_present "$home/state/x-context/$rid.json" "a dry-run dismiss must keep the reply context"
+  out=$(run_in "$home" "$ROOT/bin/fm-x-reply.sh" "$rid" - <<<"Answered after all."); rc=$?
+  expect_code 0 "$rc" "a real reply after a dry-run dismiss"
+  assert_equals "Answered after all." "$(jq -r .content "$home/sent.jsonl")" \
+    "the owner still gets the reply a previewed dismiss did not cancel"
+  pass "a dry-run Buzz dismiss previews without consuming the request"
+}
+
+test_poll_does_not_reannounce_a_handled_staged_request() {
+  local home rid out
+  home=$(new_home handled)
+  enable "$home"
+  set_events "$home" "$(sign_event "$OWNER_SK" $((NOW - 60)) 9 "$(mention_tags)" 'already handled')"
+  poll "$home" >/dev/null
+  rid=$(only_rid "$home")
+  # A poll cut between the wake and the "offered" mark leaves the binding staged;
+  # firstmate still answered it and cleared the inbox record.
+  jq -c '.state = "staged" | .answer_posted = true' "$home/state/buzz/requests/$rid.json" > "$home/handled.json"
+  mv "$home/handled.json" "$home/state/buzz/requests/$rid.json"
+  chmod 600 "$home/state/buzz/requests/$rid.json"
+  rm -f "$home/state/x-inbox/$rid.json"
+  out=$(poll "$home")
+  assert_not_contains "$out" "buzz-mention" "an answered request must not be announced again"
+  assert_absent "$home/state/x-inbox/$rid.json" "an answered request's inbox record must not be resurrected"
+  pass "a staged binding that was already answered is not re-staged or re-announced"
+}
+
 test_dismiss_is_local_and_final() {
   local home rid out rc
   home=$(new_home dismiss)
@@ -511,4 +553,6 @@ fm_test_run \
   test_reply_dry_run_records_without_sending \
   test_disable_stops_intake_and_replies_until_enabled \
   test_dismiss_is_local_and_final \
+  test_dry_run_dismiss_previews_and_leaves_the_request_answerable \
+  test_poll_does_not_reannounce_a_handled_staged_request \
   test_reply_refuses_a_binding_from_another_channel

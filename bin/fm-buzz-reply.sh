@@ -25,13 +25,16 @@
 # unreadable secret. The secret is read only for the signing call.
 #
 # --dismiss is a local terminal receipt for a skipped request: there is no Buzz
-# message to delete and no offline auto-reply to prevent, so it marks the binding
-# dismissed and drops the reply context without contacting the relay.
+# message to delete and no offline auto-reply to prevent, so a live dismiss marks
+# the binding dismissed and drops the reply context without contacting the relay.
 #
 # Dry-run: with FMX_DRY_RUN truthy (environment or .env, as for every Relay
 # reply), nothing is sent; the would-be messages are recorded to
 # state/x-outbox/<request_id>.json, a DRY RUN summary goes to stderr, the binding
 # budget advances exactly as a live post would, and stdout echoes the request id.
+# A dry-run --dismiss is a preview only: because a dismissal is terminal and no
+# relay re-offers a Buzz request, it records the would-be dismiss and leaves the
+# binding and the reply context alone, so a real reply still works afterwards.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -84,8 +87,21 @@ done
 command -v jq >/dev/null 2>&1 || { echo "fm-buzz-reply: jq not found" >&2; exit 1; }
 BINDING=$(fm_buzz_binding_get "$REQ") || { echo "fm-buzz-reply: no Buzz binding for $REQ; nothing sent" >&2; exit 1; }
 
+fmx_load_config
+
 if [ "$DISMISS" -eq 1 ]; then
   [ "$FOLLOWUP" -eq 0 ] && [ "${#ARGS[@]}" -eq 0 ] && [ -z "$RECEIPT_FILE" ] || { usage; exit 2; }
+  # A dismissal is terminal, so a dry run must only preview it: the binding and
+  # the reply context are left alone, and a real reply still works afterwards.
+  if [ -n "$FMX_DRY" ]; then
+    jq -cn --arg rid "$REQ" '{request_id:$rid, platform:"buzz", endpoint:"dismiss"}' \
+      | fmx_private_artifact_publish_stdin "$STATE/x-outbox" "$REQ.json" 600 \
+      || { echo "fm-buzz-reply: cannot write dry-run outbox: state/x-outbox/$REQ.json" >&2; exit 1; }
+    printf 'fm-buzz-reply: DRY RUN - would dismiss %s locally, nothing sent (recorded: state/x-outbox/%s.json)\n' \
+      "$REQ" "$REQ" >&2
+    printf '%s\n' "$REQ"
+    exit 0
+  fi
   printf '%s' "$BINDING" | jq -c '.dismissed = true' | fm_buzz_binding_put "$REQ" \
     || { echo "fm-buzz-reply: cannot record the dismissal for $REQ" >&2; exit 1; }
   fmx_context_registry_clear "$STATE" "$REQ"
@@ -149,7 +165,6 @@ record_budget() {
   fi
 }
 
-fmx_load_config
 if [ -n "$FMX_DRY" ]; then
   printf '%s' "$CHUNKS" | jq -c --arg rid "$REQ" --arg e "$ENDPOINT" --arg c "$BUZZ_CHANNEL" --arg p "$PARENT" \
     '{request_id:$rid, platform:"buzz", endpoint:$e, channel:$c, reply_to:$p, text:.[0]}
