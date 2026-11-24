@@ -17,8 +17,7 @@
 #
 # Settings live in the private, gitignored config/buzz-bridge.env (KEY=VALUE,
 # read with fmx_env_get). Environment variables never override them:
-#   BUZZ_RELAY_URL       relay base URL (https)
-#   BUZZ_COMMUNITY       community host; must equal the relay URL's host
+#   BUZZ_RELAY_URL       relay base URL (https); its host is the community
 #   BUZZ_CHANNEL         private Stream channel UUID
 #   BUZZ_OWNER_PUBKEY    owner pubkey, 64-char lowercase hex
 #   BUZZ_BRIDGE_PUBKEY   bridge pubkey, 64-char lowercase hex
@@ -71,7 +70,7 @@ fm_buzz_load_config() {
     FM_BUZZ_CONFIG_ERROR="config/buzz-bridge.env is missing"
     return 1
   fi
-  for key in BUZZ_RELAY_URL BUZZ_COMMUNITY BUZZ_CHANNEL BUZZ_OWNER_PUBKEY \
+  for key in BUZZ_RELAY_URL BUZZ_CHANNEL BUZZ_OWNER_PUBKEY \
     BUZZ_BRIDGE_PUBKEY BUZZ_BRIDGE_KEY_FILE BUZZ_CLI; do
     printf -v "$key" '%s' "$(fmx_env_get "$key" "$file")"
   done
@@ -85,10 +84,6 @@ fm_buzz_load_config() {
   case "$host" in
     ''|*[!A-Za-z0-9.-]*) FM_BUZZ_CONFIG_ERROR="BUZZ_RELAY_URL has no usable host"; return 1 ;;
   esac
-  if [ "$(printf '%s' "$BUZZ_COMMUNITY" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')" ]; then
-    FM_BUZZ_CONFIG_ERROR="BUZZ_COMMUNITY must equal the relay URL host"
-    return 1
-  fi
   BUZZ_COMMUNITY=$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')
   [[ "$BUZZ_CHANNEL" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] \
     || { FM_BUZZ_CONFIG_ERROR="BUZZ_CHANNEL must be a lowercase channel UUID"; return 1; }

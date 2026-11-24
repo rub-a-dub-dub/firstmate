@@ -3053,8 +3053,7 @@ While enabled, the registered check also makes this home require live supervisio
 
 | Key | Meaning |
 | --- | --- |
-| `BUZZ_RELAY_URL` | Relay base URL, `https://` |
-| `BUZZ_COMMUNITY` | Community host; must equal the relay URL's host, because Buzz derives the community from the host |
+| `BUZZ_RELAY_URL` | Relay base URL, `https://`; its host is the community, because Buzz derives the community from the host |
 | `BUZZ_CHANNEL` | The private Stream channel UUID |
 | `BUZZ_OWNER_PUBKEY` | The owner's pubkey as 64-character lowercase hex; only its signed messages are accepted |
 | `BUZZ_BRIDGE_PUBKEY` | The bridge identity's pubkey as 64-character lowercase hex; messages must `p`-tag it |

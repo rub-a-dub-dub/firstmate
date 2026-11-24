@@ -20,9 +20,12 @@
 #   2. publish the shared Relay inbox record state/x-inbox/<request_id>.json
 #      with platform "buzz" and the reply budget
 #   3. record the per-request reply context (state/x-context/<request_id>.json)
-#   4. mark the binding "offered" and wake with "buzz-mention <request_id>"
-# A staged binding whose inbox publish failed is retried on the next poll,
-# because the cursor only advances after a complete, fully persisted range.
+#   4. wake with "buzz-mention <request_id>", then mark the binding "offered"
+# Each wake is printed as its own request is persisted, so a poll cut short
+# mid-range still delivers what it finished. The wake precedes the "offered"
+# mark, which makes delivery at least once: a staged binding is retried, and
+# re-announced, on the next poll, because the cursor only advances after a
+# complete, fully persisted range.
 #
 # Diagnostics wake once per distinct message as "buzz-bridge-error <reason>":
 # configuration problems, an auth refusal, a malformed read, and a catch-up range
@@ -117,7 +120,6 @@ python3 -I "$SCRIPT_DIR/fm-buzz-verify.py" --owner "$BUZZ_OWNER_PUBKEY" --bridge
   || { emit_error_once "event verification failed to run"; exit 0; }
 
 FAILED=0
-NEW=()
 while IFS= read -r ev; do
   [ -n "$ev" ] || continue
   eid=$(printf '%s' "$ev" | jq -r '.event_id')
@@ -150,8 +152,8 @@ while IFS= read -r ev; do
     continue
   fi
   fmx_context_registry_set "$STATE" "$rid" buzz "$BUZZ_REPLY_MAX_CHARS" 2>/dev/null || true
+  printf 'buzz-mention %s\n' "$rid"
   printf '%s' "$binding" | jq -c '.state = "offered"' | fm_buzz_binding_put "$rid" || { FAILED=1; continue; }
-  NEW+=("$rid")
 done < <(jq -c '.[]' "$WORK/accepted")
 
 if [ "$FAILED" -eq 1 ]; then
@@ -169,11 +171,4 @@ else
   emit_error_once "catch-up range exceeds $((PAGE_LIMIT * MAX_PAGES)) messages; older messages in the window were not read"
 fi
 
-if [ "${#NEW[@]}" -gt 0 ]; then
-  if [ "${#NEW[@]}" -gt 1 ]; then
-    printf 'buzz-mention %s (+%s more)\n' "${NEW[${#NEW[@]}-1]}" "$((${#NEW[@]} - 1))"
-  else
-    printf 'buzz-mention %s\n' "${NEW[0]}"
-  fi
-fi
 exit 0

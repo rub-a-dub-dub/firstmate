@@ -131,15 +131,22 @@ def well_formed(ev):
 
 
 def thread_refs(ev):
-    """NIP-10 marked `e` tags: the root marker wins; a lone reply marker is a direct reply."""
-    root = reply = None
+    """NIP-10 `e` tags: the root marker wins, then a lone reply marker, then the
+    deprecated positional form, whose first `e` tag is the root. A marker this
+    does not thread on, such as "mention", is not a positional tag. An event
+    with no usable `e` tag is its own thread root."""
+    root = reply = positional = None
     for t in ev["tags"]:
-        if t[0] == "e" and len(t) >= 4 and HEX64.match(t[1]):
+        if t[0] != "e" or len(t) < 2 or not HEX64.match(t[1]):
+            continue
+        if len(t) >= 4:
             if t[3] == "root" and root is None:
                 root = t[1]
             elif t[3] == "reply" and reply is None:
                 reply = t[1]
-    return root or reply or ev["id"]
+        elif positional is None:
+            positional = t[1]
+    return root or reply or positional or ev["id"]
 
 
 def candidate(ev, owner, bridge, channel, floor):

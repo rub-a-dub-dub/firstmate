@@ -91,7 +91,6 @@ new_home() {
     "$BRIDGE" "$BRIDGE_SK" > "$home/bridge.key"
   cat > "$home/config/buzz-bridge.env" <<EOF
 BUZZ_RELAY_URL=https://relay.test.invalid
-BUZZ_COMMUNITY=relay.test.invalid
 BUZZ_CHANNEL=${2:-$CHANNEL}
 BUZZ_OWNER_PUBKEY=$OWNER
 BUZZ_BRIDGE_PUBKEY=$BRIDGE
@@ -126,6 +125,17 @@ enable() {
   run_in "$1" "$ROOT/bin/fm-buzz.sh" enable >/dev/null || fail "enable failed for $1"
 }
 
+# fm_buzz_rid_for <home> <inbox text>: the request id whose inbox record has that text.
+fm_buzz_rid_for() {
+  local f
+  for f in "$1"/state/x-inbox/buzz-*.json; do
+    [ -f "$f" ] || continue
+    [ "$(jq -r .text "$f")" = "$2" ] || continue
+    basename "$f" .json
+    return 0
+  done
+}
+
 only_rid() {
   local f
   for f in "$1"/state/x-inbox/buzz-*.json; do
@@ -153,18 +163,12 @@ test_disabled_by_default() {
 test_enable_validates_config() {
   local home out rc
   home=$(new_home enable-invalid)
-  sed -i.bak 's/^BUZZ_COMMUNITY=.*/BUZZ_COMMUNITY=other.test.invalid/' "$home/config/buzz-bridge.env"
-  out=$(run_in "$home" "$ROOT/bin/fm-buzz.sh" enable 2>&1); rc=$?
-  expect_code 1 "$rc" "enable with a mismatched community"
-  assert_contains "$out" "BUZZ_COMMUNITY must equal the relay URL host" "enable must name the config problem"
-  assert_absent "$home/config/buzz-bridge.enabled" "a refused enable must not turn the bridge on"
-  assert_absent "$home/state/buzz-bridge.check.sh" "a refused enable must not arm the watcher check"
-  mv "$home/config/buzz-bridge.env.bak" "$home/config/buzz-bridge.env"
   sed -i.bak 's#^BUZZ_RELAY_URL=.*#BUZZ_RELAY_URL=wss://relay.test.invalid#' "$home/config/buzz-bridge.env"
   out=$(run_in "$home" "$ROOT/bin/fm-buzz.sh" enable 2>&1); rc=$?
   expect_code 1 "$rc" "enable with a websocket relay URL"
   assert_contains "$out" "BUZZ_RELAY_URL must be an https URL" "only the relay's https endpoint is configurable"
   assert_absent "$home/config/buzz-bridge.enabled" "a refused enable must not turn the bridge on"
+  assert_absent "$home/state/buzz-bridge.check.sh" "a refused enable must not arm the watcher check"
   mv "$home/config/buzz-bridge.env.bak" "$home/config/buzz-bridge.env"
   sed -i.bak '/^BUZZ_CLI=/d' "$home/config/buzz-bridge.env"
   out=$(run_in "$home" "$ROOT/bin/fm-buzz.sh" enable 2>&1); rc=$?
@@ -191,6 +195,9 @@ test_enable_poll_ingests_verified_owner_mention() {
   assert_equals buzz "$(jq -r .platform "$home/state/x-inbox/$rid.json")" "the inbox route must be Buzz, not Discord or X"
   assert_equals '@Firstmate how is the fleet?' "$(jq -r .text "$home/state/x-inbox/$rid.json")" "the inbox text is the signed message"
   assert_equals "$OWNER" "$(jq -r .buzz.signer "$home/state/x-inbox/$rid.json")" "the inbox records the verified signer"
+  assert_equals "relay.test.invalid relay.test.invalid" \
+    "$(jq -r .buzz.community "$home/state/x-inbox/$rid.json") $(jq -r .community "$home/state/buzz/requests/$rid.json")" \
+    "the community is bound from the relay URL host"
   assert_equals "offered $eid $eid $OWNER" \
     "$(jq -r '[.state, .parent, .thread_root, .signer] | join(" ")' "$home/state/buzz/requests/$rid.json")" \
     "the binding records state, parent, thread root, and signer"
@@ -303,6 +310,57 @@ test_poll_refuses_a_key_file_that_is_not_hex() {
   assert_absent "$home/state/buzz/cursor.json" "an unusable secret must not advance the cursor"
   assert_equals "" "$(only_rid "$home")" "nothing may be ingested without a usable bridge key"
   pass "only the 64-hex secret the pinned buzz-admin emits is accepted"
+}
+
+test_poll_wakes_for_every_request_as_it_is_persisted() {
+  local home out first second
+  home=$(new_home perwake)
+  enable "$home"
+  set_events "$home" \
+    "$(sign_event "$OWNER_SK" $((NOW - 90)) 9 "$(mention_tags)" 'the first ask')" \
+    "$(sign_event "$OWNER_SK" $((NOW - 60)) 9 "$(mention_tags)" 'the second ask')"
+  out=$(poll "$home")
+  first=$(fm_buzz_rid_for "$home" 'the first ask')
+  second=$(fm_buzz_rid_for "$home" 'the second ask')
+  [ -n "$first" ] && [ -n "$second" ] || fail "both owner mentions must be staged"
+  assert_contains "$out" "buzz-mention $first" "the first request must be announced by id"
+  assert_contains "$out" "buzz-mention $second" "the second request must be announced by id"
+  assert_equals 2 "$(printf '%s\n' "$out" | grep -c '^buzz-mention ')" "one wake line per persisted request"
+  pass "every accepted request is announced by id as it is persisted, not once per poll"
+}
+
+test_poll_reannounces_a_staged_request() {
+  local home out rid
+  home=$(new_home restaged)
+  enable "$home"
+  set_events "$home" "$(sign_event "$OWNER_SK" $((NOW - 60)) 9 "$(mention_tags)" 'say it again')"
+  out=$(poll "$home")
+  rid=$(only_rid "$home")
+  assert_equals "buzz-mention $rid" "$out" "the first poll announces the request"
+  # A poll cut between the wake and the "offered" mark leaves the binding staged.
+  jq -c '.state = "staged"' "$home/state/buzz/requests/$rid.json" > "$home/restaged.json"
+  mv "$home/restaged.json" "$home/state/buzz/requests/$rid.json"
+  chmod 600 "$home/state/buzz/requests/$rid.json"
+  out=$(poll "$home")
+  assert_contains "$out" "buzz-mention $rid" "a staged request must be announced again"
+  assert_equals offered "$(jq -r .state "$home/state/buzz/requests/$rid.json")" "the retry marks it offered"
+  pass "a request left staged by an interrupted poll is re-announced, so a wake is never lost"
+}
+
+test_poll_binds_a_positional_thread_root() {
+  local home rid root
+  home=$(new_home positional)
+  enable "$home"
+  root=$(printf 'a%.0s' $(seq 64))
+  set_events "$home" "$(sign_event "$OWNER_SK" $((NOW - 60)) 9 \
+    "[[\"h\",\"$CHANNEL\"],[\"p\",\"$BRIDGE\"],[\"e\",\"$root\"]]" 'a reply inside a thread')"
+  poll "$home" >/dev/null
+  rid=$(only_rid "$home")
+  [ -n "$rid" ] || fail "a mention with a positional e tag must still be accepted"
+  assert_equals "$root $root" \
+    "$(jq -r .buzz.thread_root "$home/state/x-inbox/$rid.json") $(jq -r .thread_root "$home/state/buzz/requests/$rid.json")" \
+    "a deprecated positional e tag is the thread root, not the mention itself"
+  pass "the bound thread root honors the deprecated positional NIP-10 e tag form"
 }
 
 test_poll_holds_cursor_on_read_failure() {
@@ -445,6 +503,9 @@ fm_test_run \
   test_poll_delivers_the_newest_mention_past_the_page_budget \
   test_poll_keeps_a_real_event_beside_its_junk_signature_copy \
   test_poll_refuses_a_key_file_that_is_not_hex \
+  test_poll_wakes_for_every_request_as_it_is_persisted \
+  test_poll_reannounces_a_staged_request \
+  test_poll_binds_a_positional_thread_root \
   test_poll_holds_cursor_on_read_failure \
   test_reply_ack_and_one_final_in_thread \
   test_reply_dry_run_records_without_sending \
