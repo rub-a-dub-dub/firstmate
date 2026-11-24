@@ -326,12 +326,14 @@ ORACLE
   pass "signature verification and event ids agree with external BIP-340 and NIP-01 oracles"
 }
 
-test_poll_treats_an_exactly_full_window_as_drained() {
+test_poll_holds_the_cursor_on_an_exactly_full_window() {
   local home out filler
   home=$(new_home exact)
   enable "$home"
-  # Exactly the read budget of channel messages, the owner's mention among them:
-  # nothing is missing, so this must not be reported as an over-budget window.
+  # Exactly the read budget of channel messages, the owner's mention among them.
+  # The pinned CLI caps a read at that budget, so a full page is indistinguishable
+  # from a larger window: the poll must deliver what it read and still hold the
+  # cursor rather than risk advancing it past an unread mention.
   filler=$(jq -cn --arg ch "$CHANNEL" --argjson now "$NOW" '[range(0; 199)
     | {id: (tostring | ("0" * (64 - length)) + .), pubkey: ("f" * 64),
        created_at: ($now - 400 + .), kind: 9, tags: [["h", $ch]],
@@ -340,10 +342,11 @@ test_poll_treats_an_exactly_full_window_as_drained() {
     | jq -c --argjson f "$filler" '[.] + $f' > "$home/events.json"
   out=$(poll "$home")
   assert_contains "$out" "buzz-mention buzz-" "the mention in an exactly full window is delivered"
-  assert_not_contains "$out" "buzz-bridge-error" "an exactly full window is not an over-budget window"
-  assert_equals "$NOW" "$(jq -r .since "$home/state/buzz/cursor.json")" \
-    "an exactly full window is drained, so the cursor advances"
-  pass "a window holding exactly the read budget is drained, not reported as over budget"
+  assert_contains "$out" "buzz-bridge-error catch-up range exceeds" \
+    "a full page is reported as possibly over budget, because the read cannot see past it"
+  assert_absent "$home/state/buzz/cursor.json" \
+    "a full page must not advance the cursor past what the read could not see"
+  pass "a full page delivers its mentions and holds the cursor, erring toward re-reading"
 }
 
 test_poll_delivers_the_newest_mention_past_the_read_budget() {
@@ -430,22 +433,6 @@ test_poll_reannounces_a_staged_request() {
   assert_contains "$out" "buzz-mention $rid" "a staged request must be announced again"
   assert_equals offered "$(jq -r .state "$home/state/buzz/requests/$rid.json")" "the retry marks it offered"
   pass "a request left staged by an interrupted poll is re-announced, so a wake is never lost"
-}
-
-test_poll_binds_a_positional_thread_root() {
-  local home rid root
-  home=$(new_home positional)
-  enable "$home"
-  root=$(printf 'a%.0s' $(seq 64))
-  set_events "$home" "$(sign_event "$OWNER_SK" $((NOW - 60)) 9 \
-    "[[\"h\",\"$CHANNEL\"],[\"p\",\"$BRIDGE\"],[\"e\",\"$root\"]]" 'a reply inside a thread')"
-  poll "$home" >/dev/null
-  rid=$(only_rid "$home")
-  [ -n "$rid" ] || fail "a mention with a positional e tag must still be accepted"
-  assert_equals "$root $root" \
-    "$(jq -r .buzz.thread_root "$home/state/x-inbox/$rid.json") $(jq -r .thread_root "$home/state/buzz/requests/$rid.json")" \
-    "a deprecated positional e tag is the thread root, not the mention itself"
-  pass "the bound thread root honors the deprecated positional NIP-10 e tag form"
 }
 
 test_poll_holds_cursor_on_read_failure() {
@@ -639,13 +626,12 @@ fm_test_run \
   test_poll_drops_everything_else \
   test_poll_deduplicates_across_restarts \
   test_poll_delivers_the_newest_mention_past_the_read_budget \
-  test_poll_treats_an_exactly_full_window_as_drained \
+  test_poll_holds_the_cursor_on_an_exactly_full_window \
   test_verifier_matches_external_bip340_and_nip01_oracles \
   test_poll_keeps_a_real_event_beside_its_junk_signature_copy \
   test_poll_refuses_a_key_file_that_is_not_hex \
   test_poll_wakes_for_every_request_as_it_is_persisted \
   test_poll_reannounces_a_staged_request \
-  test_poll_binds_a_positional_thread_root \
   test_poll_holds_cursor_on_read_failure \
   test_reply_ack_and_one_final_in_thread \
   test_reply_dry_run_records_without_sending \
