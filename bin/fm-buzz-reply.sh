@@ -27,6 +27,9 @@
 # --dismiss is a local terminal receipt for a skipped request: there is no Buzz
 # message to delete and no offline auto-reply to prevent, so a live dismiss marks
 # the binding dismissed and drops the reply context without contacting the relay.
+# Because it is terminal it is still gated on the off switch: while the bridge is
+# disabled a dismiss records nothing, so a pending request survives the off
+# period answerable.
 #
 # Dry-run: with FMX_DRY_RUN truthy (environment or .env, as for every Relay
 # reply), nothing is sent; the would-be messages are recorded to
@@ -90,6 +93,7 @@ BINDING=$(fm_buzz_binding_get "$REQ") || { echo "fm-buzz-reply: no Buzz binding 
 fmx_load_config
 
 if [ "$DISMISS" -eq 1 ]; then
+  fm_buzz_enabled || { echo "fm-buzz-reply: the Buzz bridge is disabled; nothing recorded" >&2; exit 1; }
   [ "$FOLLOWUP" -eq 0 ] && [ "${#ARGS[@]}" -eq 0 ] && [ -z "$RECEIPT_FILE" ] || { usage; exit 2; }
   # A dismissal is terminal, so a dry run must only preview it: the binding and
   # the reply context are left alone, and a real reply still works afterwards.

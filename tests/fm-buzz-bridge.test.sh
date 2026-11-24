@@ -456,12 +456,24 @@ test_disable_stops_intake_and_replies_until_enabled() {
   expect_code 1 "$rc" "a dry-run reply while disabled"
   assert_equals "" "$(cat "$home/cli.log")" "a disabled bridge never calls the CLI for replies"
   assert_equals "" "$(cat "$home/sent.jsonl")" "nothing is sent while disabled"
+  run_in "$home" "$ROOT/bin/fm-x-dismiss.sh" "$rid" 2>/dev/null; rc=$?
+  expect_code 1 "$rc" "a dismiss while disabled"
+  FMX_DRY_RUN=1 run_in "$home" "$ROOT/bin/fm-x-dismiss.sh" "$rid" 2>/dev/null; rc=$?
+  expect_code 1 "$rc" "a dry-run dismiss while disabled"
+  assert_equals false "$(jq -r .dismissed "$home/state/buzz/requests/$rid.json")" \
+    "a dismiss while disabled must not record a terminal receipt"
+  assert_present "$home/state/x-context/$rid.json" "a dismiss while disabled must keep the reply context"
+  assert_absent "$home/state/x-outbox/$rid.json" "a dismiss while disabled must record no outbox preview"
   out=$(run_in "$home" "$ROOT/bin/fm-buzz.sh" disable); expect_code 0 $? "disable is idempotent"
   out=$(run_in "$home" "$ROOT/bin/fm-buzz.sh" status)
   assert_contains "$out" "bridge: disabled" "the bridge stays off"
   enable "$home"
   out=$(poll "$home")
   assert_contains "$out" "buzz-mention" "an explicit enable resumes intake"
+  out=$(run_in "$home" "$ROOT/bin/fm-x-reply.sh" "$rid" - <<<"answered after the off period"); rc=$?
+  expect_code 0 "$rc" "a reply to the pending request after re-enabling"
+  assert_equals 'answered after the off period' "$(jq -r .content "$home/sent.jsonl")" \
+    "a request pending across the off period survives answerable"
   pass "disable stops intake and replies, stays off, and only enable turns the bridge back on"
 }
 

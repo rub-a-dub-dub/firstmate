@@ -12,7 +12,9 @@
 # the durable cursor minus a 300-second overlap and never past the age limit
 # (BUZZ_MAX_AGE_SECS). One newest-first read is what keeps a sweep inside the
 # watcher's per-check timeout, because every distinct candidate it returns is
-# BIP-340 verified; the owner's latest mention is always inside it. The read is
+# BIP-340 verified. The read is scoped by channel and kind, not by author, so the
+# owner's latest mention is inside it unless more than PAGE_LIMIT channel
+# messages from any member are newer than that mention. The read is
 # filtered and verified by bin/fm-buzz-verify.py: only owner-signed kind-9
 # messages that p-tag the bridge key, with a valid event id and signature,
 # survive; everything else is dropped silently.

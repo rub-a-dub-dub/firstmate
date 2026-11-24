@@ -12,8 +12,10 @@ Signature verification is the one expensive stage and the relay is not trusted
 to have checked it, so every distinct candidate the caller hands over is
 verified. The input is what bounds the work: bin/fm-buzz-poll.sh makes one
 newest-first read of at most its page limit, so an over-budget window arrives
-capped at its newest events, the owner's latest mention is always inside it, and
-the whole sweep stays inside the watcher's per-check timeout.
+capped at its newest events and the whole sweep stays inside the watcher's
+per-check timeout. That read is scoped by channel and kind, not by author, so
+the owner's latest mention is inside it unless more than that page limit of
+channel messages are newer than the mention.
 
 The paging overlap re-delivers the same event, so candidates are deduplicated
 per distinct (id, sig) pair before the signature stage. The id alone would not
