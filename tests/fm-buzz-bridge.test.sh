@@ -250,6 +250,24 @@ test_poll_pages_backward_through_a_full_window() {
   pass "the poll pages backward across a full page and advances only after the window drains"
 }
 
+test_poll_bounds_signature_verification_per_run() {
+  local home out forged
+  home=$(new_home flood)
+  enable "$home"
+  # A relay that serves owner-attributed events it never verified: the ids
+  # recompute, so only the signature check can reject them.
+  forged=$(python3 -I "$SIGN" forge "$OWNER" $((NOW - 250)) 9 "$(mention_tags)" 'forged' 240)
+  sign_event "$OWNER_SK" $((NOW - 300)) 9 "$(mention_tags)" 'the one real request' \
+    | jq -c --argjson f "$forged" '[.] + $f' > "$home/events.json"
+  out=$(poll "$home")
+  assert_contains "$out" "buzz-mention buzz-" "the oldest genuine mention is still delivered"
+  assert_contains "$out" "buzz-bridge-error too many owner-signed candidates" \
+    "an over-budget candidate count is a diagnostic wake"
+  assert_absent "$home/state/buzz/cursor.json" "a truncated verification must not advance the cursor"
+  assert_equals 1 "$(only_rid "$home" | wc -l | tr -d ' ')" "only the signed event reaches the inbox"
+  pass "the poll verifies a bounded number of candidates per run and holds the cursor when it truncates"
+}
+
 test_poll_holds_cursor_on_read_failure() {
   local home out
   home=$(new_home hold)
@@ -387,6 +405,7 @@ fm_test_run \
   test_poll_drops_everything_else \
   test_poll_deduplicates_across_restarts \
   test_poll_pages_backward_through_a_full_window \
+  test_poll_bounds_signature_verification_per_run \
   test_poll_holds_cursor_on_read_failure \
   test_reply_ack_and_one_final_in_thread \
   test_reply_dry_run_records_without_sending \

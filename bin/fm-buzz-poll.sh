@@ -25,9 +25,9 @@
 # because the cursor only advances after a complete, fully persisted range.
 #
 # Diagnostics wake once per distinct message as "buzz-bridge-error <reason>":
-# configuration problems, an auth refusal, a malformed read, and a catch-up range
-# too large to drain in one poll. A relay or network failure is silent; the next
-# cycle retries it.
+# configuration problems, an auth refusal, a malformed read, a catch-up range too
+# large to drain in one poll, and more candidate owner events than one run may
+# verify. A relay or network failure is silent; the next cycle retries it.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -82,6 +82,7 @@ trap 'rm -rf "$WORK"' EXIT
 # its oldest timestamp and the verifier deduplicates the overlap by event id.
 UNTIL=$NOW
 COMPLETE=0
+TRUNCATED=0
 page=0
 : > "$WORK/pages"
 while [ "$page" -lt "$MAX_PAGES" ]; do
@@ -113,8 +114,13 @@ done
 jq -s 'add // []' "$WORK/pages" > "$WORK/all" 2>/dev/null \
   || { emit_error_once "buzz CLI returned a malformed read"; exit 0; }
 python3 -I "$SCRIPT_DIR/fm-buzz-verify.py" --owner "$BUZZ_OWNER_PUBKEY" --bridge "$BUZZ_BRIDGE_PUBKEY" \
-  --channel "$BUZZ_CHANNEL" --floor "$FLOOR" < "$WORK/all" > "$WORK/accepted" 2>/dev/null \
-  || { emit_error_once "event verification failed to run"; exit 0; }
+  --channel "$BUZZ_CHANNEL" --floor "$FLOOR" < "$WORK/all" > "$WORK/accepted" 2>/dev/null
+vrc=$?
+case "$vrc" in
+  0) ;;
+  3) COMPLETE=0; TRUNCATED=1 ;;
+  *) emit_error_once "event verification failed to run"; exit 0 ;;
+esac
 
 FAILED=0
 NEW=()
@@ -163,6 +169,10 @@ elif [ "$COMPLETE" -eq 1 ]; then
   else
     emit_error_once "cannot advance the poll cursor"
   fi
+elif [ "$TRUNCATED" -eq 1 ]; then
+  # shortcut: the oldest candidates are still delivered, but the cursor holds
+  # until the candidate count falls under the verifier's per-run budget.
+  emit_error_once "too many owner-signed candidates to verify in one poll; newer messages in the window were not read"
 else
   # shortcut: the newest pages are still delivered, but the cursor holds until
   # the uncovered range falls under the page budget or behind the age limit.

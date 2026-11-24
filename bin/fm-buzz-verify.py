@@ -8,6 +8,12 @@ Reads a JSON array of Nostr events on stdin (the pinned Buzz CLI's
 direct owner mentions, oldest first:
   {event_id, created_at, content, signer, parent, thread_root}
 
+Signature verification is the one expensive stage and the relay is not trusted
+to have checked it, so at most VERIFY_LIMIT candidates are verified per run,
+oldest first. Exit 3 means the run was truncated that way: the printed events
+are still complete and verified, but the caller must not treat the read as
+drained (bin/fm-buzz-poll.sh holds its cursor).
+
 An event is accepted only when ALL of these hold; anything else is dropped
 silently, because the bridge's contract is "drop everything else":
   - kind 9 (Stream message); edits (40003), DMs, gift wraps and other kinds drop
@@ -37,6 +43,9 @@ G = (
 )
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 HEX128 = re.compile(r"^[0-9a-f]{128}$")
+# One owner cannot plausibly mention the bridge this often inside one poll
+# window, and this many verifications stay far inside the watcher check budget.
+VERIFY_LIMIT = 200
 
 
 def point_add(a, b):
@@ -47,9 +56,9 @@ def point_add(a, b):
     if a[0] == b[0] and a[1] != b[1]:
         return None
     if a == b:
-        lam = 3 * a[0] * a[0] * pow(2 * a[1], P - 2, P) % P
+        lam = 3 * a[0] * a[0] * pow(2 * a[1], -1, P) % P
     else:
-        lam = (b[1] - a[1]) * pow(b[0] - a[0], P - 2, P) % P
+        lam = (b[1] - a[1]) * pow(b[0] - a[0], -1, P) % P
     x = (lam * lam - a[0] - b[0]) % P
     return (x, (lam * (a[0] - x) - a[1]) % P)
 
@@ -130,7 +139,8 @@ def thread_refs(ev):
     return root or reply or ev["id"]
 
 
-def accept(ev, owner, bridge, channel, floor):
+def candidate(ev, owner, bridge, channel, floor):
+    """Every acceptance check except the signature, so the cheap ones bound the dear one."""
     if not well_formed(ev) or ev["kind"] != 9:
         return False
     if ev["pubkey"] != owner or ev["pubkey"] == bridge or ev["created_at"] < floor:
@@ -143,8 +153,10 @@ def accept(ev, owner, bridge, channel, floor):
         return False
     if any(t[0] == "imeta" for t in tags) or not ev["content"].strip():
         return False
-    if event_id(ev) != ev["id"]:
-        return False
+    return event_id(ev) == ev["id"]
+
+
+def signed(ev):
     return schnorr_verify(bytes.fromhex(ev["id"]), bytes.fromhex(ev["pubkey"]), bytes.fromhex(ev["sig"]))
 
 
@@ -162,10 +174,16 @@ def main(argv):
     if not isinstance(events, list):
         print("fm-buzz-verify: input is not an event array", file=sys.stderr)
         return 1
+    candidates = [
+        ev for ev in events
+        if candidate(ev, args["--owner"], args["--bridge"], args["--channel"], floor)
+    ]
+    candidates.sort(key=lambda ev: (ev["created_at"], ev["id"]))
+    truncated = len(candidates) > VERIFY_LIMIT
     seen = set()
     out = []
-    for ev in events:
-        if not accept(ev, args["--owner"], args["--bridge"], args["--channel"], floor) or ev["id"] in seen:
+    for ev in candidates[:VERIFY_LIMIT]:
+        if ev["id"] in seen or not signed(ev):
             continue
         seen.add(ev["id"])
         out.append({
@@ -176,10 +194,9 @@ def main(argv):
             "parent": ev["id"],
             "thread_root": thread_refs(ev),
         })
-    out.sort(key=lambda r: (r["created_at"], r["event_id"]))
     json.dump(out, sys.stdout, ensure_ascii=False)
     sys.stdout.write("\n")
-    return 0
+    return 3 if truncated else 0
 
 
 if __name__ == "__main__":

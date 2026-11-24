@@ -3,6 +3,12 @@
 
 Usage: buzz-sign.py pubkey <secret-hex>
        buzz-sign.py event <secret-hex> <created_at> <kind> <tags-json> <content>
+       buzz-sign.py forge <pubkey-hex> <created_at> <kind> <tags-json> <content> <count>
+
+`forge` prints a JSON array of <count> events attributed to a pubkey whose secret
+the fixture does not hold: the ids recompute, so they pass every cheap acceptance
+check, but the signatures are junk. It stands in for a relay that serves events it
+never verified.
 
 Reuses the curve arithmetic in bin/fm-buzz-verify.py and adds BIP-340 signing
 with zero auxiliary randomness, so fixtures are deterministic. Never used with a
@@ -40,6 +46,21 @@ def sign(d0, msg):
 
 
 def main(argv):
+    if argv[0] == "forge":
+        out = []
+        for i in range(int(argv[6])):
+            ev = {
+                "pubkey": argv[1],
+                "created_at": int(argv[2]) + i,
+                "kind": int(argv[3]),
+                "tags": json.loads(argv[4]),
+                "content": "%s %d" % (argv[5], i),
+            }
+            ev["id"] = v.event_id(ev)
+            ev["sig"] = "0" * 128
+            out.append(ev)
+        print(json.dumps(out, ensure_ascii=False))
+        return 0
     d = int(argv[1], 16)
     if argv[0] == "pubkey":
         print(xonly(d).hex())
