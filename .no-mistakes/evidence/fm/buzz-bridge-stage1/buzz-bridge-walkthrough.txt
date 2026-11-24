@@ -1,0 +1,213 @@
+Stage 1 Buzz bridge - the owner's front door to the existing firstmate session
+----------------------------------------------------------------------------
+owner  pubkey  4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa
+bridge pubkey  466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27
+channel        0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b
+community      buzz.fleet.example (self-hosted relay)
+
+
+===== 1. A fresh home: the bridge is off, and an off bridge never touches the relay =====
+[clock 08:00:00Z]
+
+$ bin/fm-buzz.sh status
+bridge: disabled
+watcher check: not registered
+config: ok (community buzz.fleet.example, channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b, owner 4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa, bridge 466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27)
+cursor: none
+pending requests: 0
+
+The owner mentions Firstmate anyway, before turning the bridge on:
+  07:00:00Z  owner      @Firstmate are you there?
+
+$ bin/fm-buzz-poll.sh   # what a watcher sweep would run
+(exit 0, no output)
+buzz CLI calls made:    0
+inbox requests staged:  0
+
+
+===== 2. The owner turns the bridge on =====
+[clock 08:00:00Z]
+
+$ bin/fm-buzz.sh enable
+buzz bridge: enabled for channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b on buzz.fleet.example; the watcher polls it on its next check sweep
+
+$ bin/fm-buzz.sh status
+bridge: enabled
+watcher check: registered
+config: ok (community buzz.fleet.example, channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b, owner 4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa, bridge 466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27)
+cursor: 1800000000
+pending requests: 0
+
+
+===== 3. The owner @mentions Firstmate in the private Buzz channel =====
+[clock 08:01:30Z]
+  08:00:45Z  owner      @Firstmate the staging deploy looks wrong - can you take a look?
+  (signed kind-9 channel message, event id a67f4713d6bf372547cdb5b4d673edfaab31c97c72ff3a0c028ea681fbb14ef4)
+
+
+===== 4. A watcher sweep runs the check that enable registered: the bridge poll =====
+[clock 08:01:30Z]
+
+$ state/buzz-bridge.check.sh   # the watcher execs this, capped at FM_CHECK_TIMEOUT
+buzz-mention buzz-b06d47b1938c95235958a55dfbe667860bc17643
+
+^ that line is the wake firstmate receives, naming the request id.
+
+-- the one scoped, NIP-98-signed read the bridge made (secret never in argv) --
+  argv=--relay https://buzz.fleet.example --format json messages get --channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b --kinds 9 --since 1800000000 --before 1800000090 --limit 200 key=ok
+
+-- state/x-inbox/buzz-b06d47b1938c95235958a55dfbe667860bc17643.json : the SAME inbox the X/Discord Relay surface uses --
+  {
+    "request_id": "buzz-b06d47b1938c95235958a55dfbe667860bc17643",
+    "platform": "buzz",
+    "reply_platform": "buzz",
+    "reply_max_chars": 1000,
+    "text": "@Firstmate the staging deploy looks wrong - can you take a look?",
+    "in_reply_to": null,
+    "buzz": {
+      "community": "buzz.fleet.example",
+      "channel": "0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b",
+      "event_id": "a67f4713d6bf372547cdb5b4d673edfaab31c97c72ff3a0c028ea681fbb14ef4",
+      "thread_root": "a67f4713d6bf372547cdb5b4d673edfaab31c97c72ff3a0c028ea681fbb14ef4",
+      "signer": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+      "verified": "owner-signature",
+      "created_at": 1800000045
+    }
+  }
+
+-- state/buzz/requests/buzz-b06d47b1938c95235958a55dfbe667860bc17643.json : the ingress binding, written before the cursor moved --
+  {
+    "request_id": "buzz-b06d47b1938c95235958a55dfbe667860bc17643",
+    "community": "buzz.fleet.example",
+    "bridge_pubkey": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+    "channel": "0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b",
+    "event_id": "a67f4713d6bf372547cdb5b4d673edfaab31c97c72ff3a0c028ea681fbb14ef4",
+    "parent": "a67f4713d6bf372547cdb5b4d673edfaab31c97c72ff3a0c028ea681fbb14ef4",
+    "thread_root": "a67f4713d6bf372547cdb5b4d673edfaab31c97c72ff3a0c028ea681fbb14ef4",
+    "signer": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+    "reply_max_chars": 1000,
+    "created_at": 1800000045,
+    "recorded_at": 1800000090,
+    "state": "offered",
+    "answer_posted": false,
+    "followup_posted": false,
+    "dismissed": false
+  }
+
+
+===== 5. Firstmate acknowledges in the owner's thread, through the shared Relay command =====
+[clock 08:02:00Z]
+
+$ bin/fm-x-reply.sh buzz-b06d47b1938c95235958a55dfbe667860bc17643 -   <<< 'On it - pulling the staging deploy logs now.'
+buzz-b06d47b1938c95235958a55dfbe667860bc17643
+
+-- what the bridge sent, signed by the bridge key, natively in the thread --
+  {
+    "channel": "0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b",
+    "reply_to": "a67f4713d6bf372547cdb5b4d673edfaab31c97c72ff3a0c028ea681fbb14ef4",
+    "content": "On it - pulling the staging deploy logs now."
+  }
+  reply_to is the owner original (a67f4713d6bf...): yes
+
+
+===== 6. The request runs the normal fleet lifecycle, then the outcome lands in the thread =====
+[clock 08:15:00Z]
+
+$ bin/fm-x-link.sh task-deploy buzz-b06d47b1938c95235958a55dfbe667860bc17643   # bind the Buzz request to a fleet task
+linked
+  x_request=buzz-b06d47b1938c95235958a55dfbe667860bc17643
+  x_request_ts=1800000900
+  x_platform=buzz
+
+$ bin/fm-x-followup.sh task-deploy --final -   <<< 'Fixed: ...'
+buzz-b06d47b1938c95235958a55dfbe667860bc17643
+
+messages the bridge sent for this request: 2 (one ack, one final - the budget)
+
+$ bin/fm-x-reply.sh buzz-b06d47b1938c95235958a55dfbe667860bc17643 --followup -   <<< 'one more thing'   # past the final
+  fm-buzz-reply: the final follow-up for buzz-b06d47b1938c95235958a55dfbe667860bc17643 was already posted
+(nothing sent past the ack and final)
+
+  #firstmate-ops - private Stream channel on buzz.fleet.example
+  ------------------------------------------------------------
+  07:00:00Z  owner      @Firstmate are you there?
+  08:00:45Z  owner      @Firstmate the staging deploy looks wrong - can you take a look?
+  --- replies the bridge posted into those threads ---
+  Firstmate  -> reply_to a67f4713d6bf...  On it - pulling the staging deploy logs now.
+  Firstmate  -> reply_to a67f4713d6bf...  Fixed: staging was pinned to the old image. Redeployed and verified, PR #4821.
+
+
+===== 7. The approval condition: the owner can turn the bridge off =====
+[clock 08:26:40Z]
+
+$ bin/fm-buzz.sh disable
+buzz bridge: disabled; no polling and no replies until bin/fm-buzz.sh enable
+
+$ bin/fm-buzz.sh status
+bridge: disabled
+watcher check: not registered
+config: ok (community buzz.fleet.example, channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b, owner 4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa, bridge 466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27)
+cursor: 1800000090
+pending requests: 1
+
+
+===== 8. The owner messages while the bridge is off; nothing happens =====
+[clock 08:29:10Z]
+  08:28:20Z  owner      @Firstmate ship the hotfix
+
+The watcher check itself is gone - disable retired it:
+
+$ ls state/buzz-bridge.check.sh
+ls:   state/buzz-bridge.check.sh: No such file or directory
+
+$ bin/fm-buzz-poll.sh   # run the poll directly anyway
+(no output; buzz CLI calls this sweep: 0)
+
+$ bin/fm-x-reply.sh buzz-b06d47b1938c95235958a55dfbe667860bc17643 -   <<< 'still here?'   # a reply while off
+  fm-buzz-reply: the Buzz bridge is disabled; nothing sent
+messages sent while off: 0 (total still 2)
+
+
+===== 9. Only an explicit enable turns it back on, and it reads forward only =====
+[clock 08:30:00Z]
+
+$ bin/fm-buzz.sh enable
+buzz bridge: enabled for channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b on buzz.fleet.example; the watcher polls it on its next check sweep
+cursor seeded at the enable moment: {"since":1800001800,"fence":1800001800}
+
+$ state/buzz-bridge.check.sh   # first sweep after re-enable
+(no wake: the message sent while off is behind the enable fence)
+
+The owner messages again, now that the bridge is back on:
+  08:31:00Z  owner      @Firstmate status report please
+
+$ state/buzz-bridge.check.sh   # second sweep - where a look-back that outlived the fence would reach into the off period
+buzz-mention buzz-e5c0476b005f444f0cc924da87d77479acbf4480
+cursor: {"since":1800001900,"fence":1800001800}
+
+What the re-enabled bridge has in the inbox:
+  buzz-b06d47b1938c95235958a55dfbe667860bc17643  @Firstmate the staging deploy looks wrong - can you take a look?
+  buzz-e5c0476b005f444f0cc924da87d77479acbf4480  @Firstmate status report please
+
+"ship the hotfix" (sent while off) ever staged?   no
+"ship the hotfix" ever answered in the channel?   no
+
+
+===== 10. The post-re-enable mention is answered normally =====
+[clock 08:32:30Z]
+
+$ bin/fm-x-reply.sh buzz-e5c0476b005f444f0cc924da87d77479acbf4480 -   <<< 'All green: ...'
+buzz-e5c0476b005f444f0cc924da87d77479acbf4480
+
+  #firstmate-ops - private Stream channel on buzz.fleet.example
+  ------------------------------------------------------------
+  07:00:00Z  owner      @Firstmate are you there?
+  08:00:45Z  owner      @Firstmate the staging deploy looks wrong - can you take a look?
+  08:28:20Z  owner      @Firstmate ship the hotfix
+  08:31:00Z  owner      @Firstmate status report please
+  --- replies the bridge posted into those threads ---
+  Firstmate  -> reply_to a67f4713d6bf...  On it - pulling the staging deploy logs now.
+  Firstmate  -> reply_to a67f4713d6bf...  Fixed: staging was pinned to the old image. Redeployed and verified, PR #4821.
+  Firstmate  -> reply_to a85baa9f5fd1...  All green: 3 tasks shipped, none blocked.
+
+Done.

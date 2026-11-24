@@ -1,0 +1,41 @@
+Off-switch regression: an owner mention sent while the bridge was off
+=====================================================================
+
+Same walkthrough script (buzz-bridge-walkthrough.sh), same frozen timeline:
+  08:26:40Z  owner disables the bridge
+  08:28:20Z  owner posts "@Firstmate ship the hotfix" while it is OFF
+  08:30:00Z  owner runs `fm-buzz.sh enable`
+  08:30:30Z  watcher sweep #1 after re-enable
+  08:31:00Z  owner posts "@Firstmate status report please"
+  08:31:40Z  watcher sweep #2   <- the 300s read look-back reaches here
+
+--- BEFORE (727ce7c2, parent of the fence fix) -----------------------
+$ state/buzz-bridge.check.sh   # second sweep - where a look-back that outlived the fence would reach into the off period
+buzz-mention buzz-a5316a76e3e6b5bcc708a84d568fc7b4da3647cf
+buzz-mention buzz-e5c0476b005f444f0cc924da87d77479acbf4480
+cursor: {"since":1800001900}
+
+What the re-enabled bridge has in the inbox:
+  buzz-a5316a76e3e6b5bcc708a84d568fc7b4da3647cf  @Firstmate ship the hotfix
+  buzz-b06d47b1938c95235958a55dfbe667860bc17643  @Firstmate the staging deploy looks wrong - can you take a look?
+  buzz-e5c0476b005f444f0cc924da87d77479acbf4480  @Firstmate status report please
+
+"ship the hotfix" (sent while off) ever staged?   YES - LEAK
+"ship the hotfix" ever answered in the channel?   no
+
+--- AFTER (579aaae6, target commit) ----------------------------------
+$ state/buzz-bridge.check.sh   # second sweep - where a look-back that outlived the fence would reach into the off period
+buzz-mention buzz-e5c0476b005f444f0cc924da87d77479acbf4480
+cursor: {"since":1800001900,"fence":1800001800}
+
+What the re-enabled bridge has in the inbox:
+  buzz-b06d47b1938c95235958a55dfbe667860bc17643  @Firstmate the staging deploy looks wrong - can you take a look?
+  buzz-e5c0476b005f444f0cc924da87d77479acbf4480  @Firstmate status report please
+
+"ship the hotfix" (sent while off) ever staged?   no
+"ship the hotfix" ever answered in the channel?   no
+
+--- the repo test that pins it ---------------------------------------
+$ bash tests/fm-buzz-bridge.test.sh   # test_disable_stops_intake_and_replies_until_enabled
+  on 727ce7c2:  not ok - only the mention sent after the enable may wake, not the off-period one (expected '1', got '2')
+  on 579aaae6:  ok - disable stops intake and replies, enabling reads forward only, and only enable turns the bridge back on
