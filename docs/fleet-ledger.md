@@ -37,6 +37,7 @@ Readers must ignore members and events they do not recognize, so later versions 
 
 `task.dispatched` members: `kind` is `ship`, `scout`, or `secondmate`; `project` is the project directory name, or `null` for a remote second mate; `harness` names the agent tool; `model` is the requested model, or `null` for the tool's default.
 The optional `tier`, `quota_substitution`, and `escalated_from` members carry the dispatch annotations a ship or scout spawn was given and are absent when it was given none.
+Each is capped at 2000 characters, the same bound `text` carries; a longer value is truncated, never refused.
 
 `task.pr_ready` members: `pr` is the PR's full URL.
 It is written each time firstmate records a PR for the task, so registering a replacement PR, or the same PR again, writes another record; recording the PR again as part of merging it writes none.

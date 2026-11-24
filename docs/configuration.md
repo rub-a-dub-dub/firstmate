@@ -2038,7 +2038,7 @@ Firstmate resolves the rule's profile object or array under `AGENTS.md` section 
 
 **Dispatch annotations**
 
-A ship or scout spawn also accepts the optional `--tier <label>`, `--quota-substitution <text>`, and `--escalated-from <task-or-profile>` annotations, single-line text.
+A ship or scout spawn also accepts the optional `--tier <label>`, `--quota-substitution <text>`, and `--escalated-from <task-or-profile>` annotations, single-line text; an over-long value is truncated to 2000 characters rather than refused.
 Each given value is recorded in `state/<id>.meta` as `tier=`, `quota_substitution=`, and `escalated_from=` and in the task's `task.dispatched` ledger event (see [`fleet-ledger.md`](fleet-ledger.md)), and a relaunch keeps it.
 They change no harness, model, effort, or profile resolution and do not count as launch flags for `--dispatch-override`.
 When `config/crew-dispatch.json` has rules and a fresh ship or scout spawn passes no `--tier`, `fm-spawn.sh` prints one warning line to stderr and continues.

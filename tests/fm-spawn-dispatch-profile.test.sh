@@ -3077,25 +3077,26 @@ test_dispatch_annotations_apply_to_scouts() {
   pass "a scout spawn records its dispatch annotations"
 }
 
-test_long_dispatch_annotation_records_in_full() {
-  local rec id out status meta ledger value
+test_long_dispatch_annotation_is_truncated_not_refused() {
+  local rec id out status meta ledger value bounded
   id=annot-long-z1
   rec=$(make_spawn_case annot-long claude "$id")
   read_case_record "$rec"
   : > "$HOME_DIR/config/fleet-ledger"
   value=$(printf 'x%.0s' $(seq 1 3000))
+  bounded=${value:0:2000}
 
   out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" "--tier=$value")
   status=$?
-  expect_code 0 "$status" "a long single-line annotation should spawn: $out"
+  expect_code 0 "$status" "an over-long single-line annotation should spawn: $out"
   meta="$HOME_DIR/state/$id.meta"
-  [ "$(grep -Fxc "tier=$value" "$meta")" -eq 1 ] \
-    || fail "meta did not hold the long tier as exactly one full line"
+  [ "$(grep -Fxc "tier=$bounded" "$meta")" -eq 1 ] \
+    || fail "meta did not hold the tier truncated to 2000 characters on exactly one line"
   ledger="$HOME_DIR/state/fleet-ledger.jsonl"
-  jq -e --arg id "$id" --arg tier "$value" \
+  jq -e --arg id "$id" --arg tier "$bounded" \
     'select(.event == "task.dispatched" and .task == $id) | .tier == $tier' "$ledger" >/dev/null \
-    || fail "task.dispatched event did not carry the long tier in full"
-  pass "a long single-line annotation spawns and is recorded in full"
+    || fail "task.dispatched event did not carry the tier truncated to 2000 characters"
+  pass "an over-long single-line annotation spawns and is truncated to 2000 characters"
 }
 
 test_dispatch_annotation_bad_values_are_refused() {
@@ -3312,7 +3313,7 @@ test_active_dispatch_profile_does_not_block_secondmate_launch
 test_dispatch_annotations_land_in_meta_and_ledger
 test_dispatch_annotations_are_absent_when_not_given
 test_dispatch_annotations_apply_to_scouts
-test_long_dispatch_annotation_records_in_full
+test_long_dispatch_annotation_is_truncated_not_refused
 test_dispatch_annotation_bad_values_are_refused
 test_dispatch_annotations_are_refused_for_secondmates
 test_missing_tier_warns_only_when_dispatch_rules_exist

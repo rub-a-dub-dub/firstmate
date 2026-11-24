@@ -210,9 +210,9 @@ case "$cmd" in
     rm -f -- "$(offset_path "$2")"
     append task.dispatched "$2" \
       '{kind: ($kind | n), project: ($project | n), harness: ($harness | n), model: ($model | n)}
-        + (if $tier != "" then {tier: $tier} else {} end)
-        + (if $quota != "" then {quota_substitution: $quota} else {} end)
-        + (if $from != "" then {escalated_from: $from} else {} end)' \
+        + (if $tier != "" then {tier: $tier[0:'"$TEXT_MAX_CHARS"']} else {} end)
+        + (if $quota != "" then {quota_substitution: $quota[0:'"$TEXT_MAX_CHARS"']} else {} end)
+        + (if $from != "" then {escalated_from: $from[0:'"$TEXT_MAX_CHARS"']} else {} end)' \
       --arg kind "$3" --arg project "$4" --arg harness "$5" --arg model "$6" \
       --arg tier "${7:-}" --arg quota "${8:-}" --arg from "${9:-}" || rc=1
     ;;

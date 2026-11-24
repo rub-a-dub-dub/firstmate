@@ -62,11 +62,12 @@
 #   nothing changes.
 #   --tier, --quota-substitution, and --escalated-from are optional dispatch
 #   annotations for a ship or scout spawn: single-line free text (no control
-#   characters) recording the routing tier label, any quota-driven
-#   substitution, and the task or profile this dispatch escalated from. Each
-#   given value is written to state/<id>.meta as tier=,
-#   quota_substitution=, and escalated_from=, and to the task.dispatched ledger
-#   event as optional members; absent when not given. They are annotations only:
+#   characters; an over-long value is truncated to 2000 characters rather than
+#   refused) recording the routing tier label, any quota-driven substitution,
+#   and the task or profile this dispatch escalated from. Each given value is
+#   written to state/<id>.meta as tier=, quota_substitution=, and
+#   escalated_from=, and to the task.dispatched ledger event as optional
+#   members; absent when not given. They are annotations only:
 #   they never change the harness, model, effort, profile resolution, or the
 #   --dispatch-override requirement. A fresh ship or scout spawn given no --tier
 #   while config/crew-dispatch.json has rules prints one warning line to stderr
@@ -1269,7 +1270,10 @@ fi
 }
 # Dispatch annotations are single-line free text written into the meta key=value
 # file and a JSON ledger line, so a control character (a newline included) is
-# refused here, before anything is published.
+# refused here, before anything is published. Length is a bound rather than a
+# refusal: an over-long value is truncated to the same 2000 characters the
+# ledger's own free text carries.
+ANNOTATION_MAX_CHARS=2000
 validate_annotation() { # <flag> <set> <value>
   [ "$2" -eq 0 ] || [ -n "$3" ] || {
     echo "error: --$1 requires a non-empty value" >&2
@@ -1284,6 +1288,9 @@ validate_annotation() { # <flag> <set> <value>
 validate_annotation tier "$TIER_SET" "$TIER"
 validate_annotation quota-substitution "$QUOTA_SUBSTITUTION_SET" "$QUOTA_SUBSTITUTION"
 validate_annotation escalated-from "$ESCALATED_FROM_SET" "$ESCALATED_FROM"
+TIER=${TIER:0:$ANNOTATION_MAX_CHARS}
+QUOTA_SUBSTITUTION=${QUOTA_SUBSTITUTION:0:$ANNOTATION_MAX_CHARS}
+ESCALATED_FROM=${ESCALATED_FROM:0:$ANNOTATION_MAX_CHARS}
 [ "$TIER_SET$QUOTA_SUBSTITUTION_SET$ESCALATED_FROM_SET" = 000 ] || [ "$KIND" != secondmate ] || {
   echo "error: --tier, --quota-substitution, and --escalated-from annotate ship and scout dispatches, never a secondmate" >&2
   exit 1
@@ -3364,6 +3371,8 @@ fi
 
 # Annotation reminder only: tier routing is configured but this dispatch named no
 # tier, so the supervisor's dispatch log would miss it. Never a refusal.
+# Tier routing lives only in .rules, so this gate is deliberately narrower than
+# the file-exists checks nearby: a default-only crew-dispatch.json has no tiers.
 if [ "$KIND" != secondmate ] && [ "$RELAUNCH" -eq 0 ] && [ "$TIER_SET" -eq 0 ] && [ -f "$CONFIG/crew-dispatch.json" ] \
   && jq -e '(.rules // []) | length > 0' "$CONFIG/crew-dispatch.json" >/dev/null 2>&1; then
   echo "warning: config/crew-dispatch.json has rules but task $ID was given no --tier <label>; pass --tier so the dispatch is annotated" >&2
