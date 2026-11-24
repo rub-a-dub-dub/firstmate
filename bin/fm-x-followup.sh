@@ -266,7 +266,7 @@ fi
 # recorded reply-platform context through.
 declare -a REPLY_ENV=()
 case "$REQ_PLATFORM" in
-  discord|x) REPLY_ENV+=("FMX_REPLY_PLATFORM=$REQ_PLATFORM") ;;
+  discord|x|buzz) REPLY_ENV+=("FMX_REPLY_PLATFORM=$REQ_PLATFORM") ;;
 esac
 case "$REQ_REPLY_MAX" in
   ''|*[!0-9]*) ;;

@@ -300,6 +300,7 @@ fmx_extract_reply_context() {
       tostring | ascii_downcase
       | if . == "discord" or . == "discordapp" then "discord"
         elif . == "x" or . == "twitter" then "x"
+        elif . == "buzz" then "buzz"
         else "" end;
     def first_string($items):
       [$items[] | select(type == "string" and length > 0)][0] // "";
@@ -472,7 +473,7 @@ fmx_context_registry_set() {
     ''|.*|*[!A-Za-z0-9._-]*) return 1 ;;
   esac
   case "$platform" in
-    discord|x) ;;
+    discord|x|buzz) ;;
     twitter) platform=x ;;
     *) platform= ;;
   esac
@@ -593,13 +594,15 @@ fmx_resolve_reply_context() {
       inbox)    ctx=$(fmx_request_inbox_context "$state" "$rid" 2>/dev/null) || ctx= ;;
       relay)
         [ "$allow_relay" = 1 ] || continue
+        # A Buzz request is home-local; its id never goes to the hosted relay.
+        case "$rid" in buzz-*) continue ;; esac
         ctx=$(fmx_request_relay_context "$rid" 2>/dev/null) || ctx=
         ;;
     esac
     [ -n "$ctx" ] || continue
     source_p=$(printf '%s' "$ctx" | jq -r '.platform // ""' 2>/dev/null) || source_p=
     source_m=$(printf '%s' "$ctx" | jq -r '.reply_max_chars // ""' 2>/dev/null) || source_m=
-    case "$source_p" in discord|x) [ -n "$p" ] || p=$source_p ;; esac
+    case "$source_p" in discord|x|buzz) [ -n "$p" ] || p=$source_p ;; esac
     case "$source_m" in ''|*[!0-9]*) ;; *) [ -n "$m" ] || m=$source_m ;; esac
     [ -n "$p" ] && [ -n "$m" ] && break
   done

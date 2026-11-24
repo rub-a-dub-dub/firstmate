@@ -264,7 +264,7 @@ Load `scout-completion` when a scout reports completion, presents a visual artif
 Fleet supervision is an always-loaded operational contract; `docs/architecture.md`, `docs/turnend-guard.md`, the emitted session-start block, and script help own mechanisms and harness-specific recipes.
 
 Whenever work is under way, keep exactly one live supervision cycle using the emitted protocol for this primary harness.
-Relay may require that same live cycle with no fleet work.
+Relay or an enabled Buzz bridge may require that same live cycle with no fleet work.
 Do not substitute another harness's wait shape, use shell `&`, or create a second cycle when a healthy one already exists.
 For every actionable wake, follow the ordinary-wake continuation in the emitted protocol; use its repair action only when the live cycle is missing or failed.
 No turn ends blind while work is under way, including turns described as holding or waiting.
@@ -417,7 +417,7 @@ Load `agent-skill-trigger-index` only when auditing or maintaining the complete 
 
 ## 14. Relay
 
-When Relay is enabled, load `fmx-respond` for its activation, authority, mention, follow-up, and public-loop contract.
+When Relay or the home-local Buzz bridge is enabled, load `fmx-respond` for its activation, authority, mention, follow-up, and public-loop contract.
 
 ## Captain instruction precedence
 

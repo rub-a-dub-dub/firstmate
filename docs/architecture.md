@@ -501,7 +501,7 @@ That link therefore reaches only work whose task record lives in the answering h
 Later milestone wakes use `bin/fm-x-followup.sh` to post up to three public-safe follow-ups through the relay's `connector/followup` endpoint, ending with a `--final` one for ordinary Relay-linked work.
 A typed promised-final commitment owns its terminal reply through `bin/fm-public-followup.sh`; after its receipt is validated, that owner asks the bound work home to remove any legacy link without posting another reply, routing a REMOTE secondmate clear through its SSH transport with the registration's Relay request identity as the mutation guard.
 The [Relay configuration reference](configuration.md#relay-env) owns the exact context retention, platform-resolution, and fail-safe posting contract.
-If recovery relinks the same relay request onto a successor task, `fm-x-link.sh --carry-count <n> --carry-ts <epoch> --carry-platform <x|discord> --carry-max <n>` preserves the consumed follow-up count, original 7-day window, and reply split budget instead of granting a fresh local budget or falling back to the wrong platform.
+If recovery relinks the same relay request onto a successor task, `fm-x-link.sh --carry-count <n> --carry-ts <epoch> --carry-platform <platform> --carry-max <n>` preserves the consumed follow-up count, original 7-day window, and reply split budget instead of granting a fresh local budget or falling back to the wrong platform.
 The follow-up helper forwards `--image <path>` to the same reply client when a follow-up needs an image.
 Each follow-up is bounded by a local 7-day window and a 3-post cap; a successful non-final post increments the counter and keeps the link, while `--final`, reaching the cap, the window lapsing, or the relay itself rejecting an exhausted binding all clear it, and the helper is skipped for tasks that did not originate from a Relay mention.
 Pure acknowledgments or mentions with nothing to answer are dismissed through `bin/fm-x-dismiss.sh`, which calls the relay's `connector/dismiss` endpoint and posts no text, then the local inbox file is cleared.
@@ -510,6 +510,7 @@ Splitting preserves fenced-code, paragraph, line, and word boundaries when possi
 If an image is attached to a split reply, the relay puts it on the first/opener message only and leaves later chunks text-only.
 For preview testing, `FMX_DRY_RUN` makes `fm-x-reply.sh` and `fm-x-dismiss.sh` skip the public post or dismiss call and record the would-be payload under `state/x-outbox/`, including `texts` when the reply would be a thread and an `endpoint` marker when the preview is a completion follow-up or dismiss, while the rest of the poll -> compose -> would-post loop still succeeds.
 Attached images are recorded as compact `{media_type, bytes, source_path}` metadata in dry-run instead of base64 bytes.
+A home can also feed `state/x-inbox/` from a home-local Buzz bridge, a third Relay surface with its own signed ingress, bridge key, and explicit off switch, whose text-only requests reach the same `fmx-respond` lifecycle; the [Buzz bridge configuration reference](configuration.md#buzz-bridge-configbuzz-bridgeenv) owns it, and every hosted-relay path above is unchanged.
 Relay remains layered on top of the existing check mechanism without changing its request-handling behavior.
 
 A promised *final* public reply is a stronger commitment than a milestone follow-up, because forgetting it is publicly visible.
@@ -517,7 +518,7 @@ It is therefore not carried in conversation memory at all: intake turns it into 
 The mechanism boundary is deliberately narrow.
 `tasks-axi` owns the obligation state machine and the authoritative validation of a terminal result's source home, work id, generation, schema, outcome, and deliverables.
 `state/x-context/` remains the only owner of the private full request context.
-`bin/fm-x-reply.sh` remains the only thing that posts.
+`bin/fm-x-reply.sh` remains the only thing that posts, dispatching a Buzz-bound request to the bridge's native backend instead of the hosted relay.
 `bin/fm-public-followup.sh` composes those three and adds the activation gate, a private terminal-event inbox, the idempotent delivery sequence, and retained-loop disposition: delivery stamps the registration delivered, `rechain` hands its thread binding to one follow-on obligation, and `retire` is the only close.
 Work routed to another home reports a *typed* terminal result through `bin/fm-public-followup-emit.sh`; firstmate never recovers the source home, work id, outcome, or deliverables by parsing a free-form `done:` sentence, and the child never learns the thread.
 The emitter mirrors `tasks-axi`'s deliverable rules to reject correctable mistakes at their source, while reconciliation still revalidates through `tasks-axi` and queues an at-least-once wake when `tasks-axi` refuses an event.

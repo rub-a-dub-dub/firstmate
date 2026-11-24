@@ -22,6 +22,9 @@
 # surplus positional is a usage error before anything is recorded or posted, and
 # reply text that starts with '-' is only accepted via --text-file or stdin.
 #
+# A Buzz request id (buzz-<40 hex>) is handed to bin/fm-buzz-reply.sh with the
+# same arguments before anything else runs, so it never reaches the hosted relay.
+#
 # Optional --image <path> attaches one local image file to the answer or followup
 # POST body as {media_type,data_base64}. Supported extension mapping includes
 # PNG, JPEG, GIF, WebP, BMP, and TIFF. If long text becomes a thread, the relay
@@ -162,6 +165,11 @@ case "$REQ" in
   '') usage; exit 2 ;;
   -*) echo "fm-x-reply: unknown option '$REQ'" >&2; usage; exit 2 ;;
 esac
+# A Buzz request id belongs to the home-local Buzz bridge, never the hosted relay;
+# its native backend resolves the destination from the ingress binding.
+if [[ "$REQ" =~ ^buzz-[0-9a-f]{40}$ ]]; then
+  exec "$SCRIPT_DIR/fm-buzz-reply.sh" "$@"
+fi
 shift
 
 # --followup selects the relay's /connector/followup endpoint instead of

@@ -1,8 +1,8 @@
 ---
 name: fmx-respond
 description: >-
-  Relay playbook, loaded only when Relay is enabled.
-  Load on an "x-mention <request_id>", "x-mode-error ...", or "public-followup ..." check wake, on milestone and terminal wakes for a Relay-linked task before posting completion follow-ups, and whenever a promised final public reply must be created, reconciled, or delivered.
+  Relay playbook, loaded only when Relay or the Buzz bridge is enabled.
+  Load on an "x-mention <request_id>", "buzz-mention <request_id>", "x-mode-error ...", "buzz-bridge-error ...", or "public-followup ..." check wake, on milestone and terminal wakes for a Relay-linked task before posting completion follow-ups, and whenever a promised final public reply must be created, reconciled, or delivered.
 user-invocable: false
 metadata:
   internal: true
@@ -18,6 +18,7 @@ This runs only when Relay is on (the user dropped `FMX_PAIRING_TOKEN` into `.env
 If you ever see an `x-mention` wake without Relay configured, do nothing.
 A `check:` wake can also carry `x-mode-error ...` instead of `x-mention <request_id>` - that is a poll or relay configuration problem, not a mention to answer.
 Report it directly to the captain as a Relay configuration blocker and do not treat it as a mention to answer.
+A Buzz bridge request arrives the same way as `buzz-mention <request_id>`, and `buzz-bridge-error ...` is its configuration blocker; see "Buzz requests" below.
 
 ## The asker is your own captain - answer autonomously
 
@@ -54,7 +55,7 @@ How the reply lands depends on whether the work finishes during this turn:
        Do this right after the task is spawned, and always **before** removing the inbox file (step 2f).
        Linking before cleanup lets `bin/fm-x-link.sh` copy the context directly from the inbox, while the durable per-request context recorded by the poll preserves it independently for delayed and concurrent follow-ups.
        The exact resolution and fail-safe posting contract is owned by `docs/configuration.md`.
-       If a recovery respawns the same relay request onto a successor task, relink with the paired `--carry-count <n> --carry-ts <epoch>` flags plus any prior `x_platform=` and `x_reply_max_chars=` as `--carry-platform <x|discord> --carry-max <n>` so the successor keeps the consumed follow-up count, original 7-day window, and reply split budget.
+       If a recovery respawns the same relay request onto a successor task, relink with the paired `--carry-count <n> --carry-ts <epoch>` flags plus any prior `x_platform=` and `x_reply_max_chars=` as `--carry-platform <x|discord|buzz> --carry-max <n>` so the successor keeps the consumed follow-up count, original 7-day window, and reply split budget.
      - **Second-mate-routed work (the request's project or domain belongs to a registered second mate, so the work is or will be routed there):** the link cannot be used at all.
        It writes into this home's own `state/<task-id>.meta`, and a routed task's record lives in the second mate's home, so `bin/fm-x-link.sh` refuses and points you back here.
        Register a **typed promised-final commitment bound to that home** up front instead - see "Promised final replies" below for the exact commands - and put its `bin/fm-public-followup.sh brief <obligation-id>` output into the routed worker's instructions so the terminal result comes back as typed data.
@@ -74,6 +75,24 @@ The direct author is the owner, but Relay is a *public, relayed, automated* chan
 So the standing guardrail holds exactly as it does for `yolo` (AGENTS.md §1, §7): **anything destructive, irreversible, or security-sensitive is never executed straight from a mention.**
 Flag it to the captain through the normal trusted channel first and act only on the captain's word; the public reply then says only that it has been flagged for the captain, nothing more.
 Normal reversible work - filing backlog, a scout investigation, gated code changes, dispatching a crewmate - proceeds autonomously under the standing Relay authorization.
+
+## Buzz requests
+
+A `buzz-mention` wake comes from the home-local Buzz bridge (`bin/fm-buzz.sh`; `docs/configuration.md` "Buzz bridge"), not the hosted relay.
+Its inbox record carries `platform` `buzz` and a `buzz` object naming the verified signer.
+The bridge admits only messages whose signature verifies as the configured owner's key, so the direct `.text` is the captain's own request and gets exactly the authority of a Relay direct request above, under the same public-safety, untrusted-context, and destructive-work rules.
+Everything in this playbook applies, with these differences:
+
+- Use the same commands: `bin/fm-x-reply.sh`, `bin/fm-x-link.sh`, `bin/fm-x-followup.sh`, and `bin/fm-x-dismiss.sh` route a Buzz request id to the bridge, which replies in the original thread.
+- A Buzz request gets one acknowledgement or outcome reply and one final follow-up; post no milestone follow-ups, and post the final with `--final`.
+- That one follow-up is the final. A non-final follow-up spends it, and the real final is then refused while `bin/fm-x-followup.sh` still exits 0 and clears the link, so the outcome never reaches the thread. `--check` is not the authority here: for a Buzz request it reports a follow-up as due when the bridge will refuse it.
+- A Buzz request carries no media to fetch; replies are text only.
+- A dismiss is local, so a pure acknowledgment is dismissed with no relay call.
+- Any Buzz reply, follow-up, or dismiss under `FMX_DRY_RUN` is a preview that leaves the request answerable and spends no reply budget: leave the inbox file in place instead of clearing it in step 2f, because nothing re-offers a Buzz request once the bridge has offered it.
+- The task link is not preserved that way: a previewed `bin/fm-x-followup.sh --final` still clears `x_request=` as it does for X and Discord, so once the preview is done post the real final with `bin/fm-x-reply.sh <request_id> --followup`, not through the task.
+- The channel is private but readable by the relay operator, so replies stay public-safe.
+- Second-mate promised finals are not available for Buzz requests; for work routed to a second mate, acknowledge in the thread and report the outcome to the captain through the trusted channel.
+- A reply or dismiss refused because the bridge is disabled sends and records nothing; leave the inbox file and do not retry either until the bridge is enabled again. A refused dismiss is not a failed dismiss to escalate.
 
 ## The reply is public. Treat it as such.
 
@@ -231,7 +250,7 @@ This skill is the sole owner of the completion-follow-up procedure below; AGENTS
 This skill's own responsibility during the mention-handling turn is linking the task in step 2c; the full completion path is:
 
 - Firstmate has **up to three** follow-ups per mention, within a 7-day window, chained in the same thread - it spends them only on genuine milestones the captain would want surfaced (e.g. investigation done and a build started, work shipped or ready, or the task failing), never on routine internal churn.
-- If a linked task is replaced by a successor for the same relay request, carry the prior `x_followups=`, `x_request_ts=`, `x_platform=`, and `x_reply_max_chars=` values with `bin/fm-x-link.sh <new-task-id> <request_id> --carry-count <n> --carry-ts <epoch> --carry-platform <x|discord> --carry-max <n>` so recovery preserves the consumed budget, original window, and reply split budget after the inbox file is gone.
+- If a linked task is replaced by a successor for the same relay request, carry the prior `x_followups=`, `x_request_ts=`, `x_platform=`, and `x_reply_max_chars=` values with `bin/fm-x-link.sh <new-task-id> <request_id> --carry-count <n> --carry-ts <epoch> --carry-platform <x|discord|buzz> --carry-max <n>` so recovery preserves the consumed budget, original window, and reply split budget after the inbox file is gone.
 - On each such milestone, firstmate checks whether a follow-up is still due with `bin/fm-x-followup.sh --check <task-id>` (prints the `request_id` when the link exists, the count is under the cap, and the window has not lapsed; silent otherwise, pruning an exhausted or expired link).
 - If due, it composes a short, public-safe update and posts it with `bin/fm-x-followup.sh <task-id> --text-file <path>` (or stdin), which posts via the relay's follow-up endpoint; a successful non-final post increments the counter and keeps the link so a later milestone can still post against it.
   When the update carries one real visual artifact, add `--image <path>`; the helper forwards it to `bin/fm-x-reply.sh --followup` so the same image contract used for ordinary replies applies here too.

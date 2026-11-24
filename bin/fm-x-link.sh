@@ -2,7 +2,7 @@
 # Link a spawned task to the X-mode mention that triggered it, so firstmate can
 # post up to THREE completion follow-ups when the task lands (within a 7-day window).
 #
-# Usage: fm-x-link.sh <task-id> <request_id> [--carry-count <n> --carry-ts <epoch> [--carry-platform <x|discord>] [--carry-max <n>]]
+# Usage: fm-x-link.sh <task-id> <request_id> [--carry-count <n> --carry-ts <epoch> [--carry-platform <x|discord|buzz>] [--carry-max <n>]]
 #
 # Records link lines in state/<task-id>.meta (replacing any prior link,
 # preserving every other meta line):
@@ -60,7 +60,7 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
 
 usage() {
-  echo "usage: fm-x-link.sh <task-id> <request_id> [--carry-count <n> --carry-ts <epoch> [--carry-platform <x|discord>] [--carry-max <n>]]" >&2
+  echo "usage: fm-x-link.sh <task-id> <request_id> [--carry-count <n> --carry-ts <epoch> [--carry-platform <x|discord|buzz>] [--carry-max <n>]]" >&2
 }
 
 ID=${1:-}
@@ -95,9 +95,9 @@ while [ "$#" -gt 0 ]; do
       shift
       CARRY_PLATFORM=${1:-}
       case "$CARRY_PLATFORM" in
-        discord|x) ;;
+        discord|x|buzz) ;;
         twitter) CARRY_PLATFORM=x ;;
-        *) echo "fm-x-link: --carry-platform needs x or discord" >&2; exit 2 ;;
+        *) echo "fm-x-link: --carry-platform needs x, discord, or buzz" >&2; exit 2 ;;
       esac
       ;;
     --carry-max)

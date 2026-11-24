@@ -78,6 +78,8 @@ config/self-update-source  optional one-line "<remote> <branch>" that /updatefir
 config/watch.env     optional home-local watcher tuning as exported shell assignments; LOCAL, gitignored, never removed by bootstrap; loaded by bin/fm-watch-arm.sh before x-mode.env; see docs/configuration.md "Relay (.env)"
 config/usage-warner  optional Claude usage-window thresholds for the opt-in macOS threshold warner armed with bin/fm-usage-warner.sh; LOCAL, gitignored, and NOT inherited by secondmate homes; see docs/configuration.md "Local Claude usage warner"
 config/x-mode.env    generated Relay watcher cadence; LOCAL, gitignored; source before arming watcher when present
+config/buzz-bridge.env  optional Buzz bridge settings; LOCAL, gitignored, never holds the secret; see docs/configuration.md "Buzz bridge"
+config/buzz-bridge.enabled  Buzz bridge on marker; written only by bin/fm-buzz.sh enable, removed by disable; absent means off
 data/                personal fleet records; LOCAL, gitignored as a whole
   backlog.md         task queue, dependencies, history
   captain.md         this home's domain-local captain preferences and working style; LOCAL, gitignored, canonical even if harness memory mirrors it, and updated with inspect-then-update
@@ -130,6 +132,7 @@ state/               runtime records and signals; gitignored
   .supervision-handoff-pending .supervision-handoff-owner .supervision-handoff.log  the opt-in acknowledged hand-back's unacknowledged token, retry-owner process record, and bounded retry log; bin/fm-supervision-handoff.sh owns them; never touch
   .lease-<task>        per-task supervision lease naming which actor (main or branch) may change that task; bin/fm-lease-lib.sh owns the contract the guarded scripts enforce
   x-watch.check.sh   generated Relay poll shim; present only when opted in (section 14)
+  buzz-bridge.check.sh  generated Buzz bridge poll shim and its .check-trust binding; present only after bin/fm-buzz.sh enable, retired by bin/fm-buzz.sh disable (docs/configuration.md "Buzz bridge")
   tool-updates.check.sh  generated watched-tool update poll shim and its .check-trust binding; present only after bin/fm-tool-update-check.sh arm; its report record .tool-updates is what keeps one pending update from being reported on every poll
   mail.check.sh      generated received-mail poll shim and its .check-trust binding; present only after bin/fm-mail-check.sh arm; report record .mail-check (mail schema: docs/configuration.md "Mail plane")
   usage-warner.check.sh  generated Claude usage threshold poll shim and its .check-trust binding; present only after bin/fm-usage-warner.sh arm; its de-dupe record .usage-warner is what keeps one threshold crossing from warning on every poll, and .usage-warner.lock serializes overlapping checks
@@ -149,6 +152,7 @@ state/               runtime records and signals; gitignored
   x-inbox/           generated Relay pending mention payloads; fmx-respond drains it (section 14)
   x-context/         generated Relay durable per-request reply context and one-wake offer markers, keyed by request_id; survives inbox cleanup and expires within seven days (section 14; bin/fm-x-lib.sh)
   x-outbox/          generated Relay dry-run reply and dismiss previews; inspect it when FMX_DRY_RUN is set (section 14)
+  buzz/              generated Buzz bridge request bindings, poll cursor, and last poll diagnostic (bin/fm-buzz-poll.sh)
   public-followup/   generated private transport for promised public replies: retained open-loop registrations, typed terminal-result inbox, results staged for an owning home on another machine, accepted/rejected ledgers, and retirement receipts (section 14; bin/fm-public-followup.sh)
   x-poll.error x-poll.claim-error  generated Relay and offer-claim diagnostic dedupe markers
   .startup-network.*  status, report, per-step elapsed timings, inline-print claim, and lock for the deferred startup stage that runs network checks and the inactive-outcome scan off the digest's blocking path; bin/fm-startup-network.sh
