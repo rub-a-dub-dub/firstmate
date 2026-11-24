@@ -70,9 +70,10 @@
 #   members; absent when not given. They are annotations only:
 #   they never change the harness, model, effort, profile resolution, or the
 #   --dispatch-override requirement. A fresh ship or scout spawn given no --tier
-#   while config/crew-dispatch.json has rules prints one warning line to stderr
-#   and continues. A relaunch keeps the recorded values and refuses the flags;
-#   a secondmate refuses them.
+#   while config/crew-dispatch.json carries a non-empty rules array prints one
+#   warning line to stderr and continues; tier routing lives only in those
+#   rules, so a default-only file never warns. A relaunch keeps the recorded
+#   values and refuses the flags; a secondmate refuses them.
 #   Ship/scout launches always put fm-dod-lib.sh's current worker role scope
 #   first in the private launch-brief overlay, including the exact task-owned
 #   steering inbox. This never rewrites a project's instruction files or a
