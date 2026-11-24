@@ -85,6 +85,7 @@ Everything in this playbook applies, with these differences:
 
 - Use the same commands: `bin/fm-x-reply.sh`, `bin/fm-x-link.sh`, `bin/fm-x-followup.sh`, and `bin/fm-x-dismiss.sh` route a Buzz request id to the bridge, which replies in the original thread.
 - A Buzz request gets one acknowledgement or outcome reply and one final follow-up; post no milestone follow-ups, and post the final with `--final`.
+- That one follow-up is the final. A non-final follow-up spends it, and the real final is then refused while `bin/fm-x-followup.sh` still exits 0 and clears the link, so the outcome never reaches the thread. `--check` is not the authority here: for a Buzz request it reports a follow-up as due when the bridge will refuse it.
 - A Buzz request carries no media to fetch; replies are text only.
 - A dismiss is local, so a pure acknowledgment is dismissed with no relay call.
 - Any Buzz reply, follow-up, or dismiss under `FMX_DRY_RUN` is a preview that leaves the request answerable and spends no reply budget: leave the inbox file in place instead of clearing it in step 2f, because nothing re-offers a Buzz request once the bridge has offered it.

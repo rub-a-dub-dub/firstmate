@@ -127,6 +127,17 @@ poll() {
 # path here because run_in restricts PATH.
 CHECK_TIMEOUT_BIN=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
 
+# age_cursor <home> <epoch>: replace the enable-time cursor seed with an older
+# fence, the way real elapsed time would. Enabling seeds {since: now}, and the
+# tests freeze the clock, so without this a held cursor and a freshly advanced
+# one carry the same value.
+age_cursor() {
+  (umask 077; mkdir -p "$1/state/buzz") || fail "age_cursor: cannot prepare $1/state/buzz"
+  jq -cn --argjson since "$2" '{since:$since}' > "$1/aged-cursor.json"
+  mv "$1/aged-cursor.json" "$1/state/buzz/cursor.json"
+  chmod 600 "$1/state/buzz/cursor.json"
+}
+
 # poll_bounded <home> [seconds]: the poll under the watcher's bound. Exits 124
 # when the bound cut it short, exactly as the watcher's own runner reports.
 poll_bounded() {
@@ -349,17 +360,18 @@ test_poll_holds_the_cursor_on_an_exactly_full_window() {
   # The pinned CLI caps a read at that budget, so a full page is indistinguishable
   # from a larger window: the poll must deliver what it read and still hold the
   # cursor rather than risk advancing it past an unread mention.
+  age_cursor "$home" $((NOW - 290))
   filler=$(jq -cn --arg ch "$CHANNEL" --argjson now "$NOW" '[range(0; 199)
     | {id: (tostring | ("0" * (64 - length)) + .), pubkey: ("f" * 64),
-       created_at: ($now - 400 + .), kind: 9, tags: [["h", $ch]],
+       created_at: ($now - 290 + .), kind: 9, tags: [["h", $ch]],
        content: "chatter", sig: ("0" * 128)}]')
-  sign_event "$OWNER_SK" $((NOW - 60)) 9 "$(mention_tags)" 'the only real request' \
+  sign_event "$OWNER_SK" $((NOW - 30)) 9 "$(mention_tags)" 'the only real request' \
     | jq -c --argjson f "$filler" '[.] + $f' > "$home/events.json"
   out=$(poll "$home")
   assert_contains "$out" "buzz-mention buzz-" "the mention in an exactly full window is delivered"
   assert_contains "$out" "buzz-bridge-error catch-up range exceeds" \
     "a full page is reported as possibly over budget, because the read cannot see past it"
-  assert_absent "$home/state/buzz/cursor.json" \
+  assert_equals $((NOW - 290)) "$(jq -r .since "$home/state/buzz/cursor.json")" \
     "a full page must not advance the cursor past what the read could not see"
   pass "a full page delivers its mentions and holds the cursor, erring toward re-reading"
 }
@@ -371,14 +383,16 @@ test_poll_delivers_the_newest_mention_past_the_read_budget() {
   # A relay serving owner-attributed events it never verified: the ids recompute,
   # so every one of them reaches the signature check. More of them than one read
   # covers, and all older than the owner's mention.
-  forged=$(python3 -I "$SIGN" forge "$OWNER" $((NOW - 5000)) 9 "$(mention_tags)" 'forged' 250)
-  sign_event "$OWNER_SK" $((NOW - 100)) 9 "$(mention_tags)" 'the newest real request' \
+  age_cursor "$home" $((NOW - 290))
+  forged=$(python3 -I "$SIGN" forge "$OWNER" $((NOW - 290)) 9 "$(mention_tags)" 'forged' 250)
+  sign_event "$OWNER_SK" $((NOW - 10)) 9 "$(mention_tags)" 'the newest real request' \
     | jq -c --argjson f "$forged" '[.] + $f' > "$home/events.json"
   out=$(poll_bounded "$home"); rc=$?
   expect_code 0 "$rc" "the poll must finish inside the watcher's check bound, not be cut at 124"
   assert_contains "$out" "buzz-mention buzz-" "a flood older than the mention must not bury it"
   assert_contains "$out" "buzz-bridge-error catch-up range exceeds" "an undrained window is a diagnostic wake"
-  assert_absent "$home/state/buzz/cursor.json" "an undrained window must not advance the cursor"
+  assert_equals $((NOW - 290)) "$(jq -r .since "$home/state/buzz/cursor.json")" \
+    "an undrained window must not advance the cursor"
   assert_equals 'the newest real request' "$(jq -r .text "$home/state/x-inbox/$(only_rid "$home").json")" \
     "the owner's signed mention is the one that reaches the inbox"
   assert_equals 1 "$(grep -c 'messages get' "$home/cli.log")" "one poll makes exactly one read"
@@ -405,12 +419,14 @@ test_poll_refuses_a_key_file_that_is_not_hex() {
   local home out
   home=$(new_home nonhex)
   enable "$home"
+  age_cursor "$home" $((NOW - 600))
   set_events "$home" "$(sign_event "$OWNER_SK" $((NOW - 60)) 9 "$(mention_tags)" 'never read')"
   printf 'Public key: %s\nSecret key: nsec1%s\n' "$BRIDGE" "$(printf 'q%.0s' $(seq 58))" > "$home/bridge.key"
   out=$(poll "$home")
   assert_contains "$out" "buzz-bridge-error cannot read the bridge secret" \
     "a secret the pinned CLI cannot take must be refused before any read"
-  assert_absent "$home/state/buzz/cursor.json" "an unusable secret must not advance the cursor"
+  assert_equals $((NOW - 600)) "$(jq -r .since "$home/state/buzz/cursor.json")" \
+    "an unusable secret must not advance the cursor"
   assert_equals "" "$(only_rid "$home")" "nothing may be ingested without a usable bridge key"
   pass "only the 64-hex secret the pinned buzz-admin emits is accepted"
 }
@@ -454,13 +470,15 @@ test_poll_holds_cursor_on_read_failure() {
   local home out
   home=$(new_home hold)
   enable "$home"
+  age_cursor "$home" $((NOW - 600))
   out=$(FAKE_GET_RC=3 poll "$home")
   assert_contains "$out" "buzz-bridge-error relay refused the bridge key" "an auth refusal is a diagnostic wake"
   out=$(FAKE_GET_RC=3 poll "$home")
   assert_equals "" "$out" "the same diagnostic wakes only once"
   out=$(FAKE_GET_RC=2 poll "$home")
   assert_equals "" "$out" "a relay or network failure is silent"
-  assert_absent "$home/state/buzz/cursor.json" "a failed read must never advance the cursor"
+  assert_equals $((NOW - 600)) "$(jq -r .since "$home/state/buzz/cursor.json")" \
+    "a failed read must never advance the cursor"
   pass "a failed read holds the cursor, reports auth refusals once, and stays quiet on network failure"
 }
 
@@ -543,10 +561,11 @@ test_reply_dry_run_writes_a_receipt_without_spending_the_budget() {
 }
 
 test_disable_stops_intake_and_replies_until_enabled() {
-  local home rid out rc
+  local home rid out rc bound offperiod
   home=$(new_home disable)
   enable "$home"
-  set_events "$home" "$(sign_event "$OWNER_SK" $((NOW - 60)) 9 "$(mention_tags)" 'before disable')"
+  bound=$(sign_event "$OWNER_SK" $((NOW - 60)) 9 "$(mention_tags)" 'before disable')
+  set_events "$home" "$bound"
   poll "$home" >/dev/null
   rid=$(only_rid "$home")
   out=$(run_in "$home" "$ROOT/bin/fm-buzz.sh" disable); rc=$?
@@ -555,7 +574,12 @@ test_disable_stops_intake_and_replies_until_enabled() {
   assert_absent "$home/state/buzz-bridge.check.sh" "disable retires the watcher check"
   assert_absent "$home/state/buzz-bridge.check-trust" "disable retires the check trust binding"
   : > "$home/cli.log"
-  set_events "$home" "$(sign_event "$OWNER_SK" $((NOW - 30)) 9 "$(mention_tags)" 'after disable')"
+  # Stand the clock still but age the surviving cursor, so it is the pre-disable
+  # fence a real off period would leave behind, and the owner's off-period
+  # mention sits inside the window that fence would re-read.
+  age_cursor "$home" $((NOW - 1800))
+  offperiod=$(sign_event "$OWNER_SK" $((NOW - 900)) 9 "$(mention_tags)" 'ship the hotfix')
+  set_events "$home" "$bound" "$offperiod"
   out=$(poll "$home")
   assert_equals "" "$out" "a disabled bridge does not poll"
   assert_equals "" "$(cat "$home/cli.log")" "a disabled bridge never calls the CLI for intake"
@@ -578,12 +602,18 @@ test_disable_stops_intake_and_replies_until_enabled() {
   assert_contains "$out" "bridge: disabled" "the bridge stays off"
   enable "$home"
   out=$(poll "$home")
-  assert_contains "$out" "buzz-mention" "an explicit enable resumes intake"
+  assert_equals "" "$out" "enabling must not answer a mention the owner sent while the bridge was off"
+  assert_equals 1 "$(only_rid "$home" | wc -l | tr -d ' ')" "the off-period mention must not be staged"
+  # Forward of the enable, the same channel is read as usual.
+  set_events "$home" "$bound" "$offperiod" \
+    "$(sign_event "$OWNER_SK" $((NOW - 10)) 9 "$(mention_tags)" 'and now this one')"
+  out=$(poll "$home")
+  assert_contains "$out" "buzz-mention" "an explicit enable resumes intake for mentions sent after it"
   out=$(run_in "$home" "$ROOT/bin/fm-x-reply.sh" "$rid" - <<<"answered after the off period"); rc=$?
   expect_code 0 "$rc" "a reply to the pending request after re-enabling"
   assert_equals 'answered after the off period' "$(jq -r .content "$home/sent.jsonl")" \
-    "a request pending across the off period survives answerable"
-  pass "disable stops intake and replies, stays off, and only enable turns the bridge back on"
+    "a request bound before the off period survives answerable"
+  pass "disable stops intake and replies, enabling reads forward only, and only enable turns the bridge back on"
 }
 
 test_dry_run_dismiss_previews_and_leaves_the_request_answerable() {

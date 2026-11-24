@@ -3045,6 +3045,7 @@ A home without Buzz configured is therefore off.
 - `bin/fm-buzz.sh status` reports on/off, check registration, configuration validity, the poll cursor, pending Buzz requests, and the last poll diagnostic, and never prints the secret.
 
 Disabling keeps pending requests and their bindings; a reply or a dismiss attempted while disabled is refused, sends nothing, and records nothing, so a request pending across the off period stays answerable once the bridge is enabled again.
+Enabling reads forward only: it seeds the poll cursor to that moment, so mentions the owner sent while the bridge was deliberately off are never ingested or answered on enable.
 While enabled, the registered check also makes this home require live supervision, so mentions can wake it without fleet work.
 
 **Configuration**
@@ -3080,6 +3081,7 @@ The bridge pubkey must be a member of the private channel; the owner adds it fro
 
 Each watcher check sweep runs one bounded `bin/fm-buzz-poll.sh`, whose header owns the read, cursor, and persistence order.
 One poll makes one read of the newest 200 kind-9 messages in the configured channel through `buzz messages get` as the bridge identity, down to the cursor's overlap and never past the age limit; every distinct message it returns is signature-verified, so a single newest-first read is what keeps a sweep inside the watcher's check timeout.
+That newest-first truncation is a property of the pinned `relay-v0.3.0` CLI, not something this repository can enforce: its event query orders by `created_at` descending before applying `--limit`. The bridge relies on it, the smoke test below confirms it, and it must be re-confirmed before `BUZZ_CLI` is repointed at a newer build.
 A full page of 200 or more holds the cursor and wakes the catch-up diagnostic below, and the next sweep reads the same newest 200 again; a window that happens to hold exactly 200 is over-reported that way, because a capped read cannot see past its own page.
 The read is scoped by channel and kind, not by author, so the owner's latest mention is inside those 200 unless more than 200 channel messages from any member are newer than that mention; a private stage-1 channel does not carry that much traffic between sweeps.
 `bin/fm-buzz-verify.py` keeps only messages that are signed by the owner, `p`-tag the bridge key, sit in that one channel, carry non-empty text, fall inside the age limit, and have a valid event id and BIP-340 signature.
@@ -3119,6 +3121,8 @@ Run this once with the owner after the bridge lands, against the owner's relay:
 5. Confirm firstmate wakes with `buzz-mention`, answers through `fmx-respond`, and the reply appears in that message's thread in Buzz, signed by the bridge identity.
 6. For a request that spawns work, confirm the acknowledgement arrives first and the final outcome follows in the same thread.
 7. Run `bin/fm-buzz.sh disable`, have the owner post another mention, and confirm no wake and no reply follow, `bin/fm-buzz.sh status` reports `bridge: disabled`, and it still does after a new session starts.
+8. Run `bin/fm-buzz.sh enable` again and confirm the mention from step 7 is *not* answered: enabling reads forward only. Then have the owner post a fresh mention and confirm that one is answered.
+9. Confirm the pinned CLI truncates newest-first, which the single bounded read depends on: with the owner's agreement, run `<build-dir>/target/release/buzz --relay <relay> --format json messages get --channel <channel> --kinds 9 --before <now> --limit 2` against a channel holding more than two messages, and confirm the two returned events are the two most recent, not the two oldest.
 
 ## Trusted external process-event adapters (config/extensions.d)
 
