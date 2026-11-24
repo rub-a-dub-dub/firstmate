@@ -4,13 +4,16 @@
 # Usage: fm-buzz.sh enable|disable|status
 #
 # enable   validate config/buzz-bridge.env, write and register the watcher
-#          check state/buzz-bridge.check.sh (bin/fm-check-register.sh), create
-#          config/buzz-bridge.enabled, and seed the poll cursor to now. The
-#          registered check is what makes the watcher poll Buzz and makes
-#          supervision required in this home. Seeding last means turning the
-#          bridge on reads forward only: mentions the owner sent while it was
-#          deliberately off are not ingested or answered on enable, while a
-#          request already bound before the off period stays answerable.
+#          check state/buzz-bridge.check.sh (bin/fm-check-register.sh), seed the
+#          poll cursor, then create config/buzz-bridge.enabled. The registered
+#          check is what makes the watcher poll Buzz and makes supervision
+#          required in this home. Turning the bridge on from off reads forward
+#          only: the seed is set before the marker and offset by the poll's read
+#          overlap, so the first read starts at the enable moment and mentions
+#          the owner sent while the bridge was off are not ingested or answered,
+#          while a request already bound before the off period stays answerable.
+#          Re-running enable while the bridge is already on re-arms the check and
+#          leaves the cursor untouched, so unread intake is never discarded.
 # disable  remove config/buzz-bridge.enabled first, so intake and replies stop
 #          at once, then unregister the watcher check. Nothing re-enables the
 #          bridge: bootstrap, restarts, and updates leave it off until an
@@ -53,6 +56,12 @@ case "${1:-}" in
     command -v python3 >/dev/null 2>&1 || { echo "fm-buzz: python3 not found" >&2; exit 1; }
     fm_buzz_load_config || { echo "fm-buzz: not enabled: $FM_BUZZ_CONFIG_ERROR" >&2; exit 1; }
     mkdir -p "$STATE" "$CONFIG" || exit 1
+    # The forward-only fence belongs to turning the bridge ON. Read that before
+    # anything can create the marker: re-running enable to re-arm a bridge that
+    # was never off must leave a held cursor alone, or it would discard mentions
+    # the bridge had not read yet.
+    was_on=0
+    fm_buzz_enabled && was_on=1
     home=$(CDPATH='' cd -- "$FM_HOME" && pwd -P) || exit 1
     tmp=$(umask 077; mktemp "$STATE/.buzz-bridge-check.XXXXXX") || exit 1
     printf '%s\n' '#!/usr/bin/env bash' \
@@ -66,17 +75,21 @@ case "${1:-}" in
     fi
     FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-check-register.sh" "$FM_BUZZ_CHECK_ID" >/dev/null \
       || { unregister; echo "fm-buzz: cannot register the watcher check" >&2; exit 1; }
+    if [ "$was_on" -eq 0 ]; then
+      now=${FMX_NOW_OVERRIDE:-$(date +%s)}
+      case "$now" in
+        ''|*[!0-9]*)
+          echo "fm-buzz: warning: enabling, but the clock is unreadable, so the first poll may answer mentions sent while the bridge was off" >&2 ;;
+        *)
+          # A poll reads back BUZZ_READ_OVERLAP behind its cursor, so the fence
+          # sits that far ahead to put the first read's start at this moment.
+          jq -cn --argjson since "$((now + BUZZ_READ_OVERLAP))" '{since:$since}' \
+            | fmx_private_artifact_publish_stdin "$STATE/buzz" cursor.json 600 \
+            || echo "fm-buzz: warning: enabling, but the poll cursor could not be seeded, so the first poll may answer mentions sent while the bridge was off" >&2 ;;
+      esac
+    fi
     printf 'enabled\n' > "$MARKER" \
       || { rm -f -- "$MARKER"; unregister; echo "fm-buzz: cannot write $MARKER" >&2; exit 1; }
-    now=${FMX_NOW_OVERRIDE:-$(date +%s)}
-    case "$now" in
-      ''|*[!0-9]*)
-        echo "fm-buzz: warning: enabled, but the clock is unreadable, so the first poll may answer mentions sent while the bridge was off" >&2 ;;
-      *)
-        jq -cn --argjson since "$now" '{since:$since}' \
-          | fmx_private_artifact_publish_stdin "$STATE/buzz" cursor.json 600 \
-          || echo "fm-buzz: warning: enabled, but the poll cursor could not be seeded, so the first poll may answer mentions sent while the bridge was off" >&2 ;;
-    esac
     echo "buzz bridge: enabled for channel $BUZZ_CHANNEL on $BUZZ_COMMUNITY; the watcher polls it on its next check sweep"
     ;;
   disable)

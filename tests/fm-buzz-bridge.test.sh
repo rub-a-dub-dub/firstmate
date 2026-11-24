@@ -151,8 +151,19 @@ poll_bounded() {
   fi
 }
 
-enable() {
+# enable_from_off <home>: turn the bridge on and leave the enable-time fence in
+# place, so the first read starts at the enable moment. Only the tests about that
+# fence want this; the clock is frozen, so it admits nothing older than NOW.
+enable_from_off() {
   run_in "$1" "$ROOT/bin/fm-buzz.sh" enable >/dev/null || fail "enable failed for $1"
+}
+
+# enable <home>: a bridge that is on and has polled up to now, which is the state
+# nearly every test wants - the cursor is the fence its last poll left, not the
+# enable seed, so a fixture from the last few minutes is still in the window.
+enable() {
+  enable_from_off "$1"
+  age_cursor "$1" "$NOW"
 }
 
 # fm_buzz_rid_for <home> <inbox text>: the request id whose inbox record has that text.
@@ -575,10 +586,11 @@ test_disable_stops_intake_and_replies_until_enabled() {
   assert_absent "$home/state/buzz-bridge.check-trust" "disable retires the check trust binding"
   : > "$home/cli.log"
   # Stand the clock still but age the surviving cursor, so it is the pre-disable
-  # fence a real off period would leave behind, and the owner's off-period
-  # mention sits inside the window that fence would re-read.
+  # fence a real off period would leave behind. The off-period mention sits
+  # inside the poll's read overlap, the span the enable fence has to cover: a
+  # fence set at the bare enable moment would still read back behind it.
   age_cursor "$home" $((NOW - 1800))
-  offperiod=$(sign_event "$OWNER_SK" $((NOW - 900)) 9 "$(mention_tags)" 'ship the hotfix')
+  offperiod=$(sign_event "$OWNER_SK" $((NOW - 100)) 9 "$(mention_tags)" 'ship the hotfix')
   set_events "$home" "$bound" "$offperiod"
   out=$(poll "$home")
   assert_equals "" "$out" "a disabled bridge does not poll"
@@ -600,13 +612,13 @@ test_disable_stops_intake_and_replies_until_enabled() {
   out=$(run_in "$home" "$ROOT/bin/fm-buzz.sh" disable); expect_code 0 $? "disable is idempotent"
   out=$(run_in "$home" "$ROOT/bin/fm-buzz.sh" status)
   assert_contains "$out" "bridge: disabled" "the bridge stays off"
-  enable "$home"
+  enable_from_off "$home"
   out=$(poll "$home")
   assert_equals "" "$out" "enabling must not answer a mention the owner sent while the bridge was off"
   assert_equals 1 "$(only_rid "$home" | wc -l | tr -d ' ')" "the off-period mention must not be staged"
   # Forward of the enable, the same channel is read as usual.
   set_events "$home" "$bound" "$offperiod" \
-    "$(sign_event "$OWNER_SK" $((NOW - 10)) 9 "$(mention_tags)" 'and now this one')"
+    "$(sign_event "$OWNER_SK" "$NOW" 9 "$(mention_tags)" 'and now this one')"
   out=$(poll "$home")
   assert_contains "$out" "buzz-mention" "an explicit enable resumes intake for mentions sent after it"
   out=$(run_in "$home" "$ROOT/bin/fm-x-reply.sh" "$rid" - <<<"answered after the off period"); rc=$?
@@ -656,6 +668,24 @@ test_poll_does_not_reannounce_a_handled_staged_request() {
   assert_not_contains "$out" "buzz-mention" "an answered request must not be announced again"
   assert_absent "$home/state/x-inbox/$rid.json" "an answered request's inbox record must not be resurrected"
   pass "a staged binding that was already answered is not re-staged or re-announced"
+}
+
+test_reenable_while_on_keeps_the_cursor() {
+  local home out rc
+  home=$(new_home rearm)
+  enable "$home"
+  # A bridge that has been on and polling, with a cursor deliberately held: the
+  # catch-up diagnostic does exactly this, and so does a lost check registration.
+  age_cursor "$home" $((NOW - 7200))
+  rm -f "$home/state/buzz-bridge.check.sh" "$home/state/buzz-bridge.check-trust"
+  out=$(run_in "$home" "$ROOT/bin/fm-buzz.sh" status)
+  assert_contains "$out" "bridge: enabled" "the bridge is still on with its check lost"
+  out=$(run_in "$home" "$ROOT/bin/fm-buzz.sh" enable); rc=$?
+  expect_code 0 "$rc" "re-arming the watcher check with enable"
+  assert_present "$home/state/buzz-bridge.check.sh" "enable re-arms the watcher check"
+  assert_equals $((NOW - 7200)) "$(jq -r .since "$home/state/buzz/cursor.json")" \
+    "re-arming a bridge that was never off must not discard unread intake"
+  pass "re-running enable while the bridge is on re-arms the check and leaves the cursor alone"
 }
 
 test_dismiss_is_local_and_final() {
@@ -711,6 +741,7 @@ fm_test_run \
   test_reply_dry_run_records_without_sending \
   test_reply_dry_run_writes_a_receipt_without_spending_the_budget \
   test_disable_stops_intake_and_replies_until_enabled \
+  test_reenable_while_on_keeps_the_cursor \
   test_dismiss_is_local_and_final \
   test_dry_run_dismiss_previews_and_leaves_the_request_answerable \
   test_poll_does_not_reannounce_a_handled_staged_request \

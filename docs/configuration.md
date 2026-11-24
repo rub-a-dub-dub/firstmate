@@ -3045,7 +3045,8 @@ A home without Buzz configured is therefore off.
 - `bin/fm-buzz.sh status` reports on/off, check registration, configuration validity, the poll cursor, pending Buzz requests, and the last poll diagnostic, and never prints the secret.
 
 Disabling keeps pending requests and their bindings; a reply or a dismiss attempted while disabled is refused, sends nothing, and records nothing, so a request pending across the off period stays answerable once the bridge is enabled again.
-Enabling reads forward only: it seeds the poll cursor to that moment, so mentions the owner sent while the bridge was deliberately off are never ingested or answered on enable.
+Turning the bridge on from off reads forward only: enabling seeds the poll cursor so the first read starts at the enable moment, so mentions the owner sent while the bridge was deliberately off are never ingested or answered on enable.
+Re-running `bin/fm-buzz.sh enable` while the bridge is already on only re-arms the watcher check: it leaves the cursor alone, so re-arming after a lost registration never discards intake the bridge had not read yet.
 While enabled, the registered check also makes this home require live supervision, so mentions can wake it without fleet work.
 
 **Configuration**

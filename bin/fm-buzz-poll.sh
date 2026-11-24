@@ -50,7 +50,6 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 fm_buzz_enabled || exit 0
 
 PAGE_LIMIT=200
-OVERLAP=300
 
 emit_error_once() {
   local msg=$1
@@ -80,7 +79,7 @@ fmx_context_registry_prune "$STATE"
 
 SINCE=$(jq -r '.since // empty' "$STATE/buzz/cursor.json" 2>/dev/null) || SINCE=
 case "$SINCE" in ''|*[!0-9]*) SINCE=$FLOOR ;; esac
-LOWER=$((SINCE - OVERLAP))
+LOWER=$((SINCE - BUZZ_READ_OVERLAP))
 [ "$LOWER" -ge "$FLOOR" ] || LOWER=$FLOOR
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/fm-buzz-poll.XXXXXX") || exit 0
