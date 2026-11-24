@@ -39,6 +39,10 @@
 # --dismiss: each of those is terminal and no relay re-offers a Buzz request, so
 # a preview leaves the binding and the reply context alone and the real reply,
 # follow-up or dismiss still works afterwards.
+# That covers this binding, not the caller's task link. A previewed
+# bin/fm-x-followup.sh --final still clears x_request= from the task meta, the
+# same as for X and Discord, so the task can no longer reach the request: post
+# the real final with bin/fm-x-reply.sh <request_id> --followup instead.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

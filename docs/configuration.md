@@ -3104,6 +3104,7 @@ Replies are text only and split into at most three messages of the reply budget.
 A dismiss is a local terminal receipt and contacts nothing, and because it is terminal it is refused while the bridge is disabled.
 `FMX_DRY_RUN` records the would-be reply to `state/x-outbox/<request_id>.json` without sending, exactly as for the other surfaces, and writes the caller's receipt with `dry_run` true.
 Every dry run on this surface previews only, answers and follow-ups as well as dismissals: because each is terminal and nothing re-offers a Buzz request, a preview spends no reply budget and leaves the binding and its reply context intact, so the real reply still works afterwards.
+That holds for the binding, not for the task link: a previewed `bin/fm-x-followup.sh --final` still clears the link as it does for X and Discord, so after previewing a final, post the real one with `bin/fm-x-reply.sh <request_id> --followup` rather than through the task.
 
 Stage 1 limits: a send that fails ambiguously can duplicate a message if it is retried, and second-mate-routed promised finals are not available for Buzz requests.
 
