@@ -8,12 +8,15 @@
 #          poll cursor, then create config/buzz-bridge.enabled. The registered
 #          check is what makes the watcher poll Buzz and makes supervision
 #          required in this home. Turning the bridge on from off reads forward
-#          only: the seed is set before the marker and offset by the poll's read
-#          overlap, so the first read starts at the enable moment and mentions
-#          the owner sent while the bridge was off are not ingested or answered,
-#          while a request already bound before the off period stays answerable.
+#          only: the cursor is written before the marker as {since, fence}, both
+#          the enable moment, and every poll clamps its read to `fence` and
+#          carries it forward, so no cursor advance lets the read overlap reach
+#          back into the off period. Mentions the owner sent while the bridge was
+#          off are never ingested or answered, while a request already bound
+#          before the off period stays answerable.
 #          Re-running enable while the bridge is already on re-arms the check and
-#          leaves the cursor untouched, so unread intake is never discarded.
+#          leaves both cursor fields untouched, so unread intake is never
+#          discarded and the original fence stands.
 # disable  remove config/buzz-bridge.enabled first, so intake and replies stop
 #          at once, then unregister the watcher check. Nothing re-enables the
 #          bridge: bootstrap, restarts, and updates leave it off until an
@@ -81,9 +84,10 @@ case "${1:-}" in
         ''|*[!0-9]*)
           echo "fm-buzz: warning: enabling, but the clock is unreadable, so the first poll may answer mentions sent while the bridge was off" >&2 ;;
         *)
-          # A poll reads back BUZZ_READ_OVERLAP behind its cursor, so the fence
-          # sits that far ahead to put the first read's start at this moment.
-          jq -cn --argjson since "$((now + BUZZ_READ_OVERLAP))" '{since:$since}' \
+          # `fence` is the durable half: every poll clamps its read to it and
+          # carries it forward, so no later cursor advance lets the read overlap
+          # reach back into the off period.
+          jq -cn --argjson now "$now" '{since:$now, fence:$now}' \
             | fmx_private_artifact_publish_stdin "$STATE/buzz" cursor.json 600 \
             || echo "fm-buzz: warning: enabling, but the poll cursor could not be seeded, so the first poll may answer mentions sent while the bridge was off" >&2 ;;
       esac

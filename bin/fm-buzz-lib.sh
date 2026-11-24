@@ -56,8 +56,8 @@ BUZZ_MAX_AGE_SECS=86400
 # shellcheck disable=SC2034
 BUZZ_REPLY_MAX_CHARS=1000
 # How far a poll reads back behind its cursor, so a message that lands between
-# the fence and the read is not missed. bin/fm-buzz.sh enable offsets its seed by
-# the same amount.
+# the cursor and the read is not missed. The cursor's `fence` bounds it, so this
+# look-back can never reach behind the moment the bridge was turned on.
 # shellcheck disable=SC2034
 BUZZ_READ_OVERLAP=300
 

@@ -3045,8 +3045,8 @@ A home without Buzz configured is therefore off.
 - `bin/fm-buzz.sh status` reports on/off, check registration, configuration validity, the poll cursor, pending Buzz requests, and the last poll diagnostic, and never prints the secret.
 
 Disabling keeps pending requests and their bindings; a reply or a dismiss attempted while disabled is refused, sends nothing, and records nothing, so a request pending across the off period stays answerable once the bridge is enabled again.
-Turning the bridge on from off reads forward only: enabling seeds the poll cursor so the first read starts at the enable moment, so mentions the owner sent while the bridge was deliberately off are never ingested or answered on enable.
-Re-running `bin/fm-buzz.sh enable` while the bridge is already on only re-arms the watcher check: it leaves the cursor alone, so re-arming after a lost registration never discards intake the bridge had not read yet.
+Turning the bridge on from off reads forward only: enabling records the moment in `state/buzz/cursor.json` as both `since` and `fence`, and every poll clamps its read to `fence` and carries it forward, so no later cursor advance lets the read overlap reach back across it. Mentions the owner sent while the bridge was deliberately off are never ingested or answered, on the first sweep after enabling or any later one.
+Re-running `bin/fm-buzz.sh enable` while the bridge is already on only re-arms the watcher check: it leaves both cursor fields alone, so re-arming after a lost registration never discards intake the bridge had not read yet and never moves the fence.
 While enabled, the registered check also makes this home require live supervision, so mentions can wake it without fleet work.
 
 **Configuration**
@@ -3122,7 +3122,7 @@ Run this once with the owner after the bridge lands, against the owner's relay:
 5. Confirm firstmate wakes with `buzz-mention`, answers through `fmx-respond`, and the reply appears in that message's thread in Buzz, signed by the bridge identity.
 6. For a request that spawns work, confirm the acknowledgement arrives first and the final outcome follows in the same thread.
 7. Run `bin/fm-buzz.sh disable`, have the owner post another mention, and confirm no wake and no reply follow, `bin/fm-buzz.sh status` reports `bridge: disabled`, and it still does after a new session starts.
-8. Run `bin/fm-buzz.sh enable` again and confirm the mention from step 7 is *not* answered: enabling reads forward only. Then have the owner post a fresh mention and confirm that one is answered.
+8. Run `bin/fm-buzz.sh enable` again and confirm the mention from step 7 is *not* answered, on that sweep or any later one: enabling fences the cursor at the enable moment. Then have the owner post a fresh mention and confirm that one is answered.
 9. Confirm the pinned CLI truncates newest-first, which the single bounded read depends on: with the owner's agreement, run `<build-dir>/target/release/buzz --relay <relay> --format json messages get --channel <channel> --kinds 9 --before <now> --limit 2` against a channel holding more than two messages, and confirm the two returned events are the two most recent, not the two oldest.
 
 ## Trusted external process-event adapters (config/extensions.d)

@@ -9,8 +9,10 @@
 # Each poll makes ONE read of kind-9 events in the one configured channel
 # through the pinned Buzz CLI (`messages get`, signed NIP-98 reads with the
 # bridge key): the newest PAGE_LIMIT events below a fixed upper fence, down to
-# the durable cursor minus a 300-second overlap and never past the age limit
-# (BUZZ_MAX_AGE_SECS). One newest-first read is what keeps a sweep inside the
+# the durable cursor minus a BUZZ_READ_OVERLAP overlap, never past the age limit
+# (BUZZ_MAX_AGE_SECS), and never behind the cursor's `fence` - the moment
+# bin/fm-buzz.sh enable turned the bridge on, which the overlap must not reach
+# back across. One newest-first read is what keeps a sweep inside the
 # watcher's per-check timeout, because every distinct candidate it returns is
 # BIP-340 verified. The read is scoped by channel and kind, not by author, so the
 # owner's latest mention is inside it unless more than PAGE_LIMIT channel
@@ -79,8 +81,14 @@ fmx_context_registry_prune "$STATE"
 
 SINCE=$(jq -r '.since // empty' "$STATE/buzz/cursor.json" 2>/dev/null) || SINCE=
 case "$SINCE" in ''|*[!0-9]*) SINCE=$FLOOR ;; esac
+# The enable fence outlives every cursor advance, so the overlap can never reach
+# back behind the moment the bridge was turned on. Absent on a cursor written
+# before the bridge recorded one, which clamps nothing.
+FENCE=$(jq -r '.fence // empty' "$STATE/buzz/cursor.json" 2>/dev/null) || FENCE=
+case "$FENCE" in ''|*[!0-9]*) FENCE=0 ;; esac
 LOWER=$((SINCE - BUZZ_READ_OVERLAP))
 [ "$LOWER" -ge "$FLOOR" ] || LOWER=$FLOOR
+[ "$LOWER" -ge "$FENCE" ] || LOWER=$FENCE
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/fm-buzz-poll.XXXXXX") || exit 0
 trap 'rm -rf "$WORK"' EXIT
@@ -150,7 +158,7 @@ done < <(jq -c '.[]' "$WORK/accepted")
 if [ "$FAILED" -eq 1 ]; then
   emit_error_once "cannot persist an accepted request; the cursor is held for retry"
 elif [ "$COMPLETE" -eq 1 ]; then
-  if jq -cn --argjson since "$NOW" '{since:$since}' \
+  if jq -cn --argjson since "$NOW" --argjson fence "$FENCE" '{since:$since, fence:$fence}' \
     | fmx_private_artifact_publish_stdin "$STATE/buzz" cursor.json 600; then
     clear_error
   else

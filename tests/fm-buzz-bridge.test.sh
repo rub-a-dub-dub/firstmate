@@ -615,12 +615,19 @@ test_disable_stops_intake_and_replies_until_enabled() {
   enable_from_off "$home"
   out=$(poll "$home")
   assert_equals "" "$out" "enabling must not answer a mention the owner sent while the bridge was off"
-  assert_equals 1 "$(only_rid "$home" | wc -l | tr -d ' ')" "the off-period mention must not be staged"
-  # Forward of the enable, the same channel is read as usual.
+  assert_equals "" "$(fm_buzz_rid_for "$home" 'ship the hotfix')" "the off-period mention must not be staged"
+  # The first poll advanced the cursor, so this second one is where an overlap
+  # that outlived the enable fence would reach back and ingest the off period.
   set_events "$home" "$bound" "$offperiod" \
     "$(sign_event "$OWNER_SK" "$NOW" 9 "$(mention_tags)" 'and now this one')"
   out=$(poll "$home")
   assert_contains "$out" "buzz-mention" "an explicit enable resumes intake for mentions sent after it"
+  assert_equals 1 "$(printf '%s\n' "$out" | grep -c '^buzz-mention ')" \
+    "only the mention sent after the enable may wake, not the off-period one"
+  assert_equals "" "$(fm_buzz_rid_for "$home" 'ship the hotfix')" \
+    "no later poll may reach back behind the enable fence"
+  assert_equals "$NOW" "$(jq -r .fence "$home/state/buzz/cursor.json")" \
+    "the enable fence must survive every cursor advance, not just the first"
   out=$(run_in "$home" "$ROOT/bin/fm-x-reply.sh" "$rid" - <<<"answered after the off period"); rc=$?
   expect_code 0 "$rc" "a reply to the pending request after re-enabling"
   assert_equals 'answered after the off period' "$(jq -r .content "$home/sent.jsonl")" \
