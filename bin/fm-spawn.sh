@@ -1288,16 +1288,10 @@ validate_annotation() { # <flag> <set> <value>
 validate_annotation tier "$TIER_SET" "$TIER"
 validate_annotation quota-substitution "$QUOTA_SUBSTITUTION_SET" "$QUOTA_SUBSTITUTION"
 validate_annotation escalated-from "$ESCALATED_FROM_SET" "$ESCALATED_FROM"
-if [ "$TIER_SET$QUOTA_SUBSTITUTION_SET$ESCALATED_FROM_SET" != 000 ]; then
-  [ "$KIND" != secondmate ] || {
-    echo "error: --tier, --quota-substitution, and --escalated-from annotate ship and scout dispatches, never a secondmate" >&2
-    exit 1
-  }
-  [ "$RELAUNCH" -eq 0 ] || {
-    echo "error: --relaunch keeps the task's recorded dispatch annotations; --tier, --quota-substitution, and --escalated-from cannot change them" >&2
-    exit 1
-  }
-fi
+[ "$TIER_SET$QUOTA_SUBSTITUTION_SET$ESCALATED_FROM_SET" = 000 ] || [ "$KIND" != secondmate ] || {
+  echo "error: --tier, --quota-substitution, and --escalated-from annotate ship and scout dispatches, never a secondmate" >&2
+  exit 1
+}
 # A secondmate, local or remote, launches on its own per-mate pin, so --account
 # is refused here, before the remote route could ignore it.
 [ "$ACCOUNT_SET" -eq 0 ] || [ "$KIND" != secondmate ] || {
@@ -1356,6 +1350,10 @@ if [ "$RELAUNCH" -eq 1 ]; then
   }
   [ "$UPSTREAM_CONSENT_SET" -eq 0 ] || {
     echo "error: --relaunch reuses the task's recorded upstream consent; --upstream-consent cannot override it" >&2
+    exit 1
+  }
+  [ "$TIER_SET$QUOTA_SUBSTITUTION_SET$ESCALATED_FROM_SET" = 000 ] || {
+    echo "error: --relaunch keeps the task's recorded dispatch annotations; --tier, --quota-substitution, and --escalated-from cannot change them" >&2
     exit 1
   }
 else
