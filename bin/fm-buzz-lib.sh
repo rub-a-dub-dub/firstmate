@@ -38,7 +38,8 @@
 #   fm_buzz_binding_prune           - drop bindings past the 7-day window
 #   fm_buzz_secret_read             - print the bridge secret from the key file
 #                                     (only ever into a signing call's env)
-#   fm_buzz_cli <args...>           - run the pinned CLI as the bridge identity
+#   fm_buzz_cli [--timeout <seconds>] <args...>
+#                                  - run the pinned CLI as the bridge identity
 
 if ! command -v fmx_private_artifact_publish_stdin >/dev/null 2>&1; then
   # shellcheck source=bin/fm-x-lib.sh
@@ -184,7 +185,7 @@ fm_buzz_secret_read() {
   printf '%s' "$secret"
 }
 
-# fm_buzz_cli <args...>: run the pinned CLI as the bridge identity against the
+# fm_buzz_cli [--timeout <seconds>] <args...>: run as the bridge identity against the
 # configured relay. The secret is read at this moment and reaches the CLI only
 # through its environment; inherited Buzz identity settings are cleared so a
 # desktop pairing or stray auth tag can never stand in for the bridge key.
@@ -196,6 +197,14 @@ fm_buzz_cli() {
   (
     unset BUZZ_AUTH_TAG BUZZ_FEDERATED_IDENTITY_TOKEN BUZZ_FEDERATED_IDENTITY_ADAPTER \
       BUZZ_OUTPUT_FORMAT BUZZ_RELAY_URL
-    BUZZ_PRIVATE_KEY=$secret exec "$BUZZ_CLI" --relay "$relay" --format json "$@"
+    if [ "${1:-}" = --timeout ]; then
+      local seconds=$2
+      shift 2
+      # shellcheck source=bin/fm-timeout-lib.sh
+      . "${SCRIPT_DIR}/fm-timeout-lib.sh"
+      BUZZ_PRIVATE_KEY=$secret fm_run_timed "$seconds" "$BUZZ_CLI" --relay "$relay" --format json "$@"
+    else
+      BUZZ_PRIVATE_KEY=$secret exec "$BUZZ_CLI" --relay "$relay" --format json "$@"
+    fi
   )
 }

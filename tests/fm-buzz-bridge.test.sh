@@ -42,6 +42,7 @@ mention_tags() {  # [channel]
 #   --relay <url> --format json messages get --channel C --kinds 9 --since S --before U --limit L
 #   --relay <url> --format json messages thread --channel C --event E --limit L
 #   --relay <url> --format json messages send --channel C --reply-to E --content -
+#   --relay <url> --format json reactions add --event E --emoji 👀
 # It logs argv and whether the bridge secret reached it through the environment.
 make_fake_cli() {
   local home=$1
@@ -54,7 +55,7 @@ printf 'argv=%s key=%s\n' "$*" "$key" >> "$log"
 since=0 until=99999999999 limit=50 cmd= channel= reply= event=
 while [ $# -gt 0 ]; do
   case "$1" in
-    --relay|--format|--kinds) shift 2 ;;
+    --relay|--format|--kinds|--emoji) shift 2 ;;
     --channel) channel=$2; shift 2 ;;
     --since) since=$2; shift 2 ;;
     --before) until=$2; shift 2 ;;
@@ -62,7 +63,7 @@ while [ $# -gt 0 ]; do
     --event) event=$2; shift 2 ;;
     --reply-to) reply=$2; shift 2 ;;
     --content) shift 2 ;;
-    messages) cmd=$2; shift 2 ;;
+    messages|reactions) cmd=$2; shift 2 ;;
     *) shift ;;
   esac
 done
@@ -95,6 +96,18 @@ case "$cmd" in
     [ "${FAKE_SEND_RC:-0}" = 0 ] || exit "$FAKE_SEND_RC"
     jq -cRs --arg c "$channel" --arg r "$reply" '{channel:$c, reply_to:$r, content:.}' >> "${FAKE_SENT:?}"
     printf '{"accepted":true,"event_id":"%064d","mention_pubkeys":[],"message":""}\n' 7
+    ;;
+  add)
+    if [ -n "${FAKE_REACTION_CURSOR:-}" ]; then
+      # A failed write can be slow. Wait for the poll to commit intake before
+      # returning the simulated failure, so serializing intake behind the CLI
+      # would report a timeout instead of the expected failure.
+      until jq -e --argjson now "$FMX_NOW_OVERRIDE" '.since == $now' "$FAKE_REACTION_CURSOR" >/dev/null 2>&1; do
+        sleep 0.05
+      done
+    fi
+    [ "${FAKE_REACTION_RC:-0}" = 0 ] || exit "$FAKE_REACTION_RC"
+    printf '{"accepted":true}\n'
     ;;
   *) exit 1 ;;
 esac
@@ -265,6 +278,8 @@ test_enable_poll_ingests_verified_owner_mention() {
     "the binding records state, parent, thread root, and signer"
   assert_equals "$NOW" "$(jq -r .since "$home/state/buzz/cursor.json")" "a complete poll advances the cursor to its fence"
   assert_grep "key=ok" "$home/cli.log" "reads must sign as the configured bridge key"
+  assert_equals "argv=--relay https://relay.test.invalid --format json reactions add --event $eid --emoji 👀 key=ok" \
+    "$(grep 'reactions add' "$home/cli.log")" "the bridge reacts once to the original event with its own identity"
   assert_no_grep "$BRIDGE_SK" "$home/cli.log" "the secret must never appear in CLI argv"
   out=$(run_in "$home" "$ROOT/bin/fm-buzz.sh" status)
   assert_not_contains "$out" "$BRIDGE_SK" "status must never print the secret"
@@ -489,7 +504,10 @@ test_poll_requires_complete_thread_history() {
   set_events "$home" "$root" "$reply" "$bridge_reply" "$explicit"
   out=$(FAKE_THREAD_DELAY=10 FM_CHECK_TIMEOUT=25 poll_bounded "$home" 25)
   expect_code 0 $? "a stalled thread lookup must not time out the entire poll"
-  assert_contains "$(tail -1 "$home/cli.log")" "messages thread" "the slow thread lookup was attempted"
+  # Reaction lines are dropped so the last intake call stays the one under test:
+  # this poll binds the explicit mention, and acknowledgements follow intake.
+  assert_contains "$(grep -v reaction "$home/cli.log" | tail -1)" "messages thread" \
+    "the slow thread lookup was attempted"
   rid=$(only_rid "$home")
   [ -n "$rid" ] || fail "slow history must leave time to deliver the explicit mention"
   assert_contains "$out" "buzz-mention $rid" "a timed-out lookup cannot authorize the unaddressed reply"
@@ -527,7 +545,47 @@ test_poll_deduplicates_across_restarts() {
   out=$(poll "$home")
   assert_equals "" "$out" "a re-read of an accepted event must not wake again"
   assert_absent "$home/state/x-inbox/$rid.json" "a handled request must not be re-staged after a cursor loss"
+  assert_equals 1 "$(grep -c 'reactions add' "$home/cli.log")" "a re-read must not react again"
   pass "event-id bindings deduplicate a re-read even after the cursor and inbox are gone"
+}
+
+test_poll_reaction_failure_leaves_intake_complete() {
+  local home out rid
+  home=$(new_home reaction-failure)
+  enable "$home"
+  age_cursor "$home" $((NOW - 600))
+  set_events "$home" "$(sign_event "$OWNER_SK" $((NOW - 60)) 9 "$(mention_tags)" 'still deliver this')"
+  out=$(FAKE_REACTION_RC=2 FAKE_REACTION_CURSOR="$home/state/buzz/cursor.json" poll "$home")
+  expect_code 0 $? "poll with reaction failure"
+  rid=$(only_rid "$home")
+  [ -n "$rid" ] || fail "a reaction failure must not drop the inbox record"
+  assert_equals "buzz-mention $rid" "$out" "a reaction failure must not interrupt or add a wake"
+  assert_equals offered "$(jq -r .state "$home/state/buzz/requests/$rid.json")" "the request must be offered"
+  assert_equals "$NOW" "$(jq -r .since "$home/state/buzz/cursor.json")" "a reaction failure must not hold the cursor"
+  out=$(run_in "$home" "$ROOT/bin/fm-buzz.sh" status)
+  assert_contains "$out" "last poll reaction diagnostic: Buzz eyes reaction failed (exit 2)" \
+    "status must surface the reaction failure"
+  out=$(poll "$home")
+  assert_equals "" "$out" "the next poll must not re-offer the request"
+  assert_equals 1 "$(grep -c 'reactions add' "$home/cli.log")" "a failed reaction must not retry"
+  pass "a failed reaction is diagnosed without interrupting intake or retrying the send"
+}
+
+test_poll_reaction_dry_run_previews_without_sending() {
+  local home ev eid out rid
+  home=$(new_home dry-reaction)
+  enable "$home"
+  ev=$(sign_event "$OWNER_SK" $((NOW - 60)) 9 "$(mention_tags)" 'preview the reaction')
+  eid=$(printf '%s' "$ev" | jq -r .id)
+  set_events "$home" "$ev"
+  printf 'FMX_DRY_RUN=1\n' > "$home/.env"
+  out=$(poll "$home" 2>"$home/poll.stderr"); expect_code 0 $? "dry-run poll"
+  rid=$(only_rid "$home")
+  [ -n "$rid" ] || fail "a reaction preview must not drop the inbox record"
+  assert_equals "buzz-mention $rid" "$out" "preview must leave the normal intake wake intact"
+  assert_contains "$(cat "$home/poll.stderr")" "DRY RUN - would add 👀 to Buzz event $eid" "a dry run previews the exact reaction"
+  assert_no_grep "reactions add" "$home/cli.log" "a dry run must not send a reaction"
+  pass "a reaction dry run previews the exact reaction and leaves intake active"
 }
 
 # tests/fixtures/buzz-sign.py signs every "valid" fixture with bin/fm-buzz-verify.py's
@@ -700,6 +758,7 @@ test_poll_reannounces_a_staged_request() {
   out=$(poll "$home")
   assert_contains "$out" "buzz-mention $rid" "a staged request must be announced again"
   assert_equals offered "$(jq -r .state "$home/state/buzz/requests/$rid.json")" "the retry marks it offered"
+  assert_equals 1 "$(grep -c 'reactions add' "$home/cli.log")" "a staged re-read must not react again"
   pass "a request left staged by an interrupted poll is re-announced, so a wake is never lost"
 }
 
@@ -966,6 +1025,8 @@ fm_test_run \
   test_poll_requires_complete_thread_history \
   test_poll_ingests_a_mention_that_carries_an_attachment \
   test_poll_deduplicates_across_restarts \
+  test_poll_reaction_failure_leaves_intake_complete \
+  test_poll_reaction_dry_run_previews_without_sending \
   test_poll_delivers_the_newest_mention_past_the_read_budget \
   test_poll_holds_the_cursor_on_an_exactly_full_window \
   test_verifier_matches_external_bip340_and_nip01_oracles \

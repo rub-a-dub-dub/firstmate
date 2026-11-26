@@ -37,7 +37,8 @@
 # For each accepted event, in order, before the cursor may advance:
 #   1. claim the request binding state/buzz/requests/<request_id>.json
 #      (state "staged"; any binding already offered, answered, followed up or
-#      dismissed deduplicates the event)
+#      dismissed deduplicates the event), then start one best-effort reaction
+#      for a new binding
 #   2. publish the shared Relay inbox record state/x-inbox/<request_id>.json
 #      with platform "buzz" and the reply budget
 #   3. record the per-request reply context (state/x-context/<request_id>.json)
@@ -53,6 +54,8 @@
 # CLI refused, a thread lookup budget that ran out, a thread too long to check,
 # and a catch-up range too large to drain in one poll. A relay or network failure
 # on the intake read is silent; the next cycle retries it.
+# Reaction failures are status diagnostics only. The CLI attempt is bounded
+# and runs alongside intake so the wake and cursor never depend on its result.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -86,9 +89,22 @@ clear_error() {
   return 0
 }
 
+react_to_request() {
+  local eid=$1 out rc
+  fm_buzz_enabled || return 0
+  out=$(fm_buzz_cli --timeout 3 reactions add --event "$eid" --emoji '👀' 2>/dev/null)
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf 'Buzz eyes reaction failed (exit %s)\n' "$rc" >> "$WORK/reaction.error"
+  elif ! printf '%s' "$out" | jq -e '.accepted == true' >/dev/null 2>&1; then
+    printf 'Buzz eyes reaction was not accepted\n' >> "$WORK/reaction.error"
+  fi
+}
+
 command -v jq >/dev/null 2>&1 || { emit_error_once "missing jq"; exit 0; }
 command -v python3 >/dev/null 2>&1 || { emit_error_once "missing python3"; exit 0; }
 fm_buzz_load_config || { emit_error_once "$FM_BUZZ_CONFIG_ERROR"; exit 0; }
+fmx_load_config
 
 NOW=${FMX_NOW_OVERRIDE:-$(date +%s)}
 case "$NOW" in ''|*[!0-9]*) exit 0 ;; esac
@@ -221,6 +237,7 @@ fi
   || { emit_error_once "event verification failed to run"; exit 0; }
 
 FAILED=0
+REACTIONS=0
 while IFS= read -r ev; do
   [ -n "$ev" ] || continue
   eid=$(printf '%s' "$ev" | jq -r '.event_id')
@@ -239,7 +256,17 @@ while IFS= read -r ev; do
         state:"staged", answer_posted:false, followup_posted:false, dismissed:false}' > "$WORK/binding"
     fm_buzz_binding_claim "$rid" < "$WORK/binding"
     case $? in
-      0) binding=$(cat "$WORK/binding") ;;
+      0)
+        if fm_buzz_enabled; then
+          if [ -n "$FMX_DRY" ]; then
+            printf 'fm-buzz-poll: DRY RUN - would add 👀 to Buzz event %s\n' "$eid" >&2
+          else
+            react_to_request "$eid" </dev/null &
+            REACTIONS=1
+          fi
+        fi
+        binding=$(cat "$WORK/binding")
+        ;;
       1) continue ;;
       *) FAILED=1; continue ;;
     esac
@@ -272,6 +299,16 @@ else
   # shortcut: the newest page is still delivered, but the cursor holds until
   # the uncovered range falls under the read budget or behind the age limit.
   emit_error_once "catch-up range exceeds $PAGE_LIMIT messages; older messages in the window were not read"
+fi
+
+if [ "$REACTIONS" -eq 1 ]; then
+  wait
+  if [ -s "$WORK/reaction.error" ]; then
+    tail -n1 "$WORK/reaction.error" \
+      | fmx_private_artifact_publish_stdin "$STATE/buzz" reaction.error 600 2>/dev/null || true
+  elif fmx_private_artifact_file_valid "$STATE/buzz" reaction.error 600; then
+    rm -f "$STATE/buzz/reaction.error"
+  fi
 fi
 
 exit 0

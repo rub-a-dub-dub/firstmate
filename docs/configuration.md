@@ -3115,6 +3115,7 @@ Edits (kind 40003), DMs, gift wraps, workflow messages, and posts signed by anyo
 
 Each accepted message gets a stable request id derived from the transport, community, bridge key, and event id, and a binding in `state/buzz/requests/<request_id>.json` recording the channel, parent event, thread root, verified signer, and reply budget.
 The binding is written before the inbox record, the cursor in `state/buzz/cursor.json` advances only after a complete range is persisted, and an existing binding deduplicates a re-read.
+The bridge makes one best-effort attempt to react with 👀 to each newly bound message, previews the reaction under `FMX_DRY_RUN`, and reports failures in `bin/fm-buzz.sh status`.
 A new request wakes firstmate with `buzz-mention <request_id>`; a configuration, authorization, thread-lookup, or catch-up problem wakes once per distinct message with `buzz-bridge-error <reason>`, while a relay or network failure on the intake read stays silent until the next sweep.
 
 The check runs at the watcher's `FM_CHECK_INTERVAL` cadence, 300 seconds by default and 30 seconds in a home with hosted Relay on.
@@ -3143,7 +3144,8 @@ Run this once with the owner after the bridge lands, against the owner's relay:
 2. Confirm with the owner that the bridge pubkey is a member of the private channel.
 3. Run `bin/fm-buzz.sh enable` and confirm the watcher is live.
 4. The owner posts a message in the channel mentioning the bridge identity, for example a status question.
-5. Confirm firstmate wakes with `buzz-mention`, answers through `fmx-respond`, and the reply appears in that message's thread in Buzz, signed by the bridge identity.
+5. Confirm firstmate wakes with `buzz-mention` and the owner sees a 👀 reaction from the bridge identity on the original message before the reply appears in its thread.
+   Confirm that firstmate sent the reply through `fmx-respond` and that Buzz shows the bridge identity as its author.
 6. For a request that spawns work, confirm the acknowledgement arrives first and the final outcome follows in the same thread.
 7. Run `bin/fm-buzz.sh disable`, have the owner post another mention, and confirm no wake and no reply follow, `bin/fm-buzz.sh status` reports `bridge: disabled`, and it still does after a new session starts.
 8. Run `bin/fm-buzz.sh enable` again and confirm the mention from step 7 is *not* answered, on that sweep or any later one: enabling fences the cursor at the enable moment. Then have the owner post a fresh mention and confirm that one is answered.

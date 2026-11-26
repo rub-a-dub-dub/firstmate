@@ -129,6 +129,9 @@ case "${1:-}" in
     if [ -f "$STATE/buzz/poll.error" ]; then
       echo "last poll diagnostic: $(head -n1 "$STATE/buzz/poll.error")"
     fi
+    if fmx_private_artifact_file_valid "$STATE/buzz" reaction.error 600; then
+      echo "last poll reaction diagnostic: $(head -n1 "$STATE/buzz/reaction.error")"
+    fi
     ;;
   -h|--help) usage; exit 0 ;;
   *) usage; exit 2 ;;
