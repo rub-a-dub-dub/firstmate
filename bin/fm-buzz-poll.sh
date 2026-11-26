@@ -87,6 +87,7 @@ case "${1-}" in
 esac
 
 WORK=
+# shellcheck disable=SC2329 # EXIT trap owns cleanup.
 cleanup() {
   [ -z "$WORK" ] || rm -rf "$WORK"
   if [ "$NOTIFY" -eq 1 ]; then fm_lock_release "$FM_WAKE_QUEUE_LOCK" || true; fi

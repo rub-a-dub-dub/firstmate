@@ -1123,6 +1123,7 @@ SH
   chmod +x "$home/bin/listener"
   printf 'BUZZ_LISTENER=%s\n' "$home/bin/listener" >> "$home/config/buzz-bridge.env"
   enable_from_off "$home"
+  # shellcheck disable=SC2329 # wait_for_buzz invokes this predicate by name.
   connected() { run_in "$home" "$ROOT/bin/fm-buzz.sh" status | grep -Fxq 'listener: connected'; }
   wait_for_buzz 100 connected || fail "the listener did not report connected"
   helper_pid=$(cat "$home/listener.pid")
@@ -1137,6 +1138,7 @@ SH
   ev=$(sign_event "$OWNER_SK" "$NOW" 9 "$(mention_tags)" 'live owner mention')
   set_events "$home" "$ev"
   : > "$home/doorbell"
+  # shellcheck disable=SC2329 # wait_for_buzz invokes this predicate by name.
   buzz_woke() { grep -q 'buzz-mention buzz-' "$home/watch.out"; }
   if ! wait_for_buzz 150 buzz_woke; then
     kill "$watch_pid" 2>/dev/null || true
@@ -1148,6 +1150,7 @@ SH
   assert_equals 'live owner mention' "$(jq -r .text "$home/state/x-inbox/$rid.json")" "poll persisted the signed body"
 
   : > "$home/disconnect"
+  # shellcheck disable=SC2329 # wait_for_buzz invokes this predicate by name.
   disconnected() { run_in "$home" "$ROOT/bin/fm-buzz.sh" status | grep -Fxq 'listener: disconnected'; }
   wait_for_buzz 100 disconnected || fail "the listener did not report disconnection"
   assert_equals 1 "$(wc -l < "$home/state/.wake-queue" | tr -d ' ')" "a drop must not add a wake"
@@ -1181,6 +1184,7 @@ SH
   chmod +x "$home/bin/listener"
   printf 'BUZZ_LISTENER=%s\n' "$home/bin/listener" >> "$home/config/buzz-bridge.env"
   enable_from_off "$home"
+  # shellcheck disable=SC2329 # wait_for_buzz invokes this predicate by name.
   armed() { run_in "$home" "$ROOT/bin/fm-buzz.sh" status | grep -Fxq 'listener: connected'; }
   wait_for_buzz 100 armed || fail "the first arm did not start a listener"
   # Arming again registers a new generation while the first listener still owns
@@ -1212,6 +1216,7 @@ SH
   printf 'BUZZ_LISTENER=%s\n' "$home/bin/listener" >> "$home/config/buzz-bridge.env"
   export FM_BUZZ_LISTEN_RECHECK_SECONDS=1
   enable_from_off "$home"
+  # shellcheck disable=SC2329 # wait_for_buzz invokes this predicate by name.
   connected() { run_in "$home" "$ROOT/bin/fm-buzz.sh" status | grep -Fxq 'listener: connected'; }
   wait_for_buzz 100 connected || fail "the listener did not report connected"
   helper_pid=$(cat "$home/listener.pid")
@@ -1247,6 +1252,7 @@ test_push_waits_for_a_sweep() {
   : > "$home/read-gate"
   FAKE_READ_GATE="$home/read-gate" poll "$home" > "$home/sweep.out" &
   sweep_pid=$!
+  # shellcheck disable=SC2329 # wait_for_buzz invokes this predicate by name.
   sweep_entered() { [ -f "$home/read-gate.entered" ]; }
   wait_for_buzz 100 sweep_entered || fail "sweep did not reach the CLI"
   ev=$(sign_event "$OWNER_SK" "$NOW" 9 "$(mention_tags)" 'concurrent mention')
