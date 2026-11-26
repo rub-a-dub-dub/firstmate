@@ -1,0 +1,33 @@
+Fail-before / pass-after for the four behaviour-changing reaction cases.
+
+Method: bin/fm-buzz-poll.sh and bin/fm-buzz-lib.sh were reverted to the base
+commit 101c1d25 while keeping the new tests/fm-buzz-bridge.test.sh, each case
+was run alone, then the production files were restored from git and each case
+was re-run.
+
+BASE (101c1d25 production scripts, new tests)
+  test_poll_reaction_failure_leaves_intake_complete
+    not ok - the reaction must be sent only after intake commits its cursor
+  test_poll_acknowledges_every_newly_bound_mention
+    not ok - every bound mention must be acknowledged (expected '7', got '0')
+  test_poll_reaction_dry_run_previews_without_sending
+    not ok - a dry run previews the exact reaction
+             (missing: 'DRY RUN - would add 👀 to Buzz event 151b5e24...')
+  test_poll_survives_a_zero_padded_check_timeout
+    not ok - FM_CHECK_TIMEOUT=00 must read as 30 seconds and still acknowledge
+             (expected '1', got '0')
+  test_poll_skips_reactions_with_no_budget_left
+    ok  <- negative guard; passes trivially at base, as expected
+
+  Running the whole file at base stops on the first failure in the pre-existing
+  intake test, which the change extended with a reaction assertion:
+    not ok - the bridge reacts once to the original event with its own identity
+      (expected 'argv=--relay https://relay.test.invalid --format json
+       reactions add --event 60eceed4... --emoji 👀 key=ok', got '')
+
+TARGET (3bbcf4af)
+  test_poll_reaction_failure_leaves_intake_complete      ok
+  test_poll_acknowledges_every_newly_bound_mention       ok
+  test_poll_reaction_dry_run_previews_without_sending    ok
+  test_poll_survives_a_zero_padded_check_timeout         ok
+  whole file: 32/32 ok, exit 0

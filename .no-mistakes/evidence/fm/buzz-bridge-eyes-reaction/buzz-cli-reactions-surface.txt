@@ -1,0 +1,29 @@
+Pinned-CLI surface check -- the one dependency this change adds.
+Host: the Buzz CLI bundled with Buzz.app (/Users/crossbow/.local/bin/buzz ->
+/Applications/Buzz.app/Contents/Resources/bin/buzz). Read-only --help only; no relay contacted.
+
+$ buzz reactions --help
+Add, remove, and list emoji reactions
+
+Usage: buzz reactions [OPTIONS] <COMMAND>
+
+Commands:
+  add     Add an emoji reaction to a message
+  remove  Remove an emoji reaction from a message
+  get     List reactions on a message
+  help    Print this message or the help of the given subcommand(s)
+
+
+$ buzz reactions add --help
+Add an emoji reaction to a message
+
+Usage: buzz reactions add [OPTIONS] --event <EVENT> --emoji <EMOJI>
+
+Options:
+      --event <EVENT>          Event ID (64-char hex)
+      --emoji <EMOJI>          Emoji character (e.g. '👍') or custom emoji shortcode
+      --emoji-url <EMOJI_URL>  Image URL for a custom emoji reaction; when set, content becomes `:shortcode:`
+  -h, --help                   Print help
+
+Both --event and --emoji are required flags on 'reactions add', exactly the form
+bin/fm-buzz-poll.sh:116 issues and docs/configuration.md:3118 records.

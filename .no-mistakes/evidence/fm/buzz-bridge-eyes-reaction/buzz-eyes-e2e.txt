@@ -1,0 +1,79 @@
+BUZZ BRIDGE: EYES ACKNOWLEDGEMENT, END TO END
+owner pubkey  4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa
+bridge pubkey 466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27
+
+== 1. the owner turns the bridge on ==
+$ bin/fm-buzz.sh enable
+buzz bridge: enabled for channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b on relay.example.invalid; the watcher polls it on its next check sweep
+
+== 2. the owner posts a mention in the Buzz channel ==
+event id c969719f2fed875bd8ac264806ca7ec22b3a57367e9017d506396eea721bb90c
+  content: firstmate: can you look at the flaky lint shard before standup?
+
+== 3. firstmate's watcher runs the bridge check ==
+$ bin/fm-buzz-poll.sh        # wake lines the watcher acts on:
+  buzz-mention buzz-6adb3980f192f9c2b4924255e467afac4487f8df
+
+staged in the Relay inbox as request buzz-6adb3980f192f9c2b4924255e467afac4487f8df:
+  {
+    "platform": "buzz",
+    "text": "firstmate: can you look at the flaky lint shard before standup?"
+  }
+
+== 4. what the owner sees on their own message, right now ==
+   (rendered from the stand-in relay's stored reaction state)
+  ---------------------------------------------------------------
+   4f355bdc...  (the owner)
+   firstmate: can you look at the flaky lint shard before standup?
+
+     👀  1   <- 466d7fca... (firstmate bridge), 08:16:55Z
+  ---------------------------------------------------------------
+
+  reaction as the relay stored it:
+    {"target_event":"c969719f2fed875bd8ac264806ca7ec22b3a57367e9017d506396eea721bb90c","emoji":"👀","author":"466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27","at":"08:16:55"}
+
+== 5. firstmate answers in the thread, after the 👀 ==
+$ bin/fm-x-reply.sh buzz-6adb3980f192f9c2b4924255e467afac4487f8df -
+buzz-6adb3980f192f9c2b4924255e467afac4487f8df
+
+the owner's thread, from the relay's stored messages:
+  ↳ 466d7fca… at 08:16:55: On it - the lint shard times out because the partitioner balances by byte size. Writing it up now.
+
+== 6. ordering the owner actually experiences ==
+   every relay write the bridge made, in order:
+       1	buzz --relay <relay> --format json messages get --channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b --kinds 9 --since 1795681013 --before 1795681014 --limit 200
+       2	buzz --relay <relay> --format json reactions add --event c969719f2fed875bd8ac264806ca7ec22b3a57367e9017d506396eea721bb90c --emoji 👀
+       3	buzz --relay <relay> --format json messages send --channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b --reply-to c969719f2fed875bd8ac264806ca7ec22b3a57367e9017d506396eea721bb90c --content -
+
+== 7. the same mention, with FMX_DRY_RUN set ==
+  buzz-mention buzz-6adb3980f192f9c2b4924255e467afac4487f8df
+  fm-buzz-poll: DRY RUN - would add 👀 to Buzz event c969719f2fed875bd8ac264806ca7ec22b3a57367e9017d506396eea721bb90c
+   relay reaction state after the dry run: []
+   relay writes attempted:                 0
+
+== 8. a relay that refuses the reaction ==
+$ bin/fm-buzz-poll.sh        # the relay refuses the reactions-add write with exit 2
+  buzz-mention buzz-6adb3980f192f9c2b4924255e467afac4487f8df
+   the mention is still staged:           1 inbox record
+   relay reaction state:                   []
+$ bin/fm-buzz-poll.sh        # the next sweep neither re-offers nor retries the 👀
+  (no wake, nothing re-offered)
+   reactions-add attempts across both sweeps: 1
+$ bin/fm-buzz.sh status      # a lost 👀 leaves no diagnostic, by the owner's own decision
+  bridge: enabled
+  watcher check: registered
+  config: ok (community relay.example.invalid, channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b, owner 4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa, bridge 466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27)
+  cursor: 1795681019
+  pending requests: 1
+
+== 9. a catch-up sweep: three mentions posted while firstmate was down ==
+$ bin/fm-buzz-poll.sh
+  buzz-mention buzz-414b69a9eae5573b942e14806b99fb9dcad2caf5
+  buzz-mention buzz-612724471341daef348981b301013bde90c7316b
+  buzz-mention buzz-8cb2314c696667590af60475ffc664e4396919bd
+
+  each of the owner's three messages, and the 👀 it got (send order shown):
+    "third: standup is in ten minutes"         👀 sent #1
+    "second: and the lint shard?"              👀 sent #2
+    "first: any news on the gate?"             👀 sent #3
+   reactions-add writes this sweep: 3 for 3 mentions - no per-sweep cap
