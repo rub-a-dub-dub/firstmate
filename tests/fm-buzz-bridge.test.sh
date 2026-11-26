@@ -17,6 +17,7 @@ for tool in jq python3; do
   dir=$(command -v "$tool" 2>/dev/null) && BASE_PATH="$(dirname "$dir"):$BASE_PATH"
 done
 TMP_ROOT=$(fm_test_tmproot fm-buzz-bridge-tests)
+export FM_PROCEVENT_CLAIM_ROOT="$TMP_ROOT/procevent-claims"
 SIGN="$ROOT/tests/fixtures/buzz-sign.py"
 
 OWNER_SK=1111111111111111111111111111111111111111111111111111111111111111
@@ -70,6 +71,13 @@ done
 case "$cmd" in
   get)
     [ "${FAKE_GET_RC:-0}" = 0 ] || exit "$FAKE_GET_RC"
+    if [ -n "${FAKE_READ_GATE:-}" ]; then
+      : > "$FAKE_READ_GATE.entered"
+      for i in $(seq 1 200); do
+        [ ! -e "$FAKE_READ_GATE" ] && break
+        sleep 0.05
+      done
+    fi
     jq -c --argjson s "$since" --argjson u "$until" --argjson l "$limit" \
       '[.[] | select(.created_at >= $s and .created_at <= $u)]
        | sort_by(-.created_at) | .[:$l] | sort_by(.created_at)' "${FAKE_EVENTS:?}"
@@ -160,6 +168,23 @@ run_in() {
 
 poll() {
   run_in "$1" "$ROOT/bin/fm-buzz-poll.sh"
+}
+
+# process_exited <pid>: 0 once that process is gone or a reaped zombie.
+process_exited() {
+  local process_state
+  process_state=$(ps -o stat= -p "$1" 2>/dev/null) || return 0
+  [[ "$process_state" = Z* || -z "$process_state" ]]
+}
+
+wait_for_buzz() {
+  local attempts=$1 i
+  shift
+  for ((i = 0; i < attempts; i++)); do
+    "$@" && return 0
+    sleep 0.1
+  done
+  return 1
 }
 
 # The watcher caps every custom check at FM_CHECK_TIMEOUT (30s by default) with
@@ -291,6 +316,7 @@ test_enable_poll_ingests_verified_owner_mention() {
   out=$(run_in "$home" "$ROOT/bin/fm-buzz.sh" status)
   assert_not_contains "$out" "$BRIDGE_SK" "status must never print the secret"
   assert_contains "$out" "pending requests: 1" "status counts pending Buzz requests"
+  assert_contains "$out" "listener: not configured" "a poll-only home has no listener to report on"
   pass "an enabled bridge ingests a verified owner mention into the shared Relay inbox"
 }
 
@@ -1069,6 +1095,271 @@ test_reenable_while_on_keeps_the_cursor() {
   pass "re-running enable while the bridge is on re-arms the check and leaves the cursor alone"
 }
 
+test_listener_wakes_through_the_poll_and_retires() {
+  local home helper_pid out rid ev watch_pid
+  home=$(new_home listener)
+  fm_test_track_procevent_home "$home" "$FM_PROCEVENT_CLAIM_ROOT"
+  cat > "$home/bin/listener" <<'SH'
+#!/usr/bin/env bash
+home=${0%/bin/listener}
+printf '%s\n' "$$" > "$home/listener.pid"
+printf 'connected\n'
+# Bounded like the Lavish stub listener, so a helper that escapes its test
+# cannot outlive it, and wide enough that a loaded host cannot end the session
+# while the test is still driving it.
+limit=${FM_TEST_STUB_MAX_BLOCK_SECONDS:-120}
+while [ "$SECONDS" -lt "$limit" ]; do
+  if [ -e "$home/doorbell" ]; then
+    rm -f "$home/doorbell"
+    printf 'match\n'
+  fi
+  if [ -e "$home/disconnect" ]; then
+    rm -f "$home/disconnect"
+    printf 'disconnected\n'
+  fi
+  sleep 0.05
+done
+SH
+  chmod +x "$home/bin/listener"
+  printf 'BUZZ_LISTENER=%s\n' "$home/bin/listener" >> "$home/config/buzz-bridge.env"
+  enable_from_off "$home"
+  # shellcheck disable=SC2329 # wait_for_buzz invokes this predicate by name.
+  connected() { run_in "$home" "$ROOT/bin/fm-buzz.sh" status | grep -Fxq 'listener: connected'; }
+  wait_for_buzz 100 connected || fail "the listener did not report connected"
+  helper_pid=$(cat "$home/listener.pid")
+  : > "$home/state/.last-check"
+  # This home owes no downtime announcement, so the wake the watcher delivers is
+  # the push's own queue row and not a resurface of rows that were already there.
+  printf 'announced:downtime:fixture-generation\n' > "$home/state/.watcher-down"
+  fm_test_track_watcher_state "$home/state"
+  FM_ROOT_OVERRIDE="$ROOT" FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_POLL=1 \
+    run_in "$home" "$ROOT/bin/fm-watch.sh" > "$home/watch.out" 2> "$home/watch.err" &
+  watch_pid=$!
+  # The push must arrive at a watcher that is already polling. A row appended
+  # before the watcher consumes its startup recovery state reopens the
+  # announced downtime marker, and that cycle delivers the generic
+  # `check: rearm-resurface` instead of this push's own payload. The liveness
+  # beacon is touched inside the poll loop, after that startup consumption.
+  # shellcheck disable=SC2329 # wait_for_buzz invokes this predicate by name.
+  watcher_polling() { [ -e "$home/state/.last-watcher-beat" ]; }
+  if ! wait_for_buzz 150 watcher_polling; then
+    kill "$watch_pid" 2>/dev/null || true
+    fail "the watcher never reached its poll loop: $(cat "$home/watch.err")"
+  fi
+  ev=$(sign_event "$OWNER_SK" "$NOW" 9 "$(mention_tags)" 'live owner mention')
+  set_events "$home" "$ev"
+  : > "$home/doorbell"
+  # shellcheck disable=SC2329 # wait_for_buzz invokes this predicate by name.
+  buzz_woke() { grep -q 'buzz-mention buzz-' "$home/watch.out"; }
+  if ! wait_for_buzz 150 buzz_woke; then
+    kill "$watch_pid" 2>/dev/null || true
+    fail "the watcher did not surface the push: $(cat "$home/watch.out" "$home/watch.err")"
+  fi
+  wait "$watch_pid" || fail "the watcher did not exit after the push wake"
+  rid=$(only_rid "$home")
+  assert_contains "$(cat "$home/watch.out")" "buzz-mention $rid" "the watcher surfaces the verified request before a sweep"
+  assert_equals 'live owner mention' "$(jq -r .text "$home/state/x-inbox/$rid.json")" "poll persisted the signed body"
+
+  : > "$home/disconnect"
+  # shellcheck disable=SC2329 # wait_for_buzz invokes this predicate by name.
+  disconnected() { run_in "$home" "$ROOT/bin/fm-buzz.sh" status | grep -Fxq 'listener: disconnected'; }
+  wait_for_buzz 100 disconnected || fail "the listener did not report disconnection"
+  assert_equals 1 "$(wc -l < "$home/state/.wake-queue" | tr -d ' ')" "a drop must not add a wake"
+  # The off switch removes the marker before retiring, so a retirement that
+  # could not be confirmed leaves the source armed with the bridge already off.
+  mv "$home/config/buzz-bridge.enabled" "$home/config/buzz-bridge.held"
+  out=$(run_in "$home" "$ROOT/bin/fm-buzz.sh" status)
+  assert_contains "$out" 'bridge: disabled' "the marker is what reports the bridge off"
+  assert_contains "$out" 'listener: disconnected' "a source still registered must never report stopped"
+  mv "$home/config/buzz-bridge.held" "$home/config/buzz-bridge.enabled"
+  run_in "$home" "$ROOT/bin/fm-buzz.sh" disable >/dev/null || fail "disable must retire the source"
+  out=$(run_in "$home" "$ROOT/bin/fm-buzz.sh" status)
+  assert_contains "$out" 'listener: stopped' "status reports retirement"
+  wait_for_buzz 100 process_exited "$helper_pid" || fail "the listener helper survived retirement"
+  run_in "$home" "$ROOT/bin/fm-procevent.sh" reconcile >/dev/null || fail "disabled home reconcile"
+  out=$(run_in "$home" "$ROOT/bin/fm-procevent.sh" list)
+  assert_equals 'no sources registered' "$out" "reconcile cannot restart a disabled source"
+  pass "a push wakes a live watcher before its sweep and disable retires the listener"
+}
+
+test_arm_reports_a_listener_it_could_not_start() {
+  local home rc
+  home=$(new_home arm-verdict)
+  fm_test_track_procevent_home "$home" "$FM_PROCEVENT_CLAIM_ROOT"
+  cat > "$home/bin/listener" <<'SH'
+#!/usr/bin/env bash
+printf 'connected\n'
+limit=${FM_TEST_STUB_MAX_BLOCK_SECONDS:-120}
+while [ "$SECONDS" -lt "$limit" ]; do sleep 0.05; done
+SH
+  chmod +x "$home/bin/listener"
+  printf 'BUZZ_LISTENER=%s\n' "$home/bin/listener" >> "$home/config/buzz-bridge.env"
+  enable_from_off "$home"
+  # shellcheck disable=SC2329 # wait_for_buzz invokes this predicate by name.
+  armed() { run_in "$home" "$ROOT/bin/fm-buzz.sh" status | grep -Fxq 'listener: connected'; }
+  wait_for_buzz 100 armed || fail "the first arm did not start a listener"
+  # Arming again registers a new generation while the first listener still owns
+  # the source, the one readiness miss reconcile cannot heal on its own. A
+  # nonzero arm is what makes fm-buzz.sh enable warn instead of claiming the
+  # listener started.
+  rc=0
+  run_in "$home" "$ROOT/bin/fm-procevent-buzz.sh" arm || rc=$?
+  [ "$rc" -ne 0 ] || fail "arm must report that its registration has no live listener"
+  run_in "$home" "$ROOT/bin/fm-buzz.sh" disable >/dev/null || fail "disable must retire the source"
+  pass "arm reports a registration whose listener never started"
+}
+
+test_the_off_switch_alone_stops_a_quiet_listener() {
+  local home helper_pid listen_pid out
+  home=$(new_home marker-off)
+  fm_test_track_procevent_home "$home" "$FM_PROCEVENT_CLAIM_ROOT"
+  # A quiet private channel: this helper reports one connection and then says
+  # nothing, so only the adapter's own re-check can notice the off switch.
+  cat > "$home/bin/listener" <<'SH'
+#!/usr/bin/env bash
+home=${0%/bin/listener}
+printf '%s\n' "$$" > "$home/listener.pid"
+printf 'connected\n'
+limit=${FM_TEST_STUB_MAX_BLOCK_SECONDS:-120}
+while [ "$SECONDS" -lt "$limit" ]; do sleep 0.05; done
+SH
+  chmod +x "$home/bin/listener"
+  printf 'BUZZ_LISTENER=%s\n' "$home/bin/listener" >> "$home/config/buzz-bridge.env"
+  export FM_BUZZ_LISTEN_RECHECK_SECONDS=1
+  enable_from_off "$home"
+  # shellcheck disable=SC2329 # wait_for_buzz invokes this predicate by name.
+  connected() { run_in "$home" "$ROOT/bin/fm-buzz.sh" status | grep -Fxq 'listener: connected'; }
+  wait_for_buzz 100 connected || fail "the listener did not report connected"
+  helper_pid=$(cat "$home/listener.pid")
+  IFS=' ' read -r listen_pid _ < "$home/state/buzz/listener.connected"
+  [ -n "$listen_pid" ] || fail "the connection marker names no listener process"
+  # The marker is the off switch; nothing retires the source here.
+  rm -f "$home/config/buzz-bridge.enabled"
+  wait_for_buzz 100 process_exited "$listen_pid" || fail "the listener outlived the off switch"
+  wait_for_buzz 100 process_exited "$helper_pid" \
+    || fail "the helper kept its relay session after the off switch"
+  unset FM_BUZZ_LISTEN_RECHECK_SECONDS
+  assert_absent "$home/state/buzz/listener.connected" "a stopped listener clears its connection marker"
+  out=$(run_in "$home" "$ROOT/bin/fm-buzz.sh" status)
+  assert_contains "$out" 'bridge: disabled' "removing the marker is what turns the bridge off"
+  assert_contains "$out" 'listener: disconnected' "the source stays registered for a later enable"
+  pass "removing the marker stops a quiet listener and its relay session"
+}
+
+test_status_names_a_configured_but_unusable_listener() {
+  local home out
+  home=$(new_home unusable-listener)
+  printf 'BUZZ_LISTENER=%s\n' "$home/bin/listener-that-moved" >> "$home/config/buzz-bridge.env"
+  out=$(run_in "$home" "$ROOT/bin/fm-buzz.sh" status)
+  assert_contains "$out" 'listener: unusable (BUZZ_LISTENER is not an executable file)' \
+    "a listener path that moved must not read as unconfigured"
+  pass "status separates an unusable BUZZ_LISTENER from an unset one"
+}
+
+test_a_sweep_reports_a_poll_lock_it_cannot_reclaim() {
+  local home out
+  home=$(new_home stuck-lock)
+  enable "$home"
+  set_events "$home" "$(sign_event "$OWNER_SK" "$NOW" 9 "$(mention_tags)" 'mention behind a stuck lock')"
+  # A lock directory past the mid-acquisition window, with no holder and
+  # something inside it that rmdir cannot remove: nothing reclaims it, so every
+  # later sweep would skip forever.
+  mkdir -p "$home/state/.buzz-poll.lock/not-a-lock-file" || fail "cannot stage the stuck lock"
+  touch -t 200001010000 "$home/state/.buzz-poll.lock" || fail "cannot age the stuck lock"
+  out=$(poll "$home"); expect_code 0 $? "sweep exit with an unreclaimable lock"
+  assert_contains "$out" "buzz-bridge-error cannot reclaim $home/state/.buzz-poll.lock" \
+    "a lock nothing can reclaim must not silence intake"
+  assert_equals '' "$(only_rid "$home")" "a sweep that never ran must not stage a request"
+  assert_grep "cannot reclaim" "$home/state/buzz/poll.error" "the diagnostic is recorded for status"
+  assert_equals '' "$(poll "$home")" "the bounded diagnostic reports once, not every sweep"
+  rmdir "$home/state/.buzz-poll.lock/not-a-lock-file" "$home/state/.buzz-poll.lock" \
+    || fail "cannot clear the stuck lock"
+  out=$(poll "$home"); expect_code 0 $? "sweep exit once the lock is clear"
+  assert_contains "$out" 'buzz-mention buzz-' "intake resumes once the lock is reclaimable"
+  pass "a poll lock nothing can reclaim is reported instead of skipped silently"
+}
+
+test_a_zero_recheck_override_keeps_the_production_cadence() {
+  local home helper_pid
+  home=$(new_home padded-zero)
+  fm_test_track_procevent_home "$home" "$FM_PROCEVENT_CLAIM_ROOT"
+  cat > "$home/bin/listener" <<'SH'
+#!/usr/bin/env bash
+home=${0%/bin/listener}
+printf '%s\n' "$$" > "$home/listener.pid"
+printf 'connected\n'
+limit=${FM_TEST_STUB_MAX_BLOCK_SECONDS:-120}
+while [ "$SECONDS" -lt "$limit" ]; do sleep 0.05; done
+SH
+  chmod +x "$home/bin/listener"
+  printf 'BUZZ_LISTENER=%s\n' "$home/bin/listener" >> "$home/config/buzz-bridge.env"
+  # Every zero spelling must fall back to the production cadence rather than
+  # ending the session on its first read.
+  export FM_BUZZ_LISTEN_RECHECK_SECONDS=00
+  enable_from_off "$home"
+  connected() { run_in "$home" "$ROOT/bin/fm-buzz.sh" status | grep -Fxq 'listener: connected'; }
+  wait_for_buzz 100 connected || fail "a zero-valued re-check override ended the session at once"
+  helper_pid=$(cat "$home/listener.pid")
+  sleep 1
+  ! process_exited "$helper_pid" || fail "the helper did not survive a zero-valued override"
+  connected || fail "the listener did not stay connected under a zero-valued override"
+  unset FM_BUZZ_LISTEN_RECHECK_SECONDS
+  run_in "$home" "$ROOT/bin/fm-buzz.sh" disable >/dev/null || fail "disable must retire the source"
+  pass "a zero-valued re-check override falls back to the production cadence"
+}
+
+test_push_waits_for_a_sweep() {
+  local home sweep_pid push_pid ev
+  home=$(new_home single-flight)
+  enable_from_off "$home"
+  : > "$home/read-gate"
+  FAKE_READ_GATE="$home/read-gate" poll "$home" > "$home/sweep.out" &
+  sweep_pid=$!
+  # shellcheck disable=SC2329 # wait_for_buzz invokes this predicate by name.
+  sweep_entered() { [ -f "$home/read-gate.entered" ]; }
+  wait_for_buzz 100 sweep_entered || fail "sweep did not reach the CLI"
+  ev=$(sign_event "$OWNER_SK" "$NOW" 9 "$(mention_tags)" 'concurrent mention')
+  set_events "$home" "$ev"
+  run_in "$home" "$ROOT/bin/fm-buzz-poll.sh" --notify &
+  push_pid=$!
+  # A competing watcher sweep has the exact same lock as the waiting push.
+  assert_equals '' "$(poll "$home")" "a busy watcher sweep must skip"
+  assert_equals 1 "$(wc -l < "$home/cli.log" | tr -d ' ')" "only the first sweep may enter the CLI"
+  rm -f "$home/read-gate"
+  wait "$sweep_pid" || fail "the sweep did not finish"
+  wait "$push_pid" || fail "the push did not finish"
+  # Reads only: the sweep's own eyes acknowledgement is a third CLI call.
+  assert_equals 2 "$(grep -c 'messages get' "$home/cli.log")" "the push reads after the sweep releases the lock"
+  assert_contains "$(cat "$home/sweep.out")" 'buzz-mention' "the sweep publishes the verified mention"
+  assert_absent "$home/state/.wake-queue" "the waiting push must not duplicate the sweep's wake"
+  pass "push and sweep share one poll lock and deduplicate sequential reads"
+}
+
+test_a_payloadless_push_row_surfaces_no_blank_wake() {
+  local home out
+  home=$(new_home truncated-push)
+  enable "$home"
+  : > "$home/state/.last-check"
+  printf 'announced:downtime:fixture-generation\n' > "$home/state/.watcher-down"
+  fm_test_track_watcher_state "$home/state"
+  # The durable queue's rows are epoch, sequence, kind, key and payload, tab
+  # separated. A state partition that fills mid-append can leave the payload
+  # field off, and such a row carries nothing an operator could act on.
+  {
+    printf '%s\t1\tcheck\tbuzz-push\n' "$NOW"
+    printf '%s\t2\tcheck\tbuzz-push\tcheck: %s: buzz-mention %s\n' \
+      "$NOW" "$home/state/buzz-bridge.check.sh" "buzz-$(printf '0%.0s' {1..39})1"
+  } >> "$home/state/.wake-queue"
+  FM_ROOT_OVERRIDE="$ROOT" FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_POLL=1 \
+    run_in "$home" "$ROOT/bin/fm-watch.sh" > "$home/watch.out" 2> "$home/watch.err" \
+    || fail "the watcher did not deliver the complete row: $(cat "$home/watch.err")"
+  out=$(cat "$home/watch.out")
+  assert_contains "$out" 'buzz-mention buzz-' "the watcher still surfaces the complete push row"
+  assert_equals 0 "$(grep -c '^[[:space:]]*$' "$home/watch.out" | tr -d ' ')" \
+    "a payload-less row must contribute nothing to the delivered wake"
+  pass "a push row that lost its payload adds no blank wake"
+}
+
 test_dismiss_is_local_and_final() {
   local home rid out rc
   home=$(new_home dismiss)
@@ -1132,6 +1423,14 @@ fm_test_run \
   test_reply_dry_run_writes_a_receipt_without_spending_the_budget \
   test_disable_stops_intake_and_replies_until_enabled \
   test_reenable_while_on_keeps_the_cursor \
+  test_listener_wakes_through_the_poll_and_retires \
+  test_arm_reports_a_listener_it_could_not_start \
+  test_the_off_switch_alone_stops_a_quiet_listener \
+  test_status_names_a_configured_but_unusable_listener \
+  test_a_sweep_reports_a_poll_lock_it_cannot_reclaim \
+  test_a_zero_recheck_override_keeps_the_production_cadence \
+  test_push_waits_for_a_sweep \
+  test_a_payloadless_push_row_surfaces_no_blank_wake \
   test_dismiss_is_local_and_final \
   test_dry_run_dismiss_previews_and_leaves_the_request_answerable \
   test_poll_does_not_reannounce_a_handled_staged_request \

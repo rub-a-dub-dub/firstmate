@@ -189,6 +189,7 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-buzz-poll.sh`        | One bounded Buzz channel poll: verify owner requests, stage them in the Relay inbox, and acknowledge each with a best-effort eyes reaction |
 | `fm-buzz-reply.sh`       | Send, dry-run, or dismiss a Buzz-bound Relay reply in the original thread            |
 | `fm-buzz-verify.py`      | Filter Buzz events, verify their ids and BIP-340 signatures, and qualify unaddressed thread replies |
+| `fm-procevent-buzz.sh`   | Built-in process-event source for the Buzz bridge: arm, retire, or report the listener, and own the helper that pushes new mentions to a poll |
 | `fm-public-followup-lib.sh` | Shared Relay gate, mirrored deliverable validation, open-loop state, locking, and private transport paths |
 | `fm-public-followup.sh`  | Brief, reconcile, and deliver typed public commitments, surface refusals, then rechain or retire retained loops |
 | `fm-public-followup-emit.sh` | Validate and report one typed terminal work result into its owning home, or stage it when that home is remote |

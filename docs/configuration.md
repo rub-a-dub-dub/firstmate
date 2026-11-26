@@ -3040,13 +3040,15 @@ It is independent of the hosted Relay pairing token: a home can run either, both
 The bridge runs only while `config/buzz-bridge.enabled` exists, and only `bin/fm-buzz.sh enable` creates it.
 A home without Buzz configured is therefore off.
 
-- `bin/fm-buzz.sh disable` turns it off: intake and replies stop at once, the watcher check is unregistered, and nothing turns it back on - not bootstrap, a restart, or an update - until `bin/fm-buzz.sh enable`.
-- `bin/fm-buzz.sh enable` validates the configuration, registers the watcher check `state/buzz-bridge.check.sh` through `bin/fm-check-register.sh`, and then creates the marker.
-- `bin/fm-buzz.sh status` reports on/off, check registration, configuration validity, the poll cursor, pending Buzz requests, and the last poll diagnostic, and never prints the secret.
+- `bin/fm-buzz.sh disable` turns it off, retires the listener, and unregisters the watcher check.
+  Intake and replies stay off across restarts and updates until an explicit enable.
+  The marker is the off switch on its own: however it goes away, the listener re-reads it at least once a minute and then stops itself and its relay session, leaving the source registered for a later enable rather than holding an authenticated subscription to the channel.
+- `bin/fm-buzz.sh enable` validates the configuration, registers the watcher check `state/buzz-bridge.check.sh`, creates the marker, and starts the configured listener through the built-in process-event runner.
+- `bin/fm-buzz.sh status` reports on/off, listener connection, check registration, configuration validity, the poll cursor, pending requests, and the last poll diagnostic.
 
 Disabling keeps pending requests and their bindings; a reply or a dismiss attempted while disabled is refused, sends nothing, and records nothing, so a request pending across the off period stays answerable once the bridge is enabled again.
 Turning the bridge on from off reads forward only: enabling records the moment in `state/buzz/cursor.json` as both `since` and `fence`, and every poll clamps its read to `fence` and carries it forward, so no later cursor advance lets the read overlap reach back across it. Mentions the owner sent while the bridge was deliberately off are never ingested or answered, on the first sweep after enabling or any later one.
-Re-running `bin/fm-buzz.sh enable` while the bridge is already on only re-arms the watcher check: it leaves both cursor fields alone, so re-arming after a lost registration never discards intake the bridge had not read yet and never moves the fence.
+Re-running `bin/fm-buzz.sh enable` while the bridge is already on re-arms the watcher check and listener while preserving both cursor fields.
 While enabled, the registered check also makes this home require live supervision, so mentions can wake it without fleet work.
 
 **Configuration**
@@ -3061,20 +3063,31 @@ While enabled, the registered check also makes this home require live supervisio
 | `BUZZ_BRIDGE_PUBKEY` | The bridge identity's pubkey as 64-character lowercase hex |
 | `BUZZ_BRIDGE_KEY_FILE` | Absolute path to the bridge key file in `buzz-admin generate-key` format (a `Secret key:` line holding 64-character lowercase hex) |
 | `BUZZ_CLI` | Absolute path to the `buzz` CLI built from tag `relay-v0.3.0` |
+| `BUZZ_LISTENER` | Absolute path to the `fm-buzz-listen` helper built against the same tag; leave it unset for a poll-only home, where status reports `listener: not configured`, while a path that is set but is not an executable file reports `listener: unusable` |
 
 The intake age limit is 86400 seconds and the per-message reply budget is 1000 characters; both are fixed, and each request's binding records the budget it was created with.
 
-The secret is read from the key file only for each signing CLI call and reaches the CLI only through its environment, never argv, logs, tracked files, or status output.
+The secret is read from the key file only at signing time.
+It reaches the CLI through its environment, and the listener reads it directly when answering a NIP-42 challenge.
+The secret stays out of argv, logs, tracked files, and status output.
 The bridge never modifies or rotates the key file.
 
 `BUZZ_CLI` is explicit so the newer CLI bundled with the Buzz desktop app is never picked up by accident.
-Build it from a fresh clone at the pinned tag, never from the checkout that hosts a running relay:
+Build both binaries from a fresh clone of the pinned tag in a separate build directory.
 
 ```sh
 git clone --depth 1 --branch relay-v0.3.0 https://github.com/block/buzz.git <build-dir>/buzz-src
-(cd <build-dir>/buzz-src && CARGO_TARGET_DIR=<build-dir>/target cargo build --release -p buzz-cli)
+mkdir -p <build-dir>/buzz-src/crates/buzz-cli/src/bin
+cp bin/fm-buzz-listen.rs <build-dir>/buzz-src/crates/buzz-cli/src/bin/
+(cd <build-dir>/buzz-src && CARGO_TARGET_DIR=<build-dir>/target cargo build --locked --release -p buzz-cli --bin buzz --bin fm-buzz-listen)
+(cd <build-dir>/buzz-src && CARGO_TARGET_DIR=<build-dir>/target cargo test --locked -p buzz-cli --bin fm-buzz-listen)
 # BUZZ_CLI=<build-dir>/target/release/buzz
+# BUZZ_LISTENER=<build-dir>/target/release/fm-buzz-listen
 ```
+
+Both commands run as written against a clean clone of the tag: the helper needs no `Cargo.toml` or `Cargo.lock` edit, because `buzz-cli` already depends on `buzz-ws-client`, `nostr`, `serde_json`, `tokio`, and `rustls`, and already carries the `tempfile`, `futures-util`, `tokio-tungstenite`, and `tokio` `test-util` dev-dependencies the test module uses.
+The clone's `rust-toolchain.toml` selects the toolchain, so run both from inside it and let rustup honour that pin.
+Run both again whenever `bin/fm-buzz-listen.rs` changes, then repoint `BUZZ_LISTENER` and re-run `bin/fm-buzz.sh enable` to restart the listener on the new binary.
 
 The bridge pubkey must be a member of the private channel; the owner adds it from Buzz, outside firstmate.
 
@@ -3121,9 +3134,17 @@ At that tag the command prints the same normalized write response its other writ
 So `accepted` is CLI output the bridge could read but deliberately does not: the acknowledgement is best effort and unreported, every status is discarded, and nothing downstream branches on whether the relay took the reaction.
 Every mention a sweep binds is acknowledged, newest first, for as long as the check budget allows; none starts once the sweep is within one bounded send of `FM_CHECK_TIMEOUT`, which is the only limit on how many go out; and a reaction that fails or that the budget leaves no room for is skipped silently and never retried, so a missing 👀 never holds the cursor, the wake, or a reply.
 A new request wakes firstmate with `buzz-mention <request_id>`; a configuration, authorization, thread-lookup, or catch-up problem wakes once per distinct message with `buzz-bridge-error <reason>`, while a relay or network failure on the intake read stays silent until the next sweep.
+A sweep that finds the poll already running skips in silence, but one that finds a poll lock nothing can reclaim reports that the same way, because the condition would otherwise silence every later sweep; the diagnostic names the lock path, and clearing it by hand is what resumes intake.
 
-The check runs at the watcher's `FM_CHECK_INTERVAL` cadence, 300 seconds by default and 30 seconds in a home with hosted Relay on.
-For faster pickup in a Buzz-only home, add `export FM_CHECK_INTERVAL=30` to `config/watch.env` and restart the watcher through the emitted supervision protocol.
+The listener holds one authenticated WebSocket subscription for new owner mentions in the configured channel.
+A matching notification triggers the same bounded poll within seconds, and overlapping triggers share one poll at a time with the watcher.
+The poll verifies and deduplicates requests before writing the inbox and waking Firstmate.
+The listener reconnects with bounded backoff, and the watcher remains the backstop at its existing `FM_CHECK_INTERVAL` cadence, 300 seconds by default and 30 seconds in a home with hosted Relay on.
+A quiet channel never ends a healthy session, because liveness is the relay's own WebSocket keepalive rather than message traffic.
+At the pinned tag, `crates/buzz-relay/src/connection.rs` `heartbeat_loop` pings every 30 seconds and closes a connection that misses three pongs, while `crates/buzz-ws-client/src/connection.rs` `recv_one` applies its read bound per frame inside its loop and answers each ping with a pong, so any frame restarts the wait without waking the bridge.
+Re-confirm both before repointing `BUZZ_CLI` or `BUZZ_LISTENER` at a newer build.
+The client exposes no way to send a ping of its own, so the helper also carries a 30-minute read bound as the last resort for a socket that died without a close.
+A reconnect is not a fault: the helper re-handshakes with bounded backoff, `bin/fm-buzz.sh status` reports `listener: disconnected` only for that window, and the watcher sweep covers it.
 
 **Replies**
 
@@ -3144,14 +3165,15 @@ Stage 1 limits: a send that fails ambiguously can duplicate a message if it is r
 
 Run this once with the owner after the bridge lands, against the owner's relay:
 
-1. Build the pinned CLI as above, write `config/buzz-bridge.env`, and confirm `bin/fm-buzz.sh status` reports `config: ok`.
+1. Build the pinned CLI and listener as above, write `config/buzz-bridge.env`, and confirm `bin/fm-buzz.sh status` reports `config: ok`.
 2. Confirm with the owner that the bridge pubkey is a member of the private channel.
-3. Run `bin/fm-buzz.sh enable` and confirm the watcher is live.
-4. The owner posts a message in the channel mentioning the bridge identity, for example a status question.
-5. Confirm firstmate wakes with `buzz-mention` and the owner sees a 👀 reaction from the bridge identity on the original message before the reply appears in its thread.
+3. Run `bin/fm-buzz.sh enable`, confirm the watcher is live, and wait for `listener: connected`; a brief `listener: disconnected` while it re-handshakes is expected, not a fault.
+4. Just after a watcher sweep, have the owner post a message in the channel mentioning the bridge identity and record the send time.
+5. Confirm firstmate wakes with `buzz-mention` within seconds and ahead of the next scheduled sweep, and that the owner sees a 👀 reaction from the bridge identity on the original message before the reply appears in its thread.
    Confirm that firstmate sent the reply through `fmx-respond` and that Buzz shows the bridge identity as its author.
 6. For a request that spawns work, confirm the acknowledgement arrives first and the final outcome follows in the same thread.
-7. Run `bin/fm-buzz.sh disable`, have the owner post another mention, and confirm no wake and no reply follow, `bin/fm-buzz.sh status` reports `bridge: disabled`, and it still does after a new session starts.
+7. Run `bin/fm-buzz.sh disable` and confirm status reports `bridge: disabled` and `listener: stopped`, and `bin/fm-procevent.sh list` has no Buzz source.
+   Have the owner post another mention and confirm no wake or reply follows, then check that the listener stays stopped after a new session starts.
 8. Run `bin/fm-buzz.sh enable` again and confirm the mention from step 7 is *not* answered, on that sweep or any later one: enabling fences the cursor at the enable moment. Then have the owner post a fresh mention and confirm that one is answered.
 9. Confirm the pinned CLI truncates newest-first, which the single bounded read depends on: with the owner's agreement, run `<build-dir>/target/release/buzz --relay <relay> --format json messages get --channel <channel> --kinds 9 --before <now> --limit 2` against a channel holding more than two messages, and confirm the two returned events are the two most recent, not the two oldest.
 10. Confirm the thread read implicit intake depends on: with the owner's agreement, run `<build-dir>/target/release/buzz --relay <relay> --format json messages thread --channel <channel> --event <root> --limit 50` for the root of a thread Firstmate has answered, and confirm the result contains the root event itself and no event from another thread.

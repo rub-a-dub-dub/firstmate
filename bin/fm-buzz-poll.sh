@@ -5,6 +5,10 @@
 # bin/fm-buzz.sh enable writes. Contract: output => wake firstmate, silence =>
 # keep sleeping. A HARD no-op (exit 0, no output) while the bridge is disabled
 # (no config/buzz-bridge.enabled), so a stray shim can never poll.
+# The push adapter invokes --notify, which publishes the same check wakes
+# directly into the durable queue instead of writing them to stdout.
+# Both paths hold the same home-local lock. A sweep skips a busy poll;
+# the push path can wait for it within the adapter's poll deadline.
 #
 # Each poll makes one intake read of kind-9 events in the configured channel
 # through the pinned Buzz CLI (`messages get`, signed NIP-98 reads with the
@@ -51,7 +55,8 @@
 # Diagnostics wake once per distinct message as "buzz-bridge-error <reason>":
 # configuration problems, an auth refusal, a malformed read, a thread read the
 # CLI refused, a thread lookup budget that ran out, a thread too long to check,
-# and a catch-up range too large to drain in one poll. A relay or network failure
+# a catch-up range too large to drain in one poll, and a poll lock whose dead
+# holder nothing can reclaim. A relay or network failure
 # on the intake read is silent; the next cycle retries it.
 # Once the range is persisted, every newly bound event gets one best-effort eyes
 # reaction, sent sequentially newest first, each bounded to REACTION_BOUND and
@@ -70,6 +75,37 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 # shellcheck source=bin/fm-buzz-lib.sh
 . "$SCRIPT_DIR/fm-buzz-lib.sh"
 
+fm_buzz_enabled || exit 0
+
+# shellcheck source=bin/fm-wake-lib.sh
+. "$SCRIPT_DIR/fm-wake-lib.sh"
+
+NOTIFY=0
+case "${1-}" in
+  --notify) NOTIFY=1 ;;
+  '') ;;
+  *) exit 2 ;;
+esac
+
+WORK=
+UNRECLAIMABLE=
+# shellcheck disable=SC2329 # EXIT trap owns cleanup.
+cleanup() {
+  [ -z "$WORK" ] || rm -rf "$WORK"
+  if [ "$NOTIFY" -eq 1 ]; then fm_lock_release "$FM_WAKE_QUEUE_LOCK" || true; fi
+  fm_lock_release "$FM_BUZZ_POLL_LOCK" || true
+}
+trap cleanup EXIT
+trap 'exit 0' HUP INT TERM
+if [ "$NOTIFY" -eq 1 ]; then
+  fm_lock_acquire_wait "$FM_BUZZ_POLL_LOCK" --refuse-unreapable || exit 1
+elif ! fm_lock_try_acquire "$FM_BUZZ_POLL_LOCK"; then
+  # A held or deferred lock is an ordinary skip. A lock whose dead holder cannot
+  # be cleared silences every later sweep too, so that one is reported below
+  # once the poll's own diagnostic is defined.
+  UNRECLAIMABLE=${FM_LOCK_RECLAIM_FAILED_PATH:-}
+  [ -n "$UNRECLAIMABLE" ] || exit 0
+fi
 fm_buzz_enabled || exit 0
 
 PAGE_LIMIT=200
@@ -95,15 +131,44 @@ case "$CHECK_TIMEOUT" in ''|*[!0-9]*) CHECK_TIMEOUT=30 ;; *) CHECK_TIMEOUT=$((10
 [ "$CHECK_TIMEOUT" -gt 0 ] || CHECK_TIMEOUT=30
 REACTION_DEADLINE=$(( $(date +%s) + CHECK_TIMEOUT - REACTION_BOUND - 2 ))
 
+emit_wake() {
+  local line=$1 check="$STATE/$FM_BUZZ_CHECK_ID.check.sh"
+  if [ "$NOTIFY" -eq 1 ]; then
+    fm_wake_append_guarded fm_buzz_enabled check buzz-push "check: $check: $line"
+  else
+    printf '%s\n' "$line"
+  fi
+}
+
+offer_request() {
+  local rid=$1 binding=$2 status=0 check="$STATE/$FM_BUZZ_CHECK_ID.check.sh"
+  if [ "$NOTIFY" -eq 0 ]; then
+    emit_wake "buzz-mention $rid" || return 1
+    printf '%s' "$binding" | jq -c '.state = "offered"' | fm_buzz_binding_put "$rid"
+    return $?
+  fi
+  # The watcher and drain take this same lock before surfacing the queued row.
+  # Keep the write-ahead wake order without exposing a stale staged binding to
+  # an immediate reply that could race the final offered write.
+  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || return 1
+  if fm_wake_append_locked check buzz-push "check: $check: buzz-mention $rid" fm_buzz_enabled; then
+    printf '%s' "$binding" | jq -c '.state = "offered"' | fm_buzz_binding_put "$rid" || status=1
+  else
+    status=1
+  fi
+  fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+  return "$status"
+}
+
 emit_error_once() {
   local msg=$1
   if fmx_private_artifact_file_valid "$STATE/buzz" poll.error 600 \
     && [ "$(cat "$STATE/buzz/poll.error" 2>/dev/null)" = "$msg" ]; then
     return 0
   fi
+  emit_wake "buzz-bridge-error $msg" || return 0
   fmx_private_artifact_dir_prepare "$STATE/buzz" >/dev/null 2>&1 || true
   printf '%s\n' "$msg" | fmx_private_artifact_publish_stdin "$STATE/buzz" poll.error 600 2>/dev/null || true
-  printf 'buzz-bridge-error %s\n' "$msg"
 }
 
 clear_error() {
@@ -117,6 +182,8 @@ react_to_request() {
     </dev/null >/dev/null 2>&1 || true
 }
 
+[ -z "$UNRECLAIMABLE" ] \
+  || { emit_error_once "cannot reclaim $UNRECLAIMABLE; the Buzz poll cannot run"; exit 0; }
 command -v jq >/dev/null 2>&1 || { emit_error_once "missing jq"; exit 0; }
 command -v python3 >/dev/null 2>&1 || { emit_error_once "missing python3"; exit 0; }
 fm_buzz_load_config || { emit_error_once "$FM_BUZZ_CONFIG_ERROR"; exit 0; }
@@ -140,12 +207,11 @@ LOWER=$((SINCE - BUZZ_READ_OVERLAP))
 [ "$LOWER" -ge "$FENCE" ] || LOWER=$FENCE
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/fm-buzz-poll.XXXXXX") || exit 0
-trap 'rm -rf "$WORK"' EXIT
-trap 'rm -rf "$WORK"; exit 0' HUP INT TERM
 
 fm_buzz_cli messages get --channel "$BUZZ_CHANNEL" --kinds 9 \
   --since "$LOWER" --before "$NOW" --limit "$PAGE_LIMIT" > "$WORK/all" 2>/dev/null
 rc=$?
+fm_buzz_enabled || exit 0
 case "$rc" in
   0) ;;
   2) exit 0 ;;
@@ -252,6 +318,7 @@ fi
 
 FAILED=0
 while IFS= read -r ev; do
+  fm_buzz_enabled || exit 0
   [ -n "$ev" ] || continue
   eid=$(printf '%s' "$ev" | jq -r '.event_id')
   rid=$(fm_buzz_request_id "$eid") || { FAILED=1; continue; }
@@ -288,10 +355,10 @@ while IFS= read -r ev; do
     continue
   fi
   fmx_context_registry_set "$STATE" "$rid" buzz "$BUZZ_REPLY_MAX_CHARS" 2>/dev/null || true
-  printf 'buzz-mention %s\n' "$rid"
-  printf '%s' "$binding" | jq -c '.state = "offered"' | fm_buzz_binding_put "$rid" || { FAILED=1; continue; }
+  offer_request "$rid" "$binding" || { FAILED=1; continue; }
 done < <(jq -c '.[]' "$WORK/accepted")
 
+fm_buzz_enabled || exit 0
 if [ "$FAILED" -eq 1 ]; then
   emit_error_once "cannot persist an accepted request; the cursor is held for retry"
 elif [ "$COMPLETE" -eq 1 ]; then

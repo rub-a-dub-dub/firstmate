@@ -5,7 +5,8 @@
 #
 # enable   validate config/buzz-bridge.env, write and register the watcher
 #          check state/buzz-bridge.check.sh (bin/fm-check-register.sh), seed the
-#          poll cursor, then create config/buzz-bridge.enabled. The registered
+#          poll cursor, then create config/buzz-bridge.enabled and start the
+#          configured process-event listener. The registered
 #          check is what makes the watcher poll Buzz and makes supervision
 #          required in this home. Turning the bridge on from off reads forward
 #          only: the cursor is written before the marker as {since, fence}, both
@@ -18,10 +19,10 @@
 #          leaves both cursor fields untouched, so unread intake is never
 #          discarded and the original fence stands.
 # disable  remove config/buzz-bridge.enabled first, so intake and replies stop
-#          at once, then unregister the watcher check. Nothing re-enables the
+#          at once, then retire the listener and unregister the watcher check. Nothing re-enables the
 #          bridge: bootstrap, restarts, and updates leave it off until an
 #          explicit enable. Pending requests and bindings are kept, never sent.
-# status   print on/off, check registration, config validity, the poll cursor,
+# status   print on/off, listener connection, check registration, config validity, the poll cursor,
 #          pending Buzz requests, and the last poll diagnostic. Never prints the
 #          secret.
 #
@@ -43,6 +44,7 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 
 MARKER="$CONFIG/buzz-bridge.enabled"
 CHECK="$STATE/$FM_BUZZ_CHECK_ID.check.sh"
+LISTENER="$SCRIPT_DIR/fm-procevent-buzz.sh"
 
 usage() {
   echo "usage: fm-buzz.sh enable|disable|status" >&2
@@ -59,6 +61,12 @@ case "${1:-}" in
     command -v python3 >/dev/null 2>&1 || { echo "fm-buzz: python3 not found" >&2; exit 1; }
     fm_buzz_load_config || { echo "fm-buzz: not enabled: $FM_BUZZ_CONFIG_ERROR" >&2; exit 1; }
     mkdir -p "$STATE" "$CONFIG" || exit 1
+    # shellcheck source=bin/fm-wake-lib.sh
+    . "$SCRIPT_DIR/fm-wake-lib.sh"
+    trap 'fm_lock_release "$FM_BUZZ_POLL_LOCK" || true' EXIT
+    trap 'exit 1' HUP INT TERM
+    # A poll from the previous enabled period must finish before reseeding.
+    fm_lock_acquire_wait "$FM_BUZZ_POLL_LOCK" --refuse-unreapable || exit 1
     # The forward-only fence belongs to turning the bridge ON. Read that before
     # anything can create the marker: re-running enable to re-arm a bridge that
     # was never off must leave a held cursor alone, or it would discard mentions
@@ -94,21 +102,35 @@ case "${1:-}" in
     fi
     printf 'enabled\n' > "$MARKER" \
       || { rm -f -- "$MARKER"; unregister; echo "fm-buzz: cannot write $MARKER" >&2; exit 1; }
-    echo "buzz bridge: enabled for channel $BUZZ_CHANNEL on $BUZZ_COMMUNITY; the watcher polls it on its next check sweep"
+    fm_lock_release "$FM_BUZZ_POLL_LOCK"
+    if ! "$LISTENER" retire; then
+      echo "fm-buzz: could not retire the previous listener; the watcher check is enabled" >&2
+    elif [ -n "$BUZZ_LISTENER" ] && ! "$LISTENER" arm; then
+      echo "fm-buzz: could not start the listener; the watcher check is enabled" >&2
+    fi
+    echo "buzz bridge: enabled for channel $BUZZ_CHANNEL on $BUZZ_COMMUNITY; watcher sweep registered"
     ;;
   disable)
     [ "$#" -eq 1 ] || { usage; exit 2; }
     if [ -e "$MARKER" ] || [ -L "$MARKER" ]; then
       rm -f -- "$MARKER" || { echo "fm-buzz: cannot remove $MARKER; the bridge may still be on" >&2; exit 1; }
     fi
-    if [ -e "$CHECK" ] || [ -e "$STATE/$FM_BUZZ_CHECK_ID.check-trust" ]; then
-      unregister || { echo "fm-buzz: disabled, but could not unregister the watcher check (it stays inert)" >&2; exit 1; }
+    rc=0
+    if ! "$LISTENER" retire; then
+      echo "fm-buzz: disabled, but listener retirement could not be confirmed" >&2
+      rc=1
     fi
+    if { [ -e "$CHECK" ] || [ -e "$STATE/$FM_BUZZ_CHECK_ID.check-trust" ]; } && ! unregister; then
+      echo "fm-buzz: disabled, but could not unregister the watcher check (it stays inert)" >&2
+      rc=1
+    fi
+    [ "$rc" -eq 0 ] || exit "$rc"
     echo "buzz bridge: disabled; no polling and no replies until bin/fm-buzz.sh enable"
     ;;
   status)
     [ "$#" -eq 1 ] || { usage; exit 2; }
     if fm_buzz_enabled; then echo "bridge: enabled"; else echo "bridge: disabled"; fi
+    "$LISTENER" status
     if fm_custom_check_registered "$STATE" "$FM_BUZZ_CHECK_ID" 2>/dev/null; then
       echo "watcher check: registered"
     else

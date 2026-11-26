@@ -3387,9 +3387,8 @@ scan_signals() {
   return 0
 }
 
-# Deliver a durably queued process-event result to firstmate. Publication is
-# owned by bin/fm-procevent.sh - by the runner at capture time and by reconcile's
-# re-announcement - so this decides only whether a queued check record has been
+# Deliver async check wakes from the process-event runner and the Buzz poll.
+# Their publishers own the durable rows; this only decides whether a row has been
 # surfaced yet, then reports it through the same actionable exit every other wake
 # uses. Without it a captured result sits on the queue until something else
 # happens to wake firstmate, which is exactly the missed delivery this repairs.
@@ -3418,7 +3417,7 @@ procevent_surface_after_output() {
 }
 
 procevent_surface_queued() {
-  local key reason captured="" stranded="" unstarted=""
+  local key payload reason captured="" stranded="" unstarted="" buzz=""
   PROCEVENT_SURFACED=
   [ -s "$FM_WAKE_QUEUE" ] || return 0
   fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
@@ -3436,6 +3435,13 @@ procevent_surface_queued() {
       *) captured="$captured $key" ;;
     esac
   done < <(fm_wake_queued_keys_locked check)
+  while IFS=$'\t' read -r key payload; do
+    [ -e "$(procevent_surfaced_marker "$key")" ] && continue
+    PROCEVENT_SURFACED="$PROCEVENT_SURFACED $key"
+    buzz="${buzz}$payload"$'\n'
+  done < <(awk -F '\t' 'NF >= 5 && $2 ~ /^[0-9]+$/ && $3 == "check" && $4 == "buzz-push" {
+    print "buzz-push:" $2 "\t" $5
+  }' "$FM_WAKE_QUEUE" 2>/dev/null)
   if [ -z "$PROCEVENT_SURFACED" ]; then
     fm_lock_release "$FM_WAKE_QUEUE_LOCK"
     return 0
@@ -3449,6 +3455,13 @@ procevent_surface_queued() {
   if [ -n "$unstarted" ]; then
     [ "$reason" = "check:" ] || reason="$reason;"
     reason="$reason process-event source failed to start:$unstarted"
+  fi
+  if [ -n "$buzz" ]; then
+    if [ "$reason" = "check:" ]; then
+      reason=${buzz%$'\n'}
+    else
+      reason="$reason"$'\n'"${buzz%$'\n'}"
+    fi
   fi
   # shellcheck disable=SC2034 # Consumed by wake() in the separately linted transition owner.
   FM_WAKE_POST_OUTPUT_ACTION=procevent_surface_after_output
