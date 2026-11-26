@@ -578,10 +578,11 @@ test_poll_reaction_failure_leaves_intake_complete() {
   pass "a failed reaction is skipped silently without interrupting intake or retrying the send"
 }
 
-# The cap is what keeps a catch-up sweep from firing one signing CLI per claimed
-# binding. Every mention must still be ingested whether or not it got its eyes,
-# and the mentions that do get one must be the newest - those are the ones the
-# owner is still waiting on.
+# The check budget is the only bound on a catch-up sweep, so with time to spare
+# every mention it binds is both ingested and acknowledged, none silently left
+# unread-looking. Newest first, because that is the order a sweep the budget did
+# cut short would have to acknowledge in - the mentions the owner is still
+# waiting on.
 test_poll_acknowledges_every_newly_bound_mention() {
   local home out i ev rid events=() eids=()
   home=$(new_home reaction-every)
