@@ -201,7 +201,7 @@ fm_buzz_cli() {
       local seconds=$2
       shift 2
       # shellcheck source=bin/fm-timeout-lib.sh
-      . "${SCRIPT_DIR}/fm-timeout-lib.sh"
+      . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-timeout-lib.sh"
       BUZZ_PRIVATE_KEY=$secret fm_run_timed "$seconds" "$BUZZ_CLI" --relay "$relay" --format json "$@"
     else
       BUZZ_PRIVATE_KEY=$secret exec "$BUZZ_CLI" --relay "$relay" --format json "$@"
