@@ -533,9 +533,10 @@ It then finishes any still-recorded dependency-edge cleanup without rewriting th
 
 ## Verification record
 
-The focused end-to-end regression suite is `tests/fm-captain-hold-lifecycle.test.sh`, using only synthetic identities and decision text.
-It proves the behaviors below.
-The suite does not test the accepted merge-to-cleanup re-hold window or asynchronous queued-forge landing because those events occur after the locally serialized merge command has returned.
+The focused end-to-end regression is two suites sharing `tests/captain-hold-helpers.sh`, using only synthetic identities and decision text: `tests/fm-captain-hold-lifecycle.test.sh` for core hold, answer, release, divergence, and reconcile coverage, and `tests/fm-captain-hold-teardown.test.sh` for cleanup, merge entrypoints, origin inventory, archived-answer recovery, and retained-body cases.
+Each suite's header owns the current line between them.
+Together they prove the behaviors below.
+Neither tests the accepted merge-to-cleanup re-hold window or asynchronous queued-forge landing, because those events occur after the locally serialized merge command has returned.
 
 ### Cleanup of a captain-held row
 
@@ -597,7 +598,7 @@ The suite does not test the accepted merge-to-cleanup re-hold window or asynchro
 
 ### Task-body read-back cases
 
-Two of the suite's cases pin how a task body is read back rather than any decision behavior, because both paths that read one are otherwise silent when they get it wrong.
+Two of the teardown suite's cases pin how a task body is read back rather than any decision behavior, because both paths that read one are otherwise silent when they get it wrong.
 
 The first case covers holding a task that carries a body, and cleanup's retention of a captain-held row.
 Both work where the installed JSON::PP defaults `allow_nonref` off and therefore rejects the JSON-encoded bare string a shown scalar field arrives as.
@@ -613,7 +614,7 @@ That latin-1 byte loss also reproduces natively on the fleet host carrying the o
 
 ### Markdown-to-beads migration family
 
-The markdown-to-beads migration family runs the same suite's beads fixture (bd-driven scratch graph, self-skipping on markdown-only tasks-axi installs).
+The markdown-to-beads migration family runs the lifecycle suite's beads fixture (bd-driven scratch graph, self-skipping on markdown-only tasks-axi installs).
 It proves:
 
 - `verify` and `complete` resolve an attested legacy id through a migrated row's marker note.
@@ -695,7 +696,7 @@ Projection and decision-text rendering regressions live in three suites:
 The exact commands and their summarized outputs are recorded in the shipping PR's evidence.
 To refresh this record, run:
 
-- The four suites above: `tests/fm-captain-hold-lifecycle.test.sh`, `tests/fm-classify-decision-key.test.sh`, `tests/fm-fleet-snapshot-view.test.sh`, and `tests/fm-bearings-snapshot.test.sh`.
+- The suites above: `tests/fm-captain-hold-lifecycle.test.sh`, `tests/fm-captain-hold-teardown.test.sh`, `tests/fm-classify-decision-key.test.sh`, `tests/fm-fleet-snapshot-view.test.sh`, and `tests/fm-bearings-snapshot.test.sh`.
 - `tests/fm-send-resolve-key.test.sh`, `tests/fm-bearings-board.test.sh`, `tests/fm-bearings-board-render.test.sh`, and `tests/fm-procevent.test.sh`.
 - `bin/fm-lint.sh`.
 
