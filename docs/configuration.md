@@ -3062,7 +3062,7 @@ While enabled, the registered check also makes this home require live supervisio
 | `BUZZ_BRIDGE_PUBKEY` | The bridge identity's pubkey as 64-character lowercase hex |
 | `BUZZ_BRIDGE_KEY_FILE` | Absolute path to the bridge key file in `buzz-admin generate-key` format (a `Secret key:` line holding 64-character lowercase hex) |
 | `BUZZ_CLI` | Absolute path to the `buzz` CLI built from tag `relay-v0.3.0` |
-| `BUZZ_LISTENER` | Absolute path to the `fm-buzz-listen` helper built against the same tag, optional for poll-only homes |
+| `BUZZ_LISTENER` | Absolute path to the `fm-buzz-listen` helper built against the same tag; leave it unset for a poll-only home, where status reports `listener: not configured` |
 
 The intake age limit is 86400 seconds and the per-message reply budget is 1000 characters; both are fixed, and each request's binding records the budget it was created with.
 
@@ -3079,9 +3079,15 @@ git clone --depth 1 --branch relay-v0.3.0 https://github.com/block/buzz.git <bui
 mkdir -p <build-dir>/buzz-src/crates/buzz-cli/src/bin
 cp bin/fm-buzz-listen.rs <build-dir>/buzz-src/crates/buzz-cli/src/bin/
 (cd <build-dir>/buzz-src && CARGO_TARGET_DIR=<build-dir>/target cargo build --locked --release -p buzz-cli --bin buzz --bin fm-buzz-listen)
+(cd <build-dir>/buzz-src && CARGO_TARGET_DIR=<build-dir>/target cargo test --locked -p buzz-cli --bin fm-buzz-listen)
 # BUZZ_CLI=<build-dir>/target/release/buzz
 # BUZZ_LISTENER=<build-dir>/target/release/fm-buzz-listen
 ```
+
+Both commands run as written against a clean clone of the tag: the helper needs no `Cargo.toml` or `Cargo.lock` edit, because `buzz-cli` already depends on `buzz-ws-client`, `nostr`, `serde_json`, `tokio`, and `rustls`, and already carries the `tempfile`, `futures-util`, `tokio-tungstenite`, and `tokio` `test-util` dev-dependencies the test module uses.
+The clone's `rust-toolchain.toml` selects the toolchain, so run both from inside it and let rustup honour that pin.
+The `cargo test` run covers the helper's NIP-42 handshake, its single-`h`-tag plus `p`-tag match rule, the discarding of pre-EOSE events, and that a silent relay does not end a live session; `data/buzz-bridge-push-listener/helper-test.log` holds a passing run.
+Rebuild and re-run both whenever `bin/fm-buzz-listen.rs` changes, then repoint `BUZZ_LISTENER` and re-run `bin/fm-buzz.sh enable` to restart the listener on the new binary.
 
 The bridge pubkey must be a member of the private channel; the owner adds it from Buzz, outside firstmate.
 
@@ -3133,6 +3139,8 @@ The listener holds one authenticated WebSocket subscription for new owner mentio
 A matching notification triggers the same bounded poll within seconds, and overlapping triggers share one poll at a time with the watcher.
 The poll verifies and deduplicates requests before writing the inbox and waking Firstmate.
 The listener reconnects with bounded backoff, and the watcher remains the backstop at its existing `FM_CHECK_INTERVAL` cadence, 300 seconds by default and 30 seconds in a home with hosted Relay on.
+A quiet channel never ends a healthy session: liveness is the relay's own WebSocket keepalive, which pings every 30 seconds and closes a connection that misses three pongs, and the helper answers those pings without waking the bridge.
+The pinned client exposes no way to send a ping of its own, so the helper also carries a 30-minute read bound as the last resort for a socket that died without a close; the watcher sweep covers that window.
 
 **Replies**
 

@@ -5,7 +5,9 @@
 # arm registers and starts one listener; retire stops its owned process group.
 # listen consumes only fixed helper signals, and match runs the same bounded
 # poll as the watcher sweep. Relay events and poll output never become generic
-# process-event results. status checks the connection marker's process identity.
+# process-event results. status reads the source registration first - a listener
+# the off switch could not retire is still armed - and then the connection
+# marker's process identity.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -43,9 +45,8 @@ case "$1" in
     rm -f -- "$CONNECTION"
     ;;
   status)
-    if ! fm_buzz_enabled; then
-      echo "listener: stopped"
-    else
+    source=$(source_id) || exit 1
+    if [ -e "$STATE/procevent/$source.source" ]; then
       # shellcheck source=bin/fm-wake-lib.sh
       . "$SCRIPT_DIR/fm-wake-lib.sh"
       if fmx_private_artifact_file_valid "$STATE/buzz" listener.connected 600 \
@@ -55,6 +56,14 @@ case "$1" in
         echo "listener: connected"
       else
         echo "listener: disconnected"
+      fi
+    else
+      BUZZ_LISTENER=
+      fm_buzz_load_config >/dev/null 2>&1 || true
+      if fm_buzz_listener_available; then
+        echo "listener: stopped"
+      else
+        echo "listener: not configured"
       fi
     fi
     ;;

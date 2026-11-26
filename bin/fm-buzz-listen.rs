@@ -14,7 +14,9 @@ use tokio::time::{sleep, timeout};
 
 const SUBSCRIPTION: &str = "firstmate-buzz";
 const HANDSHAKE: Duration = Duration::from_secs(20);
-const IDLE_READ: Duration = Duration::from_secs(90);
+// The relay's own WebSocket Ping keeps a healthy session readable, so this
+// bound is only the last resort for a socket that died without a close.
+const IDLE_READ: Duration = Duration::from_secs(1800);
 
 struct Config {
     relay: String,
@@ -304,6 +306,79 @@ mod tests {
         let closed = timeout(
             Duration::from_secs(10),
             listen(&config, |line| {
+                signals.push(line.to_owned());
+                Ok(())
+            }),
+        )
+        .await
+        .unwrap();
+        server.await.unwrap();
+        assert!(closed.is_err());
+        assert_eq!(signals, ["connected", "match"]);
+    }
+
+    /// A private channel is quiet by design, so a session that reads nothing
+    /// for far longer than the relay's keepalive window must still be live.
+    /// The wait is virtual: the clock is paused once the subscription is live.
+    #[tokio::test]
+    async fn a_silent_relay_does_not_end_a_live_session() {
+        const SILENCE: Duration = Duration::from_secs(600);
+        let relay = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", relay.local_addr().unwrap());
+        let key_dir = tempfile::tempdir().unwrap();
+        let key_path = key_dir.path().join("bridge.key");
+        let bridge_key = "3".repeat(64);
+        let bridge = Keys::parse(&bridge_key).unwrap().public_key();
+        let owner = Keys::generate();
+        let channel = "8acb1df7-1f23-45a7-88f7-1234567890ab";
+        let config = Config {
+            relay: url.clone(),
+            channel: channel.into(),
+            owner: owner.public_key(),
+            bridge,
+            key_file: key_path.clone(),
+        };
+        std::fs::write(&key_path, format!("Secret key: {bridge_key}\n")).unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = relay.accept().await.unwrap();
+            let mut ws = accept_async(tcp).await.unwrap();
+            ws.send(Message::Text(json!(["AUTH", "fixture"]).to_string().into()))
+                .await
+                .unwrap();
+            let raw = ws.next().await.unwrap().unwrap().into_text().unwrap();
+            let auth: Value = serde_json::from_str(&raw).unwrap();
+            let event: Event = serde_json::from_value(auth[1].clone()).unwrap();
+            ws.send(Message::Text(
+                json!(["OK", event.id, true, ""]).to_string().into(),
+            ))
+            .await
+            .unwrap();
+            ws.next().await.unwrap().unwrap();
+            ws.send(Message::Text(
+                json!(["EOSE", SUBSCRIPTION]).to_string().into(),
+            ))
+            .await
+            .unwrap();
+            sleep(SILENCE).await;
+            let mention = EventBuilder::new(Kind::Custom(9), "after the silence")
+                .tags([Tag::parse(["h", channel]).unwrap(), Tag::public_key(bridge)])
+                .sign(&owner)
+                .await
+                .unwrap();
+            for row in [
+                json!(["EVENT", SUBSCRIPTION, mention]),
+                json!(["CLOSED", SUBSCRIPTION, "fixture completed"]),
+            ] {
+                ws.send(Message::Text(row.to_string().into())).await.unwrap();
+            }
+        });
+        let mut signals = Vec::new();
+        let closed = timeout(
+            SILENCE * 6,
+            listen(&config, |line| {
+                if line == "connected" {
+                    tokio::time::pause();
+                }
                 signals.push(line.to_owned());
                 Ok(())
             }),

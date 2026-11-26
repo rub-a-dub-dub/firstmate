@@ -309,6 +309,7 @@ test_enable_poll_ingests_verified_owner_mention() {
   out=$(run_in "$home" "$ROOT/bin/fm-buzz.sh" status)
   assert_not_contains "$out" "$BRIDGE_SK" "status must never print the secret"
   assert_contains "$out" "pending requests: 1" "status counts pending Buzz requests"
+  assert_contains "$out" "listener: not configured" "a poll-only home has no listener to report on"
   pass "an enabled bridge ingests a verified owner mention into the shared Relay inbox"
 }
 
@@ -1136,6 +1137,13 @@ SH
   disconnected() { run_in "$home" "$ROOT/bin/fm-buzz.sh" status | grep -Fxq 'listener: disconnected'; }
   wait_for_buzz 100 disconnected || fail "the listener did not report disconnection"
   assert_equals 1 "$(wc -l < "$home/state/.wake-queue" | tr -d ' ')" "a drop must not add a wake"
+  # The off switch removes the marker before retiring, so a retirement that
+  # could not be confirmed leaves the source armed with the bridge already off.
+  mv "$home/config/buzz-bridge.enabled" "$home/config/buzz-bridge.held"
+  out=$(run_in "$home" "$ROOT/bin/fm-buzz.sh" status)
+  assert_contains "$out" 'bridge: disabled' "the marker is what reports the bridge off"
+  assert_contains "$out" 'listener: disconnected' "a source still registered must never report stopped"
+  mv "$home/config/buzz-bridge.held" "$home/config/buzz-bridge.enabled"
   run_in "$home" "$ROOT/bin/fm-buzz.sh" disable >/dev/null || fail "disable must retire the source"
   out=$(run_in "$home" "$ROOT/bin/fm-buzz.sh" status)
   assert_contains "$out" 'listener: stopped' "status reports retirement"
