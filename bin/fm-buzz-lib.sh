@@ -23,6 +23,7 @@
 #   BUZZ_BRIDGE_PUBKEY   bridge pubkey, 64-char lowercase hex
 #   BUZZ_BRIDGE_KEY_FILE absolute path to the bridge's buzz-admin key file
 #   BUZZ_CLI             absolute path to the buzz CLI built at relay-v0.3.0
+#   BUZZ_LISTENER        optional absolute path to the pinned listener helper
 #
 # Defines:
 #   fm_buzz_enabled                 - 0 when the on marker exists
@@ -49,6 +50,8 @@ fi
 # Both are read by the scripts that source this library.
 # shellcheck disable=SC2034
 FM_BUZZ_CHECK_ID=buzz-bridge
+# shellcheck disable=SC2034
+FM_BUZZ_POLL_LOCK="$STATE/.buzz-poll.lock"
 # shellcheck disable=SC2034
 FM_BUZZ_CONFIG_ERROR=
 # The intake window stays inside the seven-day binding and offer retention.
@@ -77,7 +80,7 @@ fm_buzz_load_config() {
     return 1
   fi
   for key in BUZZ_RELAY_URL BUZZ_CHANNEL BUZZ_OWNER_PUBKEY \
-    BUZZ_BRIDGE_PUBKEY BUZZ_BRIDGE_KEY_FILE BUZZ_CLI; do
+    BUZZ_BRIDGE_PUBKEY BUZZ_BRIDGE_KEY_FILE BUZZ_CLI BUZZ_LISTENER; do
     printf -v "$key" '%s' "$(fmx_env_get "$key" "$file")"
   done
   case "$BUZZ_RELAY_URL" in
@@ -109,7 +112,12 @@ fm_buzz_load_config() {
       || { FM_BUZZ_CONFIG_ERROR="BUZZ_CLI is not an executable file"; return 1; } ;;
     *) FM_BUZZ_CONFIG_ERROR="BUZZ_CLI must be an absolute path to the relay-v0.3.0 buzz CLI"; return 1 ;;
   esac
+  # Listener availability must never disable the stage 1 poll or replies.
   return 0
+}
+
+fm_buzz_listener_available() {
+  [[ "$BUZZ_LISTENER" = /* ]] && [ -f "$BUZZ_LISTENER" ] && [ -x "$BUZZ_LISTENER" ]
 }
 
 fm_buzz_sha256() {

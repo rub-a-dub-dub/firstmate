@@ -17,6 +17,7 @@ for tool in jq python3; do
   dir=$(command -v "$tool" 2>/dev/null) && BASE_PATH="$(dirname "$dir"):$BASE_PATH"
 done
 TMP_ROOT=$(fm_test_tmproot fm-buzz-bridge-tests)
+export FM_PROCEVENT_CLAIM_ROOT="$TMP_ROOT/procevent-claims"
 SIGN="$ROOT/tests/fixtures/buzz-sign.py"
 
 OWNER_SK=1111111111111111111111111111111111111111111111111111111111111111
@@ -70,6 +71,13 @@ done
 case "$cmd" in
   get)
     [ "${FAKE_GET_RC:-0}" = 0 ] || exit "$FAKE_GET_RC"
+    if [ -n "${FAKE_READ_GATE:-}" ]; then
+      : > "$FAKE_READ_GATE.entered"
+      for i in $(seq 1 200); do
+        [ ! -e "$FAKE_READ_GATE" ] && break
+        sleep 0.05
+      done
+    fi
     jq -c --argjson s "$since" --argjson u "$until" --argjson l "$limit" \
       '[.[] | select(.created_at >= $s and .created_at <= $u)]
        | sort_by(-.created_at) | .[:$l] | sort_by(.created_at)' "${FAKE_EVENTS:?}"
@@ -160,6 +168,16 @@ run_in() {
 
 poll() {
   run_in "$1" "$ROOT/bin/fm-buzz-poll.sh"
+}
+
+wait_for_buzz() {
+  local attempts=$1 i
+  shift
+  for ((i = 0; i < attempts; i++)); do
+    "$@" && return 0
+    sleep 0.1
+  done
+  return 1
 }
 
 # The watcher caps every custom check at FM_CHECK_TIMEOUT (30s by default) with
@@ -1069,6 +1087,95 @@ test_reenable_while_on_keeps_the_cursor() {
   pass "re-running enable while the bridge is on re-arms the check and leaves the cursor alone"
 }
 
+test_listener_wakes_through_the_poll_and_retires() {
+  local home helper_pid out rid ev watch_pid
+  home=$(new_home listener)
+  fm_test_track_procevent_home "$home" "$FM_PROCEVENT_CLAIM_ROOT"
+  cat > "$home/bin/listener" <<'SH'
+#!/usr/bin/env bash
+home=${0%/bin/listener}
+printf '%s\n' "$$" > "$home/listener.pid"
+printf 'connected\n'
+for i in $(seq 1 600); do
+  if [ -e "$home/doorbell" ]; then
+    rm -f "$home/doorbell"
+    printf 'match\n'
+  fi
+  if [ -e "$home/disconnect" ]; then
+    rm -f "$home/disconnect"
+    printf 'disconnected\n'
+  fi
+  sleep 0.05
+done
+SH
+  chmod +x "$home/bin/listener"
+  printf 'BUZZ_LISTENER=%s\n' "$home/bin/listener" >> "$home/config/buzz-bridge.env"
+  enable_from_off "$home"
+  connected() { run_in "$home" "$ROOT/bin/fm-buzz.sh" status | grep -Fxq 'listener: connected'; }
+  wait_for_buzz 100 connected || fail "the listener did not report connected"
+  helper_pid=$(cat "$home/listener.pid")
+  : > "$home/state/.last-check"
+  fm_test_track_watcher_state "$home/state"
+  FM_ROOT_OVERRIDE="$ROOT" FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_POLL=1 \
+    run_in "$home" "$ROOT/bin/fm-watch.sh" > "$home/watch.out" 2> "$home/watch.err" &
+  watch_pid=$!
+  ev=$(sign_event "$OWNER_SK" "$NOW" 9 "$(mention_tags)" 'live owner mention')
+  set_events "$home" "$ev"
+  : > "$home/doorbell"
+  buzz_woke() { grep -q 'buzz-mention buzz-' "$home/watch.out"; }
+  if ! wait_for_buzz 150 buzz_woke; then
+    kill "$watch_pid" 2>/dev/null || true
+    fail "the watcher did not surface the push: $(cat "$home/watch.out" "$home/watch.err")"
+  fi
+  wait "$watch_pid" || fail "the watcher did not exit after the push wake"
+  rid=$(only_rid "$home")
+  assert_contains "$(cat "$home/watch.out")" "buzz-mention $rid" "the watcher surfaces the verified request before a sweep"
+  assert_equals 'live owner mention' "$(jq -r .text "$home/state/x-inbox/$rid.json")" "poll persisted the signed body"
+
+  : > "$home/disconnect"
+  disconnected() { run_in "$home" "$ROOT/bin/fm-buzz.sh" status | grep -Fxq 'listener: disconnected'; }
+  wait_for_buzz 100 disconnected || fail "the listener did not report disconnection"
+  assert_equals 1 "$(wc -l < "$home/state/.wake-queue" | tr -d ' ')" "a drop must not add a wake"
+  run_in "$home" "$ROOT/bin/fm-buzz.sh" disable >/dev/null || fail "disable must retire the source"
+  out=$(run_in "$home" "$ROOT/bin/fm-buzz.sh" status)
+  assert_contains "$out" 'listener: stopped' "status reports retirement"
+  helper_exited() {
+    local process_state
+    process_state=$(ps -o stat= -p "$helper_pid" 2>/dev/null) || return 0
+    [[ "$process_state" = Z* || -z "$process_state" ]]
+  }
+  wait_for_buzz 100 helper_exited || fail "the listener helper survived retirement"
+  run_in "$home" "$ROOT/bin/fm-procevent.sh" reconcile >/dev/null || fail "disabled home reconcile"
+  out=$(run_in "$home" "$ROOT/bin/fm-procevent.sh" list)
+  assert_equals 'no sources registered' "$out" "reconcile cannot restart a disabled source"
+  pass "a push wakes a live watcher before its sweep and disable retires the listener"
+}
+
+test_push_waits_for_a_sweep() {
+  local home sweep_pid push_pid ev
+  home=$(new_home single-flight)
+  enable_from_off "$home"
+  : > "$home/read-gate"
+  FAKE_READ_GATE="$home/read-gate" poll "$home" > "$home/sweep.out" &
+  sweep_pid=$!
+  sweep_entered() { [ -f "$home/read-gate.entered" ]; }
+  wait_for_buzz 100 sweep_entered || fail "sweep did not reach the CLI"
+  ev=$(sign_event "$OWNER_SK" "$NOW" 9 "$(mention_tags)" 'concurrent mention')
+  set_events "$home" "$ev"
+  run_in "$home" "$ROOT/bin/fm-buzz-poll.sh" --notify &
+  push_pid=$!
+  # A competing watcher sweep has the exact same lock as the waiting push.
+  assert_equals '' "$(poll "$home")" "a busy watcher sweep must skip"
+  assert_equals 1 "$(wc -l < "$home/cli.log" | tr -d ' ')" "only the first sweep may enter the CLI"
+  rm -f "$home/read-gate"
+  wait "$sweep_pid" || fail "the sweep did not finish"
+  wait "$push_pid" || fail "the push did not finish"
+  assert_equals 2 "$(wc -l < "$home/cli.log" | tr -d ' ')" "the push reads after the sweep releases the lock"
+  assert_contains "$(cat "$home/sweep.out")" 'buzz-mention' "the sweep publishes the verified mention"
+  assert_absent "$home/state/.wake-queue" "the waiting push must not duplicate the sweep's wake"
+  pass "push and sweep share one poll lock and deduplicate sequential reads"
+}
+
 test_dismiss_is_local_and_final() {
   local home rid out rc
   home=$(new_home dismiss)
@@ -1132,6 +1239,8 @@ fm_test_run \
   test_reply_dry_run_writes_a_receipt_without_spending_the_budget \
   test_disable_stops_intake_and_replies_until_enabled \
   test_reenable_while_on_keeps_the_cursor \
+  test_listener_wakes_through_the_poll_and_retires \
+  test_push_waits_for_a_sweep \
   test_dismiss_is_local_and_final \
   test_dry_run_dismiss_previews_and_leaves_the_request_answerable \
   test_poll_does_not_reannounce_a_handled_staged_request \
