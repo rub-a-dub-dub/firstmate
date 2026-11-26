@@ -1,0 +1,31 @@
+=== the off switch alone stops the listener at the shipped 60s cadence ===
+  FM_BUZZ_LISTEN_RECHECK_SECONDS is unset: <unset>
+
+$ bin/fm-buzz.sh enable && bin/fm-buzz.sh status
+  bridge: enabled
+  listener: connected
+  watcher check: registered
+  adapter pid 76756, relay helper pid 76881
+
+$ rm config/buzz-bridge.enabled   # the documented off switch, removed by hand; nothing retires the source
+  adapter 76756 and relay helper 76881 both exited 59.8 seconds after the marker went away (bound: 60)
+
+$ bin/fm-buzz.sh status
+  bridge: disabled
+  listener: disconnected
+  watcher check: registered
+  state/buzz/listener.connected is gone: no live relay subscription remains
+
+=== status tells a configured-but-missing listener apart from an unset one ===
+
+$ # BUZZ_LISTENER points at a path that moved (docs tell operators to repoint it after a rebuild)
+  bridge: disabled
+  listener: unusable (BUZZ_LISTENER is not an executable file)
+  watcher check: not registered
+
+$ # a poll-only home leaves BUZZ_LISTENER unset
+  bridge: disabled
+  listener: not configured
+  watcher check: not registered
+
+=== end ===

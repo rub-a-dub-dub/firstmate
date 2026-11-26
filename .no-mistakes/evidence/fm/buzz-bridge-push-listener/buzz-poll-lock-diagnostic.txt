@@ -1,0 +1,26 @@
+=== an unreclaimable poll lock surfaces instead of silencing intake ===
+
+$ ls -la state/.buzz-poll.lock
+  total 0
+  drwxr-xr-x@ 3 crossbow  staff   96 Jan  1  2000 .
+  drwxr-xr-x@ 6 crossbow  staff  192 Nov 26 02:03 ..
+  drwxr-xr-x@ 2 crossbow  staff   64 Nov 26 02:03 not-a-lock-file
+
+$ bin/fm-buzz-poll.sh   # the watcher's check sweep, with a mention waiting
+  buzz-bridge-error cannot reclaim /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-buzz-bridge-tests.hJPUn7/lock-demo/state/.buzz-poll.lock; the Buzz poll cannot run
+  exit 0 (the sweep must not fail the watcher's check)
+
+$ cat state/buzz/poll.error   # what bin/fm-buzz.sh status reports to the operator
+  cannot reclaim /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-buzz-bridge-tests.hJPUn7/lock-demo/state/.buzz-poll.lock; the Buzz poll cannot run
+
+$ bin/fm-buzz-poll.sh   # the next sweep: bounded, so the diagnostic is not repeated every 300s
+  []
+
+$ rmdir the stuck lock   # the operator clears it
+
+$ bin/fm-buzz-poll.sh
+  buzz-mention buzz-0aca9dbd0ef79ec712c06e2ee4067379dd57c571
+
+  intake resumed; staged request: buzz-0aca9dbd0ef79ec712c06e2ee4067379dd57c571
+
+=== end ===

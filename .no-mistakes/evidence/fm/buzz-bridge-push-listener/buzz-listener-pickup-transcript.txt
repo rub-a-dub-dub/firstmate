@@ -1,0 +1,73 @@
+=== Buzz bridge live listener: mention -> firstmate pickup ===
+
+$ cat config/buzz-bridge.env
+  BUZZ_RELAY_URL=https://relay.test.invalid
+  BUZZ_CHANNEL=0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b
+  BUZZ_OWNER_PUBKEY=4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa
+  BUZZ_BRIDGE_PUBKEY=466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27
+  BUZZ_BRIDGE_KEY_FILE=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-buzz-bridge-tests.uelfzX/live-demo/bridge.key
+  BUZZ_CLI=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-buzz-bridge-tests.uelfzX/live-demo/bin/buzz
+  BUZZ_LISTENER=/private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-buzz-bridge-tests.uelfzX/live-demo/bin/listener
+
+$ bin/fm-buzz.sh enable
+  buzz bridge: enabled for channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b on relay.test.invalid; watcher sweep registered
+
+$ bin/fm-buzz.sh status
+  bridge: enabled
+  listener: connected
+  watcher check: registered
+  config: ok (community relay.test.invalid, channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b, owner 4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa, bridge 466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27)
+  cursor: 1800000000
+  pending requests: 0
+
+$ bin/fm-procevent.sh list   # the listener is a registered process-event source
+  SOURCE                       ADAPTER      OWNER      PENDING
+  buzz-bridge-b016a57914f823fd1d36ba2de9e9d03d679d74b9 buzz         live       0
+
+$ bin/fm-watch.sh &   # live watcher, backstop sweep pinned out of reach (FM_CHECK_INTERVAL=999999)
+  watcher polling (pid 56343), cli calls so far: 0
+
+$ # owner posts a mention in the private channel at 01:58:20 -> relay pushes it to the listener
+
+  what the watcher delivered to firstmate:
+    check: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-buzz-bridge-tests.uelfzX/live-demo/state/buzz-bridge.check.sh: buzz-mention buzz-ffc27a14a4f83aab59c3c5594d20c2791ffd20a9
+
+  pickup latency: 2.2 seconds (poll-only backstop would have been up to 300)
+
+$ cat state/x-inbox/buzz-ffc27a14a4f83aab59c3c5594d20c2791ffd20a9.json   # the request firstmate persisted
+  {
+    "request_id": "buzz-ffc27a14a4f83aab59c3c5594d20c2791ffd20a9",
+    "platform": "buzz",
+    "reply_platform": "buzz",
+    "reply_max_chars": 1000,
+    "text": "ship the listener please",
+    "in_reply_to": null,
+    "buzz": {
+      "community": "relay.test.invalid",
+      "channel": "0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b",
+      "event_id": "cc79c4304512a3014f10d7075699d53db4726c40b16118e16da0bf3ccd8a93a9",
+      "thread_root": "cc79c4304512a3014f10d7075699d53db4726c40b16118e16da0bf3ccd8a93a9",
+      "signer": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+      "verified": "owner-signature",
+      "created_at": 1800000000
+    }
+  }
+
+$ cat cli.log   # relay reads during the demo: the push caused them, no sweep ran
+  argv=--relay https://relay.test.invalid --format json messages get --channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b --kinds 9 --since 1800000000 --before 1800000000 --limit 200 key=ok
+  argv=--relay https://relay.test.invalid --format json reactions add --event cc79c4304512a3014f10d7075699d53db4726c40b16118e16da0bf3ccd8a93a9 --emoji 👀 key=ok
+
+$ cat state/.wake-queue   # the durable row the push appended
+  1795687101	1	check	buzz-push	check: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-buzz-bridge-tests.uelfzX/live-demo/state/buzz-bridge.check.sh: buzz-mention buzz-ffc27a14a4f83aab59c3c5594d20c2791ffd20a9
+
+$ bin/fm-buzz.sh disable   # the operator turns the bridge off
+  buzz bridge: disabled; no polling and no replies until bin/fm-buzz.sh enable
+  bridge: disabled
+  listener: stopped
+  watcher check: not registered
+  config: ok (community relay.test.invalid, channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b, owner 4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa, bridge 466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27)
+  cursor: 1800000000
+  pending requests: 1
+  relay helper pid 55630 exited: the authenticated session is gone
+
+=== end ===
