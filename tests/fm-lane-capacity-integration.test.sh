@@ -8,15 +8,19 @@
 #
 # Deterministic cases inject their memory reading through the probe seams the
 # unit suites use, so they pass on any host whatever its free memory: on macOS
-# a fake sysctl answers hw.memsize and kern.memorystatus_level (every other key
-# goes to the real sysctl), and on Linux FM_PROC_ROOT_OVERRIDE points at a tree
-# whose meminfo is a fixture and whose other entries link to the real /proc
-# (process ids are left out, so identity checks fall back to ps), and a failing
-# powershell.exe keeps a WSL2 run off the live Windows host view. They also
-# drive power through a fake pmset and a fixture /sys power_supply, and fake
-# getconf (64 cores, so this host's own load never binds) and df (a fixed free
-# disk); the spawn path, the watcher, the lock, and the backlog are real. The
-# idle-reclaim case keeps the real process table and real memory, since it
+# a fake sysctl answers hw.memsize, kern.memorystatus_level and
+# kern.memorystatus_vm_pressure_level and a fake vm_stat a fixed swap-in
+# counter (every other sysctl key goes to the real sysctl), and on Linux
+# FM_PROC_ROOT_OVERRIDE points at a tree whose meminfo, pressure/{cpu,memory,io}
+# and vmstat are fixtures and whose other entries link to the real /proc
+# (process ids are left out, so identity checks fall back to ps). A quiet host
+# on both, so a loaded runner's own stalls or swapping never close the io,
+# memory-pressure, or swap gate under a case that asked for room. A failing
+# powershell.exe keeps a WSL2 run off the live Windows host view. The cases
+# also drive power through a fake pmset and a fixture /sys power_supply, and
+# fake getconf (64 cores, so this host's own load never binds) and df (a fixed
+# free disk); the spawn path, the watcher, the lock, and the backlog are real.
+# The idle-reclaim case keeps the real process table and real memory, since it
 # judges real workers and never depends on room. Only the opt-in live case
 # reads this host's real memory for admission.
 #
@@ -137,21 +141,39 @@ SH
     add_item "$home" "$id"
   done
   # Injected memory: a 100 GB host, so the macOS memory level is the GB available.
+  # The vm pressure level is injected too: this host's own pressure must never
+  # close the memory-pressure gate under a case that asked for room.
   cat > "$fakebin/sysctl" <<SH
 #!/usr/bin/env bash
 case "\${2:-}" in
   hw.memsize) echo 107374182400 ;;
   kern.memorystatus_level) cat "$case_dir/v/avail_gb" ;;
+  kern.memorystatus_vm_pressure_level) echo 1 ;;
   *) exec /usr/sbin/sysctl "\$@" ;;
 esac
 SH
-  chmod +x "$fakebin/sysctl"
+  # A fixed swap-in counter, so this host's own swapping is never a swap-in rate.
+  printf '#!/usr/bin/env bash\nprintf "Swapins:  0.\\n"\n' > "$fakebin/vm_stat"
+  chmod +x "$fakebin/sysctl" "$fakebin/vm_stat"
   mkdir -p "$case_dir/proc"
   if [ -d /proc ] && [ -r /proc/loadavg ]; then
     for e in /proc/*; do
       n=${e##*/}
-      case "$n" in meminfo|*[!0-9]*) [ "$n" = meminfo ] || ln -s "$e" "$case_dir/proc/$n" 2>/dev/null ;; esac
+      case "$n" in
+        meminfo|pressure|vmstat) ;;
+        *[!0-9]*) ln -s "$e" "$case_dir/proc/$n" 2>/dev/null ;;
+      esac
     done
+    # Stalls and swapping are injected like the memory reading, never
+    # inherited: a loaded shared host's real /proc/pressure or rising pswpin
+    # would close the io, memory-pressure, or swap gate under a case that asked
+    # for room.
+    mkdir -p "$case_dir/proc/pressure"
+    for n in cpu memory io; do
+      printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+        > "$case_dir/proc/pressure/$n"
+    done
+    printf 'pswpin 0\npswpout 0\n' > "$case_dir/proc/vmstat"
   fi
   set_mem "$case_dir" 13
   set_power "$case_dir" ac
