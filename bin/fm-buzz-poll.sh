@@ -87,6 +87,7 @@ case "${1-}" in
 esac
 
 WORK=
+UNRECLAIMABLE=
 # shellcheck disable=SC2329 # EXIT trap owns cleanup.
 cleanup() {
   [ -z "$WORK" ] || rm -rf "$WORK"
@@ -97,8 +98,12 @@ trap cleanup EXIT
 trap 'exit 0' HUP INT TERM
 if [ "$NOTIFY" -eq 1 ]; then
   fm_lock_acquire_wait "$FM_BUZZ_POLL_LOCK" --refuse-unreapable || exit 1
-else
-  fm_lock_try_acquire "$FM_BUZZ_POLL_LOCK" || exit 0
+elif ! fm_lock_try_acquire "$FM_BUZZ_POLL_LOCK"; then
+  # A held or deferred lock is an ordinary skip. A lock whose dead holder cannot
+  # be cleared silences every later sweep too, so that one is reported below
+  # once the poll's own diagnostic is defined.
+  UNRECLAIMABLE=${FM_LOCK_RECLAIM_FAILED_PATH:-}
+  [ -n "$UNRECLAIMABLE" ] || exit 0
 fi
 fm_buzz_enabled || exit 0
 
@@ -176,6 +181,8 @@ react_to_request() {
     </dev/null >/dev/null 2>&1 || true
 }
 
+[ -z "$UNRECLAIMABLE" ] \
+  || { emit_error_once "cannot reclaim $UNRECLAIMABLE; the Buzz poll cannot run"; exit 0; }
 command -v jq >/dev/null 2>&1 || { emit_error_once "missing jq"; exit 0; }
 command -v python3 >/dev/null 2>&1 || { emit_error_once "missing python3"; exit 0; }
 fm_buzz_load_config || { emit_error_once "$FM_BUZZ_CONFIG_ERROR"; exit 0; }

@@ -1256,6 +1256,58 @@ test_status_names_a_configured_but_unusable_listener() {
   pass "status separates an unusable BUZZ_LISTENER from an unset one"
 }
 
+test_a_sweep_reports_a_poll_lock_it_cannot_reclaim() {
+  local home out
+  home=$(new_home stuck-lock)
+  enable "$home"
+  set_events "$home" "$(sign_event "$OWNER_SK" "$NOW" 9 "$(mention_tags)" 'mention behind a stuck lock')"
+  # A lock directory past the mid-acquisition window, with no holder and
+  # something inside it that rmdir cannot remove: nothing reclaims it, so every
+  # later sweep would skip forever.
+  mkdir -p "$home/state/.buzz-poll.lock/not-a-lock-file" || fail "cannot stage the stuck lock"
+  touch -t 200001010000 "$home/state/.buzz-poll.lock" || fail "cannot age the stuck lock"
+  out=$(poll "$home"); expect_code 0 $? "sweep exit with an unreclaimable lock"
+  assert_contains "$out" "buzz-bridge-error cannot reclaim $home/state/.buzz-poll.lock" \
+    "a lock nothing can reclaim must not silence intake"
+  assert_equals '' "$(only_rid "$home")" "a sweep that never ran must not stage a request"
+  assert_grep "cannot reclaim" "$home/state/buzz/poll.error" "the diagnostic is recorded for status"
+  assert_equals '' "$(poll "$home")" "the bounded diagnostic reports once, not every sweep"
+  rmdir "$home/state/.buzz-poll.lock/not-a-lock-file" "$home/state/.buzz-poll.lock" \
+    || fail "cannot clear the stuck lock"
+  out=$(poll "$home"); expect_code 0 $? "sweep exit once the lock is clear"
+  assert_contains "$out" 'buzz-mention buzz-' "intake resumes once the lock is reclaimable"
+  pass "a poll lock nothing can reclaim is reported instead of skipped silently"
+}
+
+test_a_zero_recheck_override_keeps_the_production_cadence() {
+  local home helper_pid
+  home=$(new_home padded-zero)
+  fm_test_track_procevent_home "$home" "$FM_PROCEVENT_CLAIM_ROOT"
+  cat > "$home/bin/listener" <<'SH'
+#!/usr/bin/env bash
+home=${0%/bin/listener}
+printf '%s\n' "$$" > "$home/listener.pid"
+printf 'connected\n'
+limit=${FM_TEST_STUB_MAX_BLOCK_SECONDS:-120}
+while [ "$SECONDS" -lt "$limit" ]; do sleep 0.05; done
+SH
+  chmod +x "$home/bin/listener"
+  printf 'BUZZ_LISTENER=%s\n' "$home/bin/listener" >> "$home/config/buzz-bridge.env"
+  # Every zero spelling must fall back to the production cadence rather than
+  # ending the session on its first read.
+  export FM_BUZZ_LISTEN_RECHECK_SECONDS=00
+  enable_from_off "$home"
+  connected() { run_in "$home" "$ROOT/bin/fm-buzz.sh" status | grep -Fxq 'listener: connected'; }
+  wait_for_buzz 100 connected || fail "a zero-valued re-check override ended the session at once"
+  helper_pid=$(cat "$home/listener.pid")
+  sleep 1
+  ! process_exited "$helper_pid" || fail "the helper did not survive a zero-valued override"
+  connected || fail "the listener did not stay connected under a zero-valued override"
+  unset FM_BUZZ_LISTEN_RECHECK_SECONDS
+  run_in "$home" "$ROOT/bin/fm-buzz.sh" disable >/dev/null || fail "disable must retire the source"
+  pass "a zero-valued re-check override falls back to the production cadence"
+}
+
 test_push_waits_for_a_sweep() {
   local home sweep_pid push_pid ev
   home=$(new_home single-flight)
@@ -1375,6 +1427,8 @@ fm_test_run \
   test_arm_reports_a_listener_it_could_not_start \
   test_the_off_switch_alone_stops_a_quiet_listener \
   test_status_names_a_configured_but_unusable_listener \
+  test_a_sweep_reports_a_poll_lock_it_cannot_reclaim \
+  test_a_zero_recheck_override_keeps_the_production_cadence \
   test_push_waits_for_a_sweep \
   test_a_payloadless_push_row_surfaces_no_blank_wake \
   test_dismiss_is_local_and_final \

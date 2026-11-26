@@ -88,7 +88,8 @@ case "$1" in
     # A quiet channel sends nothing for hours, so the off-switch re-check below
     # runs on this cadence rather than on helper traffic.
     recheck=${FM_BUZZ_LISTEN_RECHECK_SECONDS:-60}
-    case "$recheck" in ''|*[!0-9]*|0) recheck=60 ;; esac
+    case "$recheck" in ''|*[!0-9]*|0*) recheck=60 ;; esac
+    [ "$recheck" -lt 60 ] || recheck=60
     exec 3< <(
       unset BUZZ_PRIVATE_KEY
       exec "$BUZZ_LISTENER" "$BUZZ_RELAY_URL" "$BUZZ_CHANNEL" "$BUZZ_OWNER_PUBKEY" \
