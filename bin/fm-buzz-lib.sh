@@ -191,6 +191,17 @@ fm_buzz_secret_read() {
 # desktop pairing or stray auth tag can never stand in for the bridge key.
 # Returns the CLI's exit code (2 relay/network, 3 auth), or 10 when the secret
 # cannot be read.
+#
+# The --timeout form runs the CLI under fm_run_timed, which widens both of
+# those contracts. Its status can also be one fm_run_timed owns rather than the
+# CLI: 124 for the bound being hit (test it with fm_timed_out, never by value),
+# 128+n for a signalled command, and 127 when no timeout mechanism exists - so
+# a caller that maps exit codes to Buzz meanings must screen those first. And
+# the secret is a temporary export on that subshell rather than the single
+# exec'd process, so fm_run_timed's own helpers (mktemp, the timeout or perl
+# watchdog, the wrapper shell) inherit it too. They all run as the uid that can
+# already read the CLI's environ, so this crosses no trust boundary, but the
+# "only through its environment" above is narrower than the --timeout path.
 fm_buzz_cli() {
   local secret relay=$BUZZ_RELAY_URL
   secret=$(fm_buzz_secret_read) || return 10

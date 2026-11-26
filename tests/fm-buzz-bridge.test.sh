@@ -631,6 +631,44 @@ test_poll_reaction_dry_run_previews_without_sending() {
   pass "a reaction dry run previews the exact reaction and leaves intake active"
 }
 
+# FM_CHECK_TIMEOUT is an owner-facing knob (docs/configuration.md), so the poll
+# must survive the shapes a hand-edited watch.env can carry. A zero-padded value
+# is octal to bash's arithmetic - 030 would silently mean 24, and 08 is not octal
+# at all, which aborts the whole script under set -u before intake ever runs.
+test_poll_survives_a_zero_padded_check_timeout() {
+  local home out rid value
+  for value in 08 00 030; do
+    home=$(new_home "padded-timeout-$value")
+    enable "$home"
+    set_events "$home" "$(sign_event "$OWNER_SK" $((NOW - 60)) 9 "$(mention_tags)" "padded $value")"
+    out=$(FM_CHECK_TIMEOUT=$value poll "$home")
+    expect_code 0 $? "poll with FM_CHECK_TIMEOUT=$value"
+    rid=$(only_rid "$home")
+    [ -n "$rid" ] || fail "FM_CHECK_TIMEOUT=$value must not stop intake"
+    assert_equals "buzz-mention $rid" "$out" "FM_CHECK_TIMEOUT=$value must still wake for the mention"
+    assert_equals 1 "$(grep -c 'reactions add' "$home/cli.log")" \
+      "FM_CHECK_TIMEOUT=$value must fall back to a usable budget and still acknowledge"
+  done
+  pass "a zero-padded FM_CHECK_TIMEOUT neither aborts the poll nor silences the acknowledgement"
+}
+
+# The budget gate itself: a genuinely tiny bound leaves no room for a bounded
+# send, so the acknowledgement is skipped while intake stays whole.
+test_poll_skips_reactions_with_no_budget_left() {
+  local home out rid
+  home=$(new_home no-reaction-budget)
+  enable "$home"
+  set_events "$home" "$(sign_event "$OWNER_SK" $((NOW - 60)) 9 "$(mention_tags)" 'no budget for eyes')"
+  out=$(FM_CHECK_TIMEOUT=5 poll "$home")
+  expect_code 0 $? "poll with an exhausted reaction budget"
+  rid=$(only_rid "$home")
+  [ -n "$rid" ] || fail "an exhausted reaction budget must not drop the inbox record"
+  assert_equals "buzz-mention $rid" "$out" "an exhausted budget must leave the intake wake intact"
+  assert_equals offered "$(jq -r .state "$home/state/buzz/requests/$rid.json")" "the request must still be offered"
+  assert_no_grep "reactions add" "$home/cli.log" "no reaction may start without budget for a whole bounded send"
+  pass "a poll with no budget left skips the acknowledgement and still ingests the mention"
+}
+
 # tests/fixtures/buzz-sign.py signs every "valid" fixture with bin/fm-buzz-verify.py's
 # own curve arithmetic and id serialization, so the rest of this file cannot tell a
 # correct verifier from a self-consistent wrong one. These are the external oracles:
@@ -1071,6 +1109,8 @@ fm_test_run \
   test_poll_reaction_failure_leaves_intake_complete \
   test_poll_caps_reactions_per_sweep \
   test_poll_reaction_dry_run_previews_without_sending \
+  test_poll_survives_a_zero_padded_check_timeout \
+  test_poll_skips_reactions_with_no_budget_left \
   test_poll_delivers_the_newest_mention_past_the_read_budget \
   test_poll_holds_the_cursor_on_an_exactly_full_window \
   test_verifier_matches_external_bip340_and_nip01_oracles \

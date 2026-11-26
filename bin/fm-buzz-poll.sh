@@ -85,8 +85,14 @@ THREAD_SECONDS=5
 # fork overhead, so it cannot drift away from REACTION_BOUND.
 REACTION_MAX=5
 REACTION_BOUND=3
+# 10# because a zero-padded value is octal to bash's arithmetic: 030 would mean
+# 24, and 08 is not octal at all, so a bare expansion fails here and leaves
+# REACTION_DEADLINE unset - which under set -u kills the poll at its first
+# reaction, after intake and the cursor have already run, exiting 1 with the
+# acknowledgement silently never sent. Every bound below reads this one value.
 CHECK_TIMEOUT=${FM_CHECK_TIMEOUT:-30}
-case "$CHECK_TIMEOUT" in ''|*[!0-9]*|0) CHECK_TIMEOUT=30 ;; esac
+case "$CHECK_TIMEOUT" in ''|*[!0-9]*) CHECK_TIMEOUT=30 ;; *) CHECK_TIMEOUT=$((10#$CHECK_TIMEOUT)) ;; esac
+[ "$CHECK_TIMEOUT" -gt 0 ] || CHECK_TIMEOUT=30
 REACTION_DEADLINE=$(( $(date +%s) + CHECK_TIMEOUT - REACTION_BOUND - 2 ))
 
 emit_error_once() {
@@ -161,14 +167,12 @@ VERIFY=(
 )
 
 read_thread_history() (
-  check_timeout=${FM_CHECK_TIMEOUT:-30}
-  case "$check_timeout" in ''|*[!0-9]*|0) check_timeout=30 ;; esac
   # Reserve time for the existing delivery loop, for the queue scan above, and
   # for signature verification - whose ceiling is TWICE the intake page (the two
   # verify passes share nothing) plus THREAD_LOOKUPS x THREAD_LIMIT, because every
   # event a history holds is verified before its signer can be trusted. Raising
   # any of those three constants spends this reserve.
-  budget=$((10#$check_timeout - SECONDS - 15))
+  budget=$((CHECK_TIMEOUT - SECONDS - 15))
   [ "$budget" -gt 0 ] || return 0
   [ "$budget" -le "$THREAD_SECONDS" ] || budget=$THREAD_SECONDS
   # shellcheck source=bin/fm-timeout-lib.sh
