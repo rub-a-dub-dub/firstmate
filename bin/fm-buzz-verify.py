@@ -11,12 +11,16 @@ owner requests, oldest first:
 
 Signature verification is the one expensive stage and the relay is not trusted
 to have checked it, so every distinct candidate the caller hands over is
-verified. The input is what bounds the work: bin/fm-buzz-poll.sh makes one
-newest-first read of at most its page limit, so an over-budget window arrives
-capped at its newest events and the whole sweep stays inside the watcher's
-per-check timeout. That read is scoped by channel and kind, not by author, so
-the owner's latest mention is inside it unless more than that page limit of
-channel messages are newer than the mention.
+verified. The input is what bounds the work, in two terms. The intake read:
+bin/fm-buzz-poll.sh makes one newest-first read of at most its page limit, so an
+over-budget window arrives capped at its newest events. That read is scoped by
+channel and kind, not by author, so the owner's latest mention is inside it
+unless more than that page limit of channel messages are newer than the mention.
+Then the thread histories, which `private_thread` must verify event by event
+before it can trust any signer in them: at most one history per lookup the caller
+made, each capped at its thread limit. Both ceilings are the caller's to choose,
+and the sweep stays inside the watcher's per-check timeout only while their sum
+does; raising either one is a change to that budget.
 
 The paging overlap re-delivers the same event, so candidates are deduplicated
 per distinct (id, sig) pair before the signature stage. The id alone would not
@@ -198,12 +202,14 @@ def signed(ev):
 def private_thread(path, root, args):
     """Return the signed member IDs and earliest bridge reply in a complete thread.
 
-    The relay scoped this read to one thread, so every in-channel event it
-    returned is a participant: a third party disqualifies the thread whatever its
-    `e` tags say. Resolving the tags decides membership and the first bridge
-    reply, never whether somebody else is present - NIP-10's deprecated
-    positional form and a reply marker naming a descendant both resolve away from
-    `root`, and treating those as absence would let anyone join unnoticed.
+    The relay scoped this read to one thread, so every event it returned is a
+    participant: a third party disqualifies the thread whatever its tags say. The
+    `h` and `e` tags decide membership and the first bridge reply, never whether
+    somebody else is present. Reading them the other way round would let anyone
+    join unnoticed, because every shape this module calls malformed - a duplicated
+    or absent `h` tag, NIP-10's deprecated positional `e` form, a reply marker
+    naming a descendant - would then read as absence rather than as a stranger.
+    Only the signer is load-bearing here, and only the signature attests it.
     """
     try:
         with path.open(encoding="utf-8") as stream:
@@ -217,13 +223,13 @@ def private_thread(path, root, args):
     for ev in events:
         if not well_formed(ev):
             return set(), None
-        if not in_channel(ev, args.channel) or ev["id"] in members:
+        if ev["id"] in members:
             continue
         if event_id(ev) != ev["id"] or not signed(ev):
             continue
         if ev["pubkey"] not in (args.owner, args.bridge):
             return set(), None
-        if thread_refs(ev) != root:
+        if not in_channel(ev, args.channel) or thread_refs(ev) != root:
             continue
         members.add(ev["id"])
         if ev["pubkey"] == args.bridge and ev["kind"] == 9 and ev["id"] != root:

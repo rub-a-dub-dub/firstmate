@@ -128,7 +128,10 @@ VERIFY=(
 read_thread_history() (
   check_timeout=${FM_CHECK_TIMEOUT:-30}
   case "$check_timeout" in ''|*[!0-9]*|0) check_timeout=30 ;; esac
-  # Reserve time for signature verification and the existing delivery loop.
+  # Reserve time for the existing delivery loop and for signature verification,
+  # whose ceiling is the intake page plus THREAD_LOOKUPS x THREAD_LIMIT events:
+  # every event a history holds is verified before its signer can be trusted, so
+  # raising either thread constant spends this reserve.
   budget=$((10#$check_timeout - SECONDS - 15))
   [ "$budget" -gt 0 ] || return 0
   [ "$budget" -le "$THREAD_SECONDS" ] || budget=$THREAD_SECONDS

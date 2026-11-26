@@ -77,10 +77,12 @@ case "$cmd" in
     [ "${FAKE_THREAD_RC:-0}" = 0 ] || exit "$FAKE_THREAD_RC"
     [ -z "${FAKE_THREAD_DELAY:-}" ] || sleep "$FAKE_THREAD_DELAY"
     # A thread read is scoped to the thread, not to one tag shape: the root plus
-    # every in-channel event reaching it through any `e` tag, directly or through
-    # a descendant, whatever NIP-10 marker (or none) that tag carries.
-    jq -c --arg root "$event" --arg c "$channel" --argjson l "$limit" '
-      map(select(any(.tags[]; .[0] == "h" and .[1] == $c))) as $all
+    # every event reaching it through any `e` tag, directly or through a
+    # descendant, whatever NIP-10 marker (or none) that tag carries. Which posts
+    # the relay considers to be in the channel is the relay's own business, as it
+    # is for `get` above; the bridge re-derives the channel from each event.
+    jq -c --arg root "$event" --argjson l "$limit" '
+      . as $all
       | reduce range(0; 4) as $_ ({($root): true};
           . as $ids
           | reduce ($all[] | select(any(.tags[]; .[0] == "e" and $ids[.[1]])) | .id) as $id
@@ -324,12 +326,17 @@ test_poll_accepts_only_addressed_owner_thread_replies() {
   [ -n "$rid" ] || fail "the explicit mention in the shared thread must be ingested"
   assert_equals "buzz-mention $rid" "$out" "the shared thread requires an explicit bridge mention"
 
-  # A third party is a third party whatever their threading tags resolve to: the
+  # A third party is a third party whatever their tags resolve to. Threading: the
   # deprecated NIP-10 positional form carries no marker at all, and a reply
   # nested under the bridge's message names a descendant rather than the root.
+  # Channel: a cross-post duplicates the `h` tag, and a client the bridge has
+  # never met may leave it bare or omit it. Only the signature says who posted.
   n=0
   for join in "$(jq -cn --arg c "$CHANNEL" --arg r "$root_id" '[["h",$c],["e",$r]]')" \
-    "$(jq -cn --arg c "$CHANNEL" --arg b "$bridge_id" '[["h",$c],["e",$b,"","reply"]]')"; do
+    "$(jq -cn --arg c "$CHANNEL" --arg b "$bridge_id" '[["h",$c],["e",$b,"","reply"]]')" \
+    "$(jq -cn --arg c "$CHANNEL" --arg r "$root_id" '[["h",$c],["h",$c],["e",$r,"","root"]]')" \
+    "$(jq -cn --arg r "$root_id" '[["h"],["e",$r,"","root"]]')" \
+    "$(jq -cn --arg r "$root_id" '[["e",$r,"","root"]]')"; do
     n=$((n + 1))
     set_events "$home" "$root" "$bridge_reply" \
       "$(sign_event "$OTHER_SK" $((NOW - 90000)) 9 "$join" "someone else joined unmarked $n")" \
