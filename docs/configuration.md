@@ -2924,7 +2924,7 @@ Add `--image <path>` there too when a completion follow-up should carry an image
 
 **Preview with dry-run**
 
-Set `FMX_DRY_RUN` to preview replies and dismissals without posting.
+Set `FMX_DRY_RUN` to preview replies and dismissals without posting, and to suppress the Buzz bridge's 👀 acknowledgement.
 Truthy means anything except unset, empty, `0`, `false`, `no`, or `off`; an explicit environment value wins over `.env`.
 
 - In dry-run, `fm-x-reply.sh` records the would-be payload to `state/x-outbox/<request_id>.json`, including `texts` for a thread and an `endpoint` marker for follow-up previews, prints a `DRY RUN` summary to stderr, echoes the `request_id`, and exits 0.
@@ -3115,6 +3115,11 @@ Edits (kind 40003), DMs, gift wraps, workflow messages, and posts signed by anyo
 
 Each accepted message gets a stable request id derived from the transport, community, bridge key, and event id, and a binding in `state/buzz/requests/<request_id>.json` recording the channel, parent event, thread root, verified signer, and reply budget.
 The binding is written before the inbox record, the cursor in `state/buzz/cursor.json` advances only after a complete range is persisted, and an existing binding deduplicates a re-read.
+Once a range is persisted, the bridge acknowledges each newly bound message with one 👀 reaction through `buzz reactions add --event <event-id> --emoji 👀`, sent sequentially and previewed under `FMX_DRY_RUN`.
+That subcommand and its `--event` and `--emoji` flags are a property of the pinned `relay-v0.3.0` CLI, like the newest-first truncation above, and must be re-confirmed before `BUZZ_CLI` is repointed at a newer build.
+At that tag the command prints the same normalized write response its other write commands print - `{"event_id", "accepted", "message"}`, where `accepted` is the relay's own boolean and defaults to `false` when the relay omits it, and where a relay body carrying neither `event_id` nor `accepted` is passed through unchanged instead.
+So `accepted` is CLI output the bridge could read but deliberately does not: the acknowledgement is best effort and unreported, every status is discarded, and nothing downstream branches on whether the relay took the reaction.
+Every mention a sweep binds is acknowledged, newest first, for as long as the check budget allows; none starts once the sweep is within one bounded send of `FM_CHECK_TIMEOUT`, which is the only limit on how many go out; and a reaction that fails or that the budget leaves no room for is skipped silently and never retried, so a missing 👀 never holds the cursor, the wake, or a reply.
 A new request wakes firstmate with `buzz-mention <request_id>`; a configuration, authorization, thread-lookup, or catch-up problem wakes once per distinct message with `buzz-bridge-error <reason>`, while a relay or network failure on the intake read stays silent until the next sweep.
 
 The check runs at the watcher's `FM_CHECK_INTERVAL` cadence, 300 seconds by default and 30 seconds in a home with hosted Relay on.
@@ -3143,7 +3148,8 @@ Run this once with the owner after the bridge lands, against the owner's relay:
 2. Confirm with the owner that the bridge pubkey is a member of the private channel.
 3. Run `bin/fm-buzz.sh enable` and confirm the watcher is live.
 4. The owner posts a message in the channel mentioning the bridge identity, for example a status question.
-5. Confirm firstmate wakes with `buzz-mention`, answers through `fmx-respond`, and the reply appears in that message's thread in Buzz, signed by the bridge identity.
+5. Confirm firstmate wakes with `buzz-mention` and the owner sees a 👀 reaction from the bridge identity on the original message before the reply appears in its thread.
+   Confirm that firstmate sent the reply through `fmx-respond` and that Buzz shows the bridge identity as its author.
 6. For a request that spawns work, confirm the acknowledgement arrives first and the final outcome follows in the same thread.
 7. Run `bin/fm-buzz.sh disable`, have the owner post another mention, and confirm no wake and no reply follow, `bin/fm-buzz.sh status` reports `bridge: disabled`, and it still does after a new session starts.
 8. Run `bin/fm-buzz.sh enable` again and confirm the mention from step 7 is *not* answered, on that sweep or any later one: enabling fences the cursor at the enable moment. Then have the owner post a fresh mention and confirm that one is answered.
@@ -3771,7 +3777,7 @@ FM_SMTP_PORT=465   # mail-plane SMTP server port
 FMX_PAIRING_TOKEN=      # Relay pairing token; .env opt-in authorizes replies and eligible lifecycle actions
 FMX_RELAY_URL=https://myfirstmate.io   # optional Relay endpoint override, mainly for local relay development
 FMX_ENV_FILE=           # optional alternate .env file for direct Relay client invocations; bootstrap still checks $FM_HOME/.env
-FMX_DRY_RUN=            # truthy previews Relay replies and dismissals to state/x-outbox/ without posting or requiring a token
+FMX_DRY_RUN=            # truthy previews Relay replies and dismissals to state/x-outbox/ without posting or requiring a token, and previews the Buzz bridge's eyes acknowledgement to stderr instead of sending it
 FMX_X_REPLY_MAX_CHARS=280   # X reply per-message split budget; values below 50 clamp to 50
 FM_DISPATCH_PROVIDER=   # typesafe, openrouter, systemone, or openai; absent preserves the original typesafe key gate ("Typed dispatch resolution")
 FM_DISPATCH_MODEL=      # explicit model for the selected provider; required for openrouter, systemone, and openai

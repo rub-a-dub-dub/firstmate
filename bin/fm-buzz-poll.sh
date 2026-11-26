@@ -53,6 +53,13 @@
 # CLI refused, a thread lookup budget that ran out, a thread too long to check,
 # and a catch-up range too large to drain in one poll. A relay or network failure
 # on the intake read is silent; the next cycle retries it.
+# Once the range is persisted, every newly bound event gets one best-effort eyes
+# reaction, sent sequentially newest first, each bounded to REACTION_BOUND and
+# only while the watcher's check budget still has room. Newest first because a
+# sweep the budget cuts short should have acknowledged the mentions the owner is
+# still waiting on. A reaction that fails, or that the budget leaves no room
+# for, is skipped silently and never retried, so no wake and no cursor advance
+# ever depends on one.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -69,6 +76,24 @@ PAGE_LIMIT=200
 THREAD_LOOKUPS=4
 THREAD_LIMIT=50
 THREAD_SECONDS=5
+# Reactions are acknowledgements, not deliverables: the sweep stops sending them
+# before the watcher's own per-check bound (FM_CHECK_TIMEOUT, default 30) cuts
+# the check. A cut keeps what the check already printed and appends
+# "timed out after <n>s" to it (bin/fm-watch.sh run_check_capture), so the cost
+# of overrunning is a wake that reads as a stuck check, not a lost one. The
+# reserve is one whole bounded send plus the runner's own KILL escalation and
+# fork overhead, so it cannot drift away from REACTION_BOUND. That budget is the
+# only limit: every bound mention is acknowledged while time remains.
+REACTION_BOUND=3
+# 10# because a zero-padded value is octal to bash's arithmetic: 030 would mean
+# 24, and 08 is not octal at all, so a bare expansion fails here and leaves
+# REACTION_DEADLINE unset - which under set -u kills the poll at its first
+# reaction, after intake and the cursor have already run, exiting 1 with the
+# acknowledgement silently never sent. Every bound below reads this one value.
+CHECK_TIMEOUT=${FM_CHECK_TIMEOUT:-30}
+case "$CHECK_TIMEOUT" in ''|*[!0-9]*) CHECK_TIMEOUT=30 ;; *) CHECK_TIMEOUT=$((10#$CHECK_TIMEOUT)) ;; esac
+[ "$CHECK_TIMEOUT" -gt 0 ] || CHECK_TIMEOUT=30
+REACTION_DEADLINE=$(( $(date +%s) + CHECK_TIMEOUT - REACTION_BOUND - 2 ))
 
 emit_error_once() {
   local msg=$1
@@ -86,9 +111,16 @@ clear_error() {
   return 0
 }
 
+react_to_request() {
+  fm_buzz_enabled || return 0
+  fm_buzz_cli --timeout "$REACTION_BOUND" reactions add --event "$1" --emoji '👀' \
+    </dev/null >/dev/null 2>&1 || true
+}
+
 command -v jq >/dev/null 2>&1 || { emit_error_once "missing jq"; exit 0; }
 command -v python3 >/dev/null 2>&1 || { emit_error_once "missing python3"; exit 0; }
 fm_buzz_load_config || { emit_error_once "$FM_BUZZ_CONFIG_ERROR"; exit 0; }
+fmx_load_config
 
 NOW=${FMX_NOW_OVERRIDE:-$(date +%s)}
 case "$NOW" in ''|*[!0-9]*) exit 0 ;; esac
@@ -135,14 +167,12 @@ VERIFY=(
 )
 
 read_thread_history() (
-  check_timeout=${FM_CHECK_TIMEOUT:-30}
-  case "$check_timeout" in ''|*[!0-9]*|0) check_timeout=30 ;; esac
   # Reserve time for the existing delivery loop, for the queue scan above, and
   # for signature verification - whose ceiling is TWICE the intake page (the two
   # verify passes share nothing) plus THREAD_LOOKUPS x THREAD_LIMIT, because every
   # event a history holds is verified before its signer can be trusted. Raising
   # any of those three constants spends this reserve.
-  budget=$((10#$check_timeout - SECONDS - 15))
+  budget=$((CHECK_TIMEOUT - SECONDS - 15))
   [ "$budget" -gt 0 ] || return 0
   [ "$budget" -le "$THREAD_SECONDS" ] || budget=$THREAD_SECONDS
   # shellcheck source=bin/fm-timeout-lib.sh
@@ -239,7 +269,10 @@ while IFS= read -r ev; do
         state:"staged", answer_posted:false, followup_posted:false, dismissed:false}' > "$WORK/binding"
     fm_buzz_binding_claim "$rid" < "$WORK/binding"
     case $? in
-      0) binding=$(cat "$WORK/binding") ;;
+      0)
+        printf '%s\n' "$eid" >> "$WORK/reactions"
+        binding=$(cat "$WORK/binding")
+        ;;
       1) continue ;;
       *) FAILED=1; continue ;;
     esac
@@ -272,6 +305,17 @@ else
   # shortcut: the newest page is still delivered, but the cursor holds until
   # the uncovered range falls under the read budget or behind the age limit.
   emit_error_once "catch-up range exceeds $PAGE_LIMIT messages; older messages in the window were not read"
+fi
+
+if [ -s "$WORK/reactions" ]; then
+  while IFS= read -r eid; do
+    [ "$(date +%s)" -lt "$REACTION_DEADLINE" ] || break
+    if [ -n "$FMX_DRY" ]; then
+      printf 'fm-buzz-poll: DRY RUN - would add 👀 to Buzz event %s\n' "$eid" >&2
+    else
+      react_to_request "$eid"
+    fi
+  done < <(jq -Rrn '[inputs] | reverse | .[]' "$WORK/reactions")
 fi
 
 exit 0
