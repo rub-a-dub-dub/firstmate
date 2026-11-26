@@ -55,7 +55,8 @@
 # Diagnostics wake once per distinct message as "buzz-bridge-error <reason>":
 # configuration problems, an auth refusal, a malformed read, a thread read the
 # CLI refused, a thread lookup budget that ran out, a thread too long to check,
-# and a catch-up range too large to drain in one poll. A relay or network failure
+# a catch-up range too large to drain in one poll, and a poll lock whose dead
+# holder nothing can reclaim. A relay or network failure
 # on the intake read is silent; the next cycle retries it.
 # Once the range is persisted, every newly bound event gets one best-effort eyes
 # reaction, sent sequentially newest first, each bounded to REACTION_BOUND and

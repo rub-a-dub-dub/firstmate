@@ -3134,6 +3134,7 @@ At that tag the command prints the same normalized write response its other writ
 So `accepted` is CLI output the bridge could read but deliberately does not: the acknowledgement is best effort and unreported, every status is discarded, and nothing downstream branches on whether the relay took the reaction.
 Every mention a sweep binds is acknowledged, newest first, for as long as the check budget allows; none starts once the sweep is within one bounded send of `FM_CHECK_TIMEOUT`, which is the only limit on how many go out; and a reaction that fails or that the budget leaves no room for is skipped silently and never retried, so a missing 👀 never holds the cursor, the wake, or a reply.
 A new request wakes firstmate with `buzz-mention <request_id>`; a configuration, authorization, thread-lookup, or catch-up problem wakes once per distinct message with `buzz-bridge-error <reason>`, while a relay or network failure on the intake read stays silent until the next sweep.
+A sweep that finds the poll already running skips in silence, but one that finds a poll lock nothing can reclaim reports that the same way, because the condition would otherwise silence every later sweep; the diagnostic names the lock path, and clearing it by hand is what resumes intake.
 
 The listener holds one authenticated WebSocket subscription for new owner mentions in the configured channel.
 A matching notification triggers the same bounded poll within seconds, and overlapping triggers share one poll at a time with the watcher.
