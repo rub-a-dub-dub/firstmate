@@ -1217,6 +1217,31 @@ test_push_waits_for_a_sweep() {
   pass "push and sweep share one poll lock and deduplicate sequential reads"
 }
 
+test_a_payloadless_push_row_surfaces_no_blank_wake() {
+  local home out
+  home=$(new_home truncated-push)
+  enable "$home"
+  : > "$home/state/.last-check"
+  printf 'announced:downtime:fixture-generation\n' > "$home/state/.watcher-down"
+  fm_test_track_watcher_state "$home/state"
+  # The durable queue's rows are epoch, sequence, kind, key and payload, tab
+  # separated. A state partition that fills mid-append can leave the payload
+  # field off, and such a row carries nothing an operator could act on.
+  {
+    printf '%s\t1\tcheck\tbuzz-push\n' "$NOW"
+    printf '%s\t2\tcheck\tbuzz-push\tcheck: %s: buzz-mention %s\n' \
+      "$NOW" "$home/state/buzz-bridge.check.sh" "buzz-$(printf '0%.0s' {1..39})1"
+  } >> "$home/state/.wake-queue"
+  FM_ROOT_OVERRIDE="$ROOT" FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_POLL=1 \
+    run_in "$home" "$ROOT/bin/fm-watch.sh" > "$home/watch.out" 2> "$home/watch.err" \
+    || fail "the watcher did not deliver the complete row: $(cat "$home/watch.err")"
+  out=$(cat "$home/watch.out")
+  assert_contains "$out" 'buzz-mention buzz-' "the watcher still surfaces the complete push row"
+  assert_equals 0 "$(grep -c '^[[:space:]]*$' "$home/watch.out" | tr -d ' ')" \
+    "a payload-less row must contribute nothing to the delivered wake"
+  pass "a push row that lost its payload adds no blank wake"
+}
+
 test_dismiss_is_local_and_final() {
   local home rid out rc
   home=$(new_home dismiss)
@@ -1283,6 +1308,7 @@ fm_test_run \
   test_listener_wakes_through_the_poll_and_retires \
   test_arm_reports_a_listener_it_could_not_start \
   test_push_waits_for_a_sweep \
+  test_a_payloadless_push_row_surfaces_no_blank_wake \
   test_dismiss_is_local_and_final \
   test_dry_run_dismiss_previews_and_leaves_the_request_answerable \
   test_poll_does_not_reannounce_a_handled_staged_request \

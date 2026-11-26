@@ -3439,7 +3439,7 @@ procevent_surface_queued() {
     [ -e "$(procevent_surfaced_marker "$key")" ] && continue
     PROCEVENT_SURFACED="$PROCEVENT_SURFACED $key"
     buzz="${buzz}$payload"$'\n'
-  done < <(awk -F '\t' '$2 ~ /^[0-9]+$/ && $3 == "check" && $4 == "buzz-push" {
+  done < <(awk -F '\t' 'NF >= 5 && $2 ~ /^[0-9]+$/ && $3 == "check" && $4 == "buzz-push" {
     print "buzz-push:" $2 "\t" $5
   }' "$FM_WAKE_QUEUE" 2>/dev/null)
   if [ -z "$PROCEVENT_SURFACED" ]; then
