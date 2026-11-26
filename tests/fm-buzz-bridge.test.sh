@@ -1276,7 +1276,8 @@ test_push_waits_for_a_sweep() {
   rm -f "$home/read-gate"
   wait "$sweep_pid" || fail "the sweep did not finish"
   wait "$push_pid" || fail "the push did not finish"
-  assert_equals 2 "$(wc -l < "$home/cli.log" | tr -d ' ')" "the push reads after the sweep releases the lock"
+  # Reads only: the sweep's own eyes acknowledgement is a third CLI call.
+  assert_equals 2 "$(grep -c 'messages get' "$home/cli.log")" "the push reads after the sweep releases the lock"
   assert_contains "$(cat "$home/sweep.out")" 'buzz-mention' "the sweep publishes the verified mention"
   assert_absent "$home/state/.wake-queue" "the waiting push must not duplicate the sweep's wake"
   pass "push and sweep share one poll lock and deduplicate sequential reads"
