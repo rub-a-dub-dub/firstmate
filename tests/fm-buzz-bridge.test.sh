@@ -460,7 +460,11 @@ test_poll_requires_complete_thread_history() {
   forged=$(python3 -I "$SIGN" forge "$OWNER" $((NOW - 1000)) 9 "$tags" 'older fixtures' 50)
   jq -c --argjson f "$forged" '. + $f' "$home/events.json" > "$home/full-thread.json"
   mv "$home/full-thread.json" "$home/events.json"
-  assert_equals "" "$(poll "$home")" "a capped thread lookup cannot authorize the unaddressed reply"
+  out=$(poll "$home")
+  assert_equals "" "$(fm_buzz_rid_for "$home" 'unaddressed reply')" \
+    "a capped thread lookup cannot authorize the unaddressed reply"
+  assert_contains "$out" "buzz-bridge-error a thread is past 50 messages" \
+    "a thread too long to read completely asks for a mention instead of going quiet"
   assert_equals "$NOW" "$(jq -r .since "$home/state/buzz/cursor.json")" "thread fallback leaves channel cursor behavior intact"
 
   explicit=$(sign_event "$OWNER_SK" $((NOW - 1)) 9 "$(mention_tags)" 'explicit mention during slow lookup')

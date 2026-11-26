@@ -22,10 +22,17 @@
 # to THREAD_LIMIT events per lookup, skipping any thread whose reply this home
 # has already handled so a re-read cannot starve an older thread out of the
 # budget. Failed, missing, or capped thread reads supply no evidence for implicit
-# intake and do not affect the channel cursor. Both a thread read the CLI refused
-# and a budget that ran out before every queued thread was read are reported: the
-# cursor moves on past those replies, so staying quiet would leave them
-# indistinguishable from messages the bridge never saw.
+# intake and do not affect the channel cursor, which always moves on. Three of
+# those are reported, because the cursor moving past a reply would otherwise leave
+# it indistinguishable from a message the bridge never saw: a read the CLI
+# refused, a budget that ran out before every queued thread was read, and a
+# history that came back at THREAD_LIMIT, where a complete thread cannot be told
+# from a truncated one. Each is one generic message naming no thread, so a single
+# wake can stand for several dropped replies. A thread others have joined is
+# refused under rule 3 yet still spends a lookup, so a busy shared thread can
+# delay checking another thread by a sweep or more. An explicit @Firstmate mention
+# needs no thread read at all and always works: that is the way past every limit
+# here, and what each of these diagnostics asks the owner for.
 #
 # For each accepted event, in order, before the cursor may advance:
 #   1. claim the request binding state/buzz/requests/<request_id>.json
@@ -43,9 +50,9 @@
 #
 # Diagnostics wake once per distinct message as "buzz-bridge-error <reason>":
 # configuration problems, an auth refusal, a malformed read, a thread read the
-# CLI refused, a thread lookup budget that ran out, and a catch-up range too
-# large to drain in one poll. A relay or network failure on the intake read is
-# silent; the next cycle retries it.
+# CLI refused, a thread lookup budget that ran out, a thread too long to check,
+# and a catch-up range too large to drain in one poll. A relay or network failure
+# on the intake read is silent; the next cycle retries it.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -193,11 +200,21 @@ if [ "$WANTED" -gt 0 ]; then
   if [ "$rc" -ne 0 ]; then
     THREAD_ERROR="buzz CLI thread read failed (exit $rc); unaddressed replies need an explicit mention"
   else
+    CAPPED=0
     while IFS= read -r root; do
-      [ -f "$WORK/$root" ] && continue
-      THREAD_ERROR="thread lookup budget exhausted; unaddressed replies in the threads it did not reach need an explicit mention"
-      break
+      if [ ! -f "$WORK/$root" ]; then
+        THREAD_ERROR="thread lookup budget exhausted; unaddressed replies in the threads it did not reach need an explicit mention"
+        break
+      fi
+      # A history at the limit is the same read a longer thread would return, so
+      # bin/fm-buzz-verify.py cannot trust it and the reply goes unanswered.
+      held=$(jq 'if type == "array" then length else 0 end' "$WORK/$root" 2>/dev/null) || held=0
+      case "$held" in ''|*[!0-9]*) held=0 ;; esac
+      [ "$held" -lt "$THREAD_LIMIT" ] || CAPPED=1
     done < "$WORK/wanted"
+    if [ -z "$THREAD_ERROR" ] && [ "$CAPPED" -eq 1 ]; then
+      THREAD_ERROR="a thread is past $THREAD_LIMIT messages, too long to check for an unaddressed reply; @-mention Firstmate to reach it there"
+    fi
   fi
 fi
 "${VERIFY[@]}" --history-dir "$WORK" --thread-limit "$THREAD_LIMIT" < "$WORK/all" > "$WORK/accepted" 2>/dev/null \
