@@ -7,19 +7,20 @@
 # a baseline revision.
 #
 # Deterministic cases inject their memory reading through the probe seams the
-# unit suites use, so they pass on any host whatever its free memory: on macOS
-# a fake sysctl answers hw.memsize, kern.memorystatus_level and
-# kern.memorystatus_vm_pressure_level and a fake vm_stat a fixed swap-in
-# counter (every other sysctl key goes to the real sysctl), and on Linux
-# FM_PROC_ROOT_OVERRIDE points at a tree whose meminfo, pressure/{cpu,memory,io}
-# and vmstat are fixtures and whose other entries link to the real /proc
-# (process ids are left out, so identity checks fall back to ps). A quiet host
-# on both, so a loaded runner's own stalls or swapping never close the io,
+# unit suites use, so they pass on any host whatever its free memory or load:
+# on macOS a fake sysctl answers hw.memsize, kern.memorystatus_level,
+# kern.memorystatus_vm_pressure_level and vm.loadavg and a fake vm_stat a fixed
+# swap-in counter (every other sysctl key goes to the real sysctl), and on Linux
+# FM_PROC_ROOT_OVERRIDE points at a tree whose loadavg, meminfo,
+# pressure/{cpu,memory,io} and vmstat are fixtures and whose other entries link
+# to the real /proc (process ids are left out, so identity checks fall back to
+# ps). A quiet host on both, so a loaded runner's own load never binds the cpu
+# arm of the budget and its own stalls or swapping never close the io,
 # memory-pressure, or swap gate under a case that asked for room. A failing
 # powershell.exe keeps a WSL2 run off the live Windows host view. The cases
 # also drive power through a fake pmset and a fixture /sys power_supply, and
-# fake getconf (64 cores, so this host's own load never binds) and df (a fixed
-# free disk); the spawn path, the watcher, the lock, and the backlog are real.
+# fake getconf (64 cores) and df (a fixed free disk); the spawn path, the
+# watcher, the lock, and the backlog are real.
 # The idle-reclaim case keeps the real process table and real memory, since it
 # judges real workers and never depends on room. Only the opt-in live case
 # reads this host's real memory for admission.
@@ -141,14 +142,16 @@ SH
     add_item "$home" "$id"
   done
   # Injected memory: a 100 GB host, so the macOS memory level is the GB available.
-  # The vm pressure level is injected too: this host's own pressure must never
-  # close the memory-pressure gate under a case that asked for room.
+  # The vm pressure level and the load average are injected too: this host's own
+  # pressure must never close the memory-pressure gate, and its own load must
+  # never bind the cpu arm of the budget, under a case that asked for room.
   cat > "$fakebin/sysctl" <<SH
 #!/usr/bin/env bash
 case "\${2:-}" in
   hw.memsize) echo 107374182400 ;;
   kern.memorystatus_level) cat "$case_dir/v/avail_gb" ;;
   kern.memorystatus_vm_pressure_level) echo 1 ;;
+  vm.loadavg) echo "{ 0.00 0.00 0.00 }" ;;
   *) exec /usr/sbin/sysctl "\$@" ;;
 esac
 SH
@@ -160,14 +163,16 @@ SH
     for e in /proc/*; do
       n=${e##*/}
       case "$n" in
-        meminfo|pressure|vmstat) ;;
+        loadavg|meminfo|pressure|vmstat) ;;
         *[!0-9]*) ln -s "$e" "$case_dir/proc/$n" 2>/dev/null ;;
       esac
     done
-    # Stalls and swapping are injected like the memory reading, never
-    # inherited: a loaded shared host's real /proc/pressure or rising pswpin
-    # would close the io, memory-pressure, or swap gate under a case that asked
-    # for room.
+    # Load, stalls and swapping are injected like the memory reading, never
+    # inherited: a loaded shared host's real /proc/loadavg would bind the cpu
+    # arm of the budget, and its real /proc/pressure or rising pswpin would
+    # close the io, memory-pressure, or swap gate, under a case that asked for
+    # room.
+    printf '0.00 0.00 0.00 1/1 1\n' > "$case_dir/proc/loadavg"
     mkdir -p "$case_dir/proc/pressure"
     for n in cpu memory io; do
       printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
