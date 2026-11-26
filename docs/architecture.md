@@ -509,6 +509,7 @@ Concise replies stay single unnumbered messages; genuinely long replies are spli
 Splitting preserves fenced-code, paragraph, line, and word boundaries when possible.
 If an image is attached to a split reply, the relay puts it on the first/opener message only and leaves later chunks text-only.
 For preview testing, `FMX_DRY_RUN` makes `fm-x-reply.sh` and `fm-x-dismiss.sh` skip the public post or dismiss call and record the would-be payload under `state/x-outbox/`, including `texts` when the reply would be a thread and an `endpoint` marker when the preview is a completion follow-up or dismiss, while the rest of the poll -> compose -> would-post loop still succeeds.
+It reaches `fm-buzz-poll.sh` too, which previews its eyes acknowledgement to stderr rather than sending it, leaving no `state/x-outbox/` record because the reaction is not a reply.
 Attached images are recorded as compact `{media_type, bytes, source_path}` metadata in dry-run instead of base64 bytes.
 A home can also feed `state/x-inbox/` from a home-local Buzz bridge, a third Relay surface with its own signed ingress, bridge key, and explicit off switch, whose text-only requests reach the same `fmx-respond` lifecycle; the [Buzz bridge configuration reference](configuration.md#buzz-bridge-configbuzz-bridgeenv) owns it, and every hosted-relay path above is unchanged.
 Relay remains layered on top of the existing check mechanism without changing its request-handling behavior.

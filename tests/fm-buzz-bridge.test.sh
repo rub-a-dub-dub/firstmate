@@ -582,9 +582,9 @@ test_poll_reaction_failure_leaves_intake_complete() {
 # binding. Every mention must still be ingested whether or not it got its eyes,
 # and the mentions that do get one must be the newest - those are the ones the
 # owner is still waiting on.
-test_poll_caps_reactions_per_sweep() {
+test_poll_acknowledges_every_newly_bound_mention() {
   local home out i ev rid events=() eids=()
-  home=$(new_home reaction-cap)
+  home=$(new_home reaction-every)
   enable "$home"
   age_cursor "$home" $((NOW - 600))
   for i in 1 2 3 4 5 6 7; do
@@ -601,17 +601,16 @@ test_poll_caps_reactions_per_sweep() {
     [ -n "$rid" ] || fail "mention $i was not ingested"
     assert_equals offered "$(jq -r .state "$home/state/buzz/requests/$rid.json")" "mention $i must be offered"
   done
-  assert_equals 5 "$(grep -c 'reactions add' "$home/cli.log")" "at most five reactions may be sent per sweep"
-  for i in 2 3 4 5 6; do
-    assert_grep "--event ${eids[$((i))]} " "$home/cli.log" "the newest mentions must be acknowledged (mention $((i + 1)))"
+  assert_equals 7 "$(grep -c 'reactions add' "$home/cli.log")" "every bound mention must be acknowledged"
+  for i in 0 1 2 3 4 5 6; do
+    assert_grep "--event ${eids[$i]} " "$home/cli.log" "mention $((i + 1)) must be acknowledged"
   done
-  assert_no_grep "--event ${eids[0]} " "$home/cli.log" "the oldest mention past the cap must be skipped"
   assert_equals 0 "$(grep -c reaction-before-cursor "$home/cli.log" || true)" \
     "no reaction may run before the cursor advances"
   out=$(poll "$home")
   assert_equals "" "$out" "the next poll must not re-offer any request"
-  assert_equals 5 "$(grep -c 'reactions add' "$home/cli.log")" "a skipped reaction must not be retried later"
-  pass "a catch-up sweep acknowledges its newest mentions within the cap and ingests every one"
+  assert_equals 7 "$(grep -c 'reactions add' "$home/cli.log")" "an acknowledged mention must not be reacted to twice"
+  pass "a catch-up sweep acknowledges every mention it binds and ingests every one"
 }
 
 test_poll_reaction_dry_run_previews_without_sending() {
@@ -634,7 +633,13 @@ test_poll_reaction_dry_run_previews_without_sending() {
 # FM_CHECK_TIMEOUT is an owner-facing knob (docs/configuration.md), so the poll
 # must survive the shapes a hand-edited watch.env can carry. A zero-padded value
 # is octal to bash's arithmetic - 030 would silently mean 24, and 08 is not octal
-# at all, which aborts the whole script under set -u before intake ever runs.
+# at all, which leaves the deadline unset and kills the poll under set -u at its
+# first reaction, after intake and the cursor have already run.
+#
+# 00 is unusable and falls back to the 30s default; 030 reads as 30. Both leave
+# an ample window, so both must still acknowledge. 08 reads as its real value of
+# 8, which leaves only a few seconds for the whole sweep - too tight to assert a
+# send on a loaded host, so for 08 this case proves only that it does not abort.
 test_poll_survives_a_zero_padded_check_timeout() {
   local home out rid value
   for value in 08 00 030; do
@@ -646,8 +651,10 @@ test_poll_survives_a_zero_padded_check_timeout() {
     rid=$(only_rid "$home")
     [ -n "$rid" ] || fail "FM_CHECK_TIMEOUT=$value must not stop intake"
     assert_equals "buzz-mention $rid" "$out" "FM_CHECK_TIMEOUT=$value must still wake for the mention"
-    assert_equals 1 "$(grep -c 'reactions add' "$home/cli.log")" \
-      "FM_CHECK_TIMEOUT=$value must fall back to a usable budget and still acknowledge"
+    if [ "$value" != 08 ]; then
+      assert_equals 1 "$(grep -c 'reactions add' "$home/cli.log")" \
+        "FM_CHECK_TIMEOUT=$value must read as 30 seconds and still acknowledge"
+    fi
   done
   pass "a zero-padded FM_CHECK_TIMEOUT neither aborts the poll nor silences the acknowledgement"
 }
@@ -1107,7 +1114,7 @@ fm_test_run \
   test_poll_ingests_a_mention_that_carries_an_attachment \
   test_poll_deduplicates_across_restarts \
   test_poll_reaction_failure_leaves_intake_complete \
-  test_poll_caps_reactions_per_sweep \
+  test_poll_acknowledges_every_newly_bound_mention \
   test_poll_reaction_dry_run_previews_without_sending \
   test_poll_survives_a_zero_padded_check_timeout \
   test_poll_skips_reactions_with_no_budget_left \

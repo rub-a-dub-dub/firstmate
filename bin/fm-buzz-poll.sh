@@ -53,13 +53,13 @@
 # CLI refused, a thread lookup budget that ran out, a thread too long to check,
 # and a catch-up range too large to drain in one poll. A relay or network failure
 # on the intake read is silent; the next cycle retries it.
-# Once the range is persisted, newly bound events get one best-effort eyes
-# reaction each, sent sequentially newest first: at most REACTION_MAX per poll,
-# each bounded to REACTION_BOUND, and only while the watcher's check budget
-# still has room. Newest first because a catch-up sweep past the cap should
-# acknowledge the mentions the owner is still waiting on. A reaction that fails,
-# or that does not fit either limit, is skipped silently and never retried, so
-# no wake and no cursor advance ever depends on one.
+# Once the range is persisted, every newly bound event gets one best-effort eyes
+# reaction, sent sequentially newest first, each bounded to REACTION_BOUND and
+# only while the watcher's check budget still has room. Newest first because a
+# sweep the budget cuts short should have acknowledged the mentions the owner is
+# still waiting on. A reaction that fails, or that the budget leaves no room
+# for, is skipped silently and never retried, so no wake and no cursor advance
+# ever depends on one.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -76,14 +76,14 @@ PAGE_LIMIT=200
 THREAD_LOOKUPS=4
 THREAD_LIMIT=50
 THREAD_SECONDS=5
-# Reactions are acknowledgements, not deliverables: they are capped per poll and
-# stop before the watcher's own per-check bound (FM_CHECK_TIMEOUT, default 30)
-# cuts the check. A cut keeps what the check already printed and appends
+# Reactions are acknowledgements, not deliverables: the sweep stops sending them
+# before the watcher's own per-check bound (FM_CHECK_TIMEOUT, default 30) cuts
+# the check. A cut keeps what the check already printed and appends
 # "timed out after <n>s" to it (bin/fm-watch.sh run_check_capture), so the cost
 # of overrunning is a wake that reads as a stuck check, not a lost one. The
 # reserve is one whole bounded send plus the runner's own KILL escalation and
-# fork overhead, so it cannot drift away from REACTION_BOUND.
-REACTION_MAX=5
+# fork overhead, so it cannot drift away from REACTION_BOUND. That budget is the
+# only limit: every bound mention is acknowledged while time remains.
 REACTION_BOUND=3
 # 10# because a zero-padded value is octal to bash's arithmetic: 030 would mean
 # 24, and 08 is not octal at all, so a bare expansion fails here and leaves
@@ -315,7 +315,7 @@ if [ -s "$WORK/reactions" ]; then
     else
       react_to_request "$eid"
     fi
-  done < <(jq -Rrn --argjson max "$REACTION_MAX" '[inputs] | reverse | .[:$max][]' "$WORK/reactions")
+  done < <(jq -Rrn '[inputs] | reverse | .[]' "$WORK/reactions")
 fi
 
 exit 0
