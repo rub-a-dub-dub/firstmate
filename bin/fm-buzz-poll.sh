@@ -77,13 +77,17 @@ THREAD_LOOKUPS=4
 THREAD_LIMIT=50
 THREAD_SECONDS=5
 # Reactions are acknowledgements, not deliverables: they are capped per poll and
-# cut off before the watcher's own per-check bound (FM_CHECK_TIMEOUT, default 30)
-# can kill the check, which would discard the wakes already printed above them.
+# stop before the watcher's own per-check bound (FM_CHECK_TIMEOUT, default 30)
+# cuts the check. A cut keeps what the check already printed and appends
+# "timed out after <n>s" to it (bin/fm-watch.sh run_check_capture), so the cost
+# of overrunning is a wake that reads as a stuck check, not a lost one. The
+# reserve is one whole bounded send plus the runner's own KILL escalation and
+# fork overhead, so it cannot drift away from REACTION_BOUND.
 REACTION_MAX=5
 REACTION_BOUND=3
 CHECK_TIMEOUT=${FM_CHECK_TIMEOUT:-30}
 case "$CHECK_TIMEOUT" in ''|*[!0-9]*|0) CHECK_TIMEOUT=30 ;; esac
-REACTION_DEADLINE=$(( $(date +%s) + CHECK_TIMEOUT - 5 ))
+REACTION_DEADLINE=$(( $(date +%s) + CHECK_TIMEOUT - REACTION_BOUND - 2 ))
 
 emit_error_once() {
   local msg=$1
@@ -103,7 +107,8 @@ clear_error() {
 
 react_to_request() {
   fm_buzz_enabled || return 0
-  fm_buzz_cli --timeout "$REACTION_BOUND" reactions add --event "$1" --emoji '👀' >/dev/null 2>&1 || true
+  fm_buzz_cli --timeout "$REACTION_BOUND" reactions add --event "$1" --emoji '👀' \
+    </dev/null >/dev/null 2>&1 || true
 }
 
 command -v jq >/dev/null 2>&1 || { emit_error_once "missing jq"; exit 0; }

@@ -98,6 +98,11 @@ case "$cmd" in
     printf '{"accepted":true,"event_id":"%064d","mention_pubkeys":[],"message":""}\n' 7
     ;;
   add)
+    # The pinned CLI reads stdin in at least one mode the bridge uses
+    # (messages send --content -), so a send must never be handed the poll's
+    # own loop state on fd 0. Draining here makes that observable: a send that
+    # inherits the reaction queue swallows the ids still to be read.
+    cat >/dev/null 2>&1 || true
     if [ -n "${FAKE_REACTION_CURSOR:-}" ]; then
       # Records whether intake had already committed its cursor when the
       # reaction reached the CLI. Reactions are sent after the range is
