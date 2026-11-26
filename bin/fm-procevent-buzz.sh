@@ -2,7 +2,8 @@
 # Built-in process-event source for the home-local Buzz bridge.
 #
 # Usage: fm-procevent-buzz.sh arm|retire|status|listen
-# arm registers and starts one listener; retire stops its owned process group.
+# arm registers and starts one listener, and fails when this registration
+# generation has no live listener; retire stops its owned process group.
 # listen consumes only fixed helper signals, and match runs the same bounded
 # poll as the watcher sweep. Relay events and poll output never become generic
 # process-event results. status reads the source registration first - a listener

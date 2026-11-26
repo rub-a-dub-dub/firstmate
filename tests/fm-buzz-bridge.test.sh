@@ -1097,7 +1097,11 @@ test_listener_wakes_through_the_poll_and_retires() {
 home=${0%/bin/listener}
 printf '%s\n' "$$" > "$home/listener.pid"
 printf 'connected\n'
-for i in $(seq 1 600); do
+# Bounded like the Lavish stub listener, so a helper that escapes its test
+# cannot outlive it, and wide enough that a loaded host cannot end the session
+# while the test is still driving it.
+limit=${FM_TEST_STUB_MAX_BLOCK_SECONDS:-120}
+while [ "$SECONDS" -lt "$limit" ]; do
   if [ -e "$home/doorbell" ]; then
     rm -f "$home/doorbell"
     printf 'match\n'
@@ -1116,6 +1120,9 @@ SH
   wait_for_buzz 100 connected || fail "the listener did not report connected"
   helper_pid=$(cat "$home/listener.pid")
   : > "$home/state/.last-check"
+  # This home owes no downtime announcement, so the wake the watcher delivers is
+  # the push's own queue row and not a resurface of rows that were already there.
+  printf 'announced:downtime:fixture-generation\n' > "$home/state/.watcher-down"
   fm_test_track_watcher_state "$home/state"
   FM_ROOT_OVERRIDE="$ROOT" FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_POLL=1 \
     run_in "$home" "$ROOT/bin/fm-watch.sh" > "$home/watch.out" 2> "$home/watch.err" &
@@ -1157,6 +1164,32 @@ SH
   out=$(run_in "$home" "$ROOT/bin/fm-procevent.sh" list)
   assert_equals 'no sources registered' "$out" "reconcile cannot restart a disabled source"
   pass "a push wakes a live watcher before its sweep and disable retires the listener"
+}
+
+test_arm_reports_a_listener_it_could_not_start() {
+  local home rc
+  home=$(new_home arm-verdict)
+  fm_test_track_procevent_home "$home" "$FM_PROCEVENT_CLAIM_ROOT"
+  cat > "$home/bin/listener" <<'SH'
+#!/usr/bin/env bash
+printf 'connected\n'
+limit=${FM_TEST_STUB_MAX_BLOCK_SECONDS:-120}
+while [ "$SECONDS" -lt "$limit" ]; do sleep 0.05; done
+SH
+  chmod +x "$home/bin/listener"
+  printf 'BUZZ_LISTENER=%s\n' "$home/bin/listener" >> "$home/config/buzz-bridge.env"
+  enable_from_off "$home"
+  armed() { run_in "$home" "$ROOT/bin/fm-buzz.sh" status | grep -Fxq 'listener: connected'; }
+  wait_for_buzz 100 armed || fail "the first arm did not start a listener"
+  # Arming again registers a new generation while the first listener still owns
+  # the source, the one readiness miss reconcile cannot heal on its own. A
+  # nonzero arm is what makes fm-buzz.sh enable warn instead of claiming the
+  # listener started.
+  rc=0
+  run_in "$home" "$ROOT/bin/fm-procevent-buzz.sh" arm || rc=$?
+  [ "$rc" -ne 0 ] || fail "arm must report that its registration has no live listener"
+  run_in "$home" "$ROOT/bin/fm-buzz.sh" disable >/dev/null || fail "disable must retire the source"
+  pass "arm reports a registration whose listener never started"
 }
 
 test_push_waits_for_a_sweep() {
@@ -1248,6 +1281,7 @@ fm_test_run \
   test_disable_stops_intake_and_replies_until_enabled \
   test_reenable_while_on_keeps_the_cursor \
   test_listener_wakes_through_the_poll_and_retires \
+  test_arm_reports_a_listener_it_could_not_start \
   test_push_waits_for_a_sweep \
   test_dismiss_is_local_and_final \
   test_dry_run_dismiss_previews_and_leaves_the_request_answerable \

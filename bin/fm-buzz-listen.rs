@@ -322,7 +322,11 @@ mod tests {
     /// The wait is virtual: the clock is paused once the subscription is live.
     #[tokio::test]
     async fn a_silent_relay_does_not_end_a_live_session() {
-        const SILENCE: Duration = Duration::from_secs(600);
+        assert!(
+            IDLE_READ >= Duration::from_secs(1800),
+            "a quiet owner channel needs at least a 30-minute read bound"
+        );
+        let silence = IDLE_READ.saturating_sub(Duration::from_secs(60));
         let relay = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("ws://{}", relay.local_addr().unwrap());
         let key_dir = tempfile::tempdir().unwrap();
@@ -359,7 +363,7 @@ mod tests {
             ))
             .await
             .unwrap();
-            sleep(SILENCE).await;
+            sleep(silence).await;
             let mention = EventBuilder::new(Kind::Custom(9), "after the silence")
                 .tags([Tag::parse(["h", channel]).unwrap(), Tag::public_key(bridge)])
                 .sign(&owner)
@@ -374,7 +378,7 @@ mod tests {
         });
         let mut signals = Vec::new();
         let closed = timeout(
-            SILENCE * 6,
+            silence * 6,
             listen(&config, |line| {
                 if line == "connected" {
                     tokio::time::pause();
