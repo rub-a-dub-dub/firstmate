@@ -39,7 +39,10 @@ BIP-340 reference verification algorithm, not a protocol client.
 Run it isolated (`python3 -I`).
 
 `--thread-roots` prints the distinct roots worth looking up, newest candidate
-first. Those candidates still need signature verification in the normal pass.
+first. Only signature-verified candidates contribute a root: the caller's lookup
+budget is scarce, and the event id fixes every signed field but is itself
+recomputable by anyone, so an unsigned copy attributed to the owner would
+otherwise crowd a real reply's thread out of that budget and drop it silently.
 `--history-dir` supplies one completed `messages thread` result per root, using
 the root id as the filename. A result at the requested limit may be truncated.
 """
@@ -243,7 +246,9 @@ def main(argv):
             unique.setdefault((ev["id"], ev["sig"]), ev)
     ordered = sorted(unique.values(), key=lambda ev: (ev["created_at"], ev["id"]))
     if args.thread_roots:
-        roots = dict.fromkeys(thread_refs(ev) for ev in reversed(ordered) if not mentions(ev))
+        roots = dict.fromkeys(
+            thread_refs(ev) for ev in reversed(ordered) if not mentions(ev) and signed(ev)
+        )
         for root in roots:
             print(root)
         return 0

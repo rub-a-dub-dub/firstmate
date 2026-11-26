@@ -319,6 +319,36 @@ test_poll_accepts_only_addressed_owner_thread_replies() {
   pass "owner thread replies are implicit only in threads Firstmate has answered that have no other participants or addressees"
 }
 
+test_poll_spends_the_thread_budget_on_signed_roots() {
+  local home root root_id tags bridge_reply reply forged fabricated out rid i
+  home=$(new_home starved-threads)
+  enable "$home"
+  root=$(sign_event "$OWNER_SK" $((NOW - 800)) 9 "[[\"h\",\"$CHANNEL\"]]" 'thread root')
+  root_id=$(jq -r .id <<<"$root")
+  tags=$(jq -cn --arg c "$CHANNEL" --arg r "$root_id" '[["h",$c],["e",$r,"","root"]]')
+  bridge_reply=$(sign_event "$BRIDGE_SK" $((NOW - 700)) 9 "$tags" 'earlier bridge answer')
+  reply=$(sign_event "$OWNER_SK" $((NOW - 30)) 9 "$tags" 'plain follow-up')
+  set_events "$home" "$root" "$bridge_reply" "$reply"
+  # Five junk-signature owner replies, each in a thread of its own and all newer
+  # than the real reply. The id recomputes, so they pass every cheap check: a
+  # relay serving events it never verified must not be able to spend the
+  # bridge's bounded thread lookups on threads the owner never wrote in.
+  for i in 1 2 3 4 5; do
+    fabricated=$(printf 'ff%062d' "$i")
+    forged=$(python3 -I "$SIGN" forge "$OWNER" $((NOW - 10 + i)) 9 \
+      "$(jq -cn --arg c "$CHANNEL" --arg r "$fabricated" '[["h",$c],["e",$r,"","root"]]')" "flood" 1)
+    jq -c --argjson f "$forged" '. + $f' "$home/events.json" > "$home/flooded.json"
+    mv "$home/flooded.json" "$home/events.json"
+  done
+  out=$(poll "$home")
+  rid=$(fm_buzz_rid_for "$home" 'plain follow-up')
+  [ -n "$rid" ] || fail "an unsigned flood must not starve the real thread of its lookup"
+  assert_equals "buzz-mention $rid" "$out" "only the signed unaddressed reply wakes"
+  assert_equals "$root_id" "$(jq -r .thread_root "$home/state/buzz/requests/$rid.json")" \
+    "the surviving reply keeps its own thread root"
+  pass "the bounded thread lookups go to roots of signature-verified candidates only"
+}
+
 test_poll_requires_complete_thread_history() {
   local home root root_id tags reply bridge_reply late_reply forged out explicit rid
   home=$(new_home incomplete-thread)
@@ -817,6 +847,7 @@ fm_test_run \
   test_enable_poll_ingests_verified_owner_mention \
   test_poll_drops_everything_else \
   test_poll_accepts_only_addressed_owner_thread_replies \
+  test_poll_spends_the_thread_budget_on_signed_roots \
   test_poll_requires_complete_thread_history \
   test_poll_ingests_a_mention_that_carries_an_attachment \
   test_poll_deduplicates_across_restarts \
