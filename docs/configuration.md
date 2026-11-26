@@ -3042,6 +3042,7 @@ A home without Buzz configured is therefore off.
 
 - `bin/fm-buzz.sh disable` turns it off, retires the listener, and unregisters the watcher check.
   Intake and replies stay off across restarts and updates until an explicit enable.
+  The marker is the off switch on its own: however it goes away, the listener re-reads it at least once a minute and then stops itself and its relay session, leaving the source registered for a later enable rather than holding an authenticated subscription to the channel.
 - `bin/fm-buzz.sh enable` validates the configuration, registers the watcher check `state/buzz-bridge.check.sh`, creates the marker, and starts the configured listener through the built-in process-event runner.
 - `bin/fm-buzz.sh status` reports on/off, listener connection, check registration, configuration validity, the poll cursor, pending requests, and the last poll diagnostic.
 
@@ -3062,7 +3063,7 @@ While enabled, the registered check also makes this home require live supervisio
 | `BUZZ_BRIDGE_PUBKEY` | The bridge identity's pubkey as 64-character lowercase hex |
 | `BUZZ_BRIDGE_KEY_FILE` | Absolute path to the bridge key file in `buzz-admin generate-key` format (a `Secret key:` line holding 64-character lowercase hex) |
 | `BUZZ_CLI` | Absolute path to the `buzz` CLI built from tag `relay-v0.3.0` |
-| `BUZZ_LISTENER` | Absolute path to the `fm-buzz-listen` helper built against the same tag; leave it unset for a poll-only home, where status reports `listener: not configured` |
+| `BUZZ_LISTENER` | Absolute path to the `fm-buzz-listen` helper built against the same tag; leave it unset for a poll-only home, where status reports `listener: not configured`, while a path that is set but is not an executable file reports `listener: unusable` |
 
 The intake age limit is 86400 seconds and the per-message reply budget is 1000 characters; both are fixed, and each request's binding records the budget it was created with.
 

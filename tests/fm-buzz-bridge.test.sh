@@ -170,6 +170,13 @@ poll() {
   run_in "$1" "$ROOT/bin/fm-buzz-poll.sh"
 }
 
+# process_exited <pid>: 0 once that process is gone or a reaped zombie.
+process_exited() {
+  local process_state
+  process_state=$(ps -o stat= -p "$1" 2>/dev/null) || return 0
+  [[ "$process_state" = Z* || -z "$process_state" ]]
+}
+
 wait_for_buzz() {
   local attempts=$1 i
   shift
@@ -1154,12 +1161,7 @@ SH
   run_in "$home" "$ROOT/bin/fm-buzz.sh" disable >/dev/null || fail "disable must retire the source"
   out=$(run_in "$home" "$ROOT/bin/fm-buzz.sh" status)
   assert_contains "$out" 'listener: stopped' "status reports retirement"
-  helper_exited() {
-    local process_state
-    process_state=$(ps -o stat= -p "$helper_pid" 2>/dev/null) || return 0
-    [[ "$process_state" = Z* || -z "$process_state" ]]
-  }
-  wait_for_buzz 100 helper_exited || fail "the listener helper survived retirement"
+  wait_for_buzz 100 process_exited "$helper_pid" || fail "the listener helper survived retirement"
   run_in "$home" "$ROOT/bin/fm-procevent.sh" reconcile >/dev/null || fail "disabled home reconcile"
   out=$(run_in "$home" "$ROOT/bin/fm-procevent.sh" list)
   assert_equals 'no sources registered' "$out" "reconcile cannot restart a disabled source"
@@ -1190,6 +1192,52 @@ SH
   [ "$rc" -ne 0 ] || fail "arm must report that its registration has no live listener"
   run_in "$home" "$ROOT/bin/fm-buzz.sh" disable >/dev/null || fail "disable must retire the source"
   pass "arm reports a registration whose listener never started"
+}
+
+test_the_off_switch_alone_stops_a_quiet_listener() {
+  local home helper_pid listen_pid out
+  home=$(new_home marker-off)
+  fm_test_track_procevent_home "$home" "$FM_PROCEVENT_CLAIM_ROOT"
+  # A quiet private channel: this helper reports one connection and then says
+  # nothing, so only the adapter's own re-check can notice the off switch.
+  cat > "$home/bin/listener" <<'SH'
+#!/usr/bin/env bash
+home=${0%/bin/listener}
+printf '%s\n' "$$" > "$home/listener.pid"
+printf 'connected\n'
+limit=${FM_TEST_STUB_MAX_BLOCK_SECONDS:-120}
+while [ "$SECONDS" -lt "$limit" ]; do sleep 0.05; done
+SH
+  chmod +x "$home/bin/listener"
+  printf 'BUZZ_LISTENER=%s\n' "$home/bin/listener" >> "$home/config/buzz-bridge.env"
+  export FM_BUZZ_LISTEN_RECHECK_SECONDS=1
+  enable_from_off "$home"
+  connected() { run_in "$home" "$ROOT/bin/fm-buzz.sh" status | grep -Fxq 'listener: connected'; }
+  wait_for_buzz 100 connected || fail "the listener did not report connected"
+  helper_pid=$(cat "$home/listener.pid")
+  IFS=' ' read -r listen_pid _ < "$home/state/buzz/listener.connected"
+  [ -n "$listen_pid" ] || fail "the connection marker names no listener process"
+  # The marker is the off switch; nothing retires the source here.
+  rm -f "$home/config/buzz-bridge.enabled"
+  wait_for_buzz 100 process_exited "$listen_pid" || fail "the listener outlived the off switch"
+  wait_for_buzz 100 process_exited "$helper_pid" \
+    || fail "the helper kept its relay session after the off switch"
+  unset FM_BUZZ_LISTEN_RECHECK_SECONDS
+  assert_absent "$home/state/buzz/listener.connected" "a stopped listener clears its connection marker"
+  out=$(run_in "$home" "$ROOT/bin/fm-buzz.sh" status)
+  assert_contains "$out" 'bridge: disabled' "removing the marker is what turns the bridge off"
+  assert_contains "$out" 'listener: disconnected' "the source stays registered for a later enable"
+  pass "removing the marker stops a quiet listener and its relay session"
+}
+
+test_status_names_a_configured_but_unusable_listener() {
+  local home out
+  home=$(new_home unusable-listener)
+  printf 'BUZZ_LISTENER=%s\n' "$home/bin/listener-that-moved" >> "$home/config/buzz-bridge.env"
+  out=$(run_in "$home" "$ROOT/bin/fm-buzz.sh" status)
+  assert_contains "$out" 'listener: unusable (BUZZ_LISTENER is not an executable file)' \
+    "a listener path that moved must not read as unconfigured"
+  pass "status separates an unusable BUZZ_LISTENER from an unset one"
 }
 
 test_push_waits_for_a_sweep() {
@@ -1307,6 +1355,8 @@ fm_test_run \
   test_reenable_while_on_keeps_the_cursor \
   test_listener_wakes_through_the_poll_and_retires \
   test_arm_reports_a_listener_it_could_not_start \
+  test_the_off_switch_alone_stops_a_quiet_listener \
+  test_status_names_a_configured_but_unusable_listener \
   test_push_waits_for_a_sweep \
   test_a_payloadless_push_row_surfaces_no_blank_wake \
   test_dismiss_is_local_and_final \
