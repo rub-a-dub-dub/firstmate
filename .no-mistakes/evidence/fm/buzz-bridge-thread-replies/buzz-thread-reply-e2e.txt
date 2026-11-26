@@ -1,0 +1,60 @@
+Buzz bridge enabled for channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b
+owner 4f355bdcb7cc... / Firstmate 466d7fcae563... / teammate 3c72addb4fdf...
+
+==================== 1. the owner starts a thread WITH an explicit @Firstmate ====================
+owner      @Firstmate how is the fleet?
+watcher wake  : buzz-mention buzz-0d3ecb66d646a0cdc8703335bcc2b4e2e6fcad54
+Firstmate gets: @Firstmate how is the fleet?
+Firstmate answers in the thread:
+  buzz-0d3ecb66d646a0cdc8703335bcc2b4e2e6fcad54
+what the bridge actually sent to Buzz: {"reply_to":"052e69ba0d6f0a0209d68fcbf4b0b1b98e47145f721ddcd31f7f5143c75e5ee5","content":"All green: 3 boats, no failures."}
+
+==================== 2. RULE 1 - a plain reply in that same thread, no @Firstmate ====================
+owner      @Firstmate how is the fleet?
+Firstmate  All green: 3 boats, no failures.
+owner      and how is the battery holding up?
+watcher wake  : buzz-mention buzz-68ac026a590bb5b3131ace2e3eee44a28bb9f4ae
+Firstmate gets: and how is the battery holding up?
+--- the same channel against the pre-change bridge (base commit) ---
+(request state is reset for each arm, so the explicit root mention is
+ delivered again by both; the plain reply is the difference)
+watcher wake  : buzz-mention buzz-0d3ecb66d646a0cdc8703335bcc2b4e2e6fcad54
+Firstmate gets: @Firstmate how is the fleet?
+--- and against this change again ---
+watcher wake  : buzz-mention buzz-0d3ecb66d646a0cdc8703335bcc2b4e2e6fcad54
+buzz-mention buzz-68ac026a590bb5b3131ace2e3eee44a28bb9f4ae
+Firstmate gets: @Firstmate how is the fleet?
+Firstmate gets: and how is the battery holding up?
+
+==================== 3. RULE 1 boundary - a plain message OUTSIDE any Firstmate thread ====================
+owner      @Firstmate how is the fleet?
+Firstmate  All green: 3 boats, no failures.
+owner      note to self: order new fenders
+watcher wake  : (silence - nothing reached Firstmate)
+
+==================== 4. RULE 2 - in the Firstmate thread, but @-mentioning the teammate ====================
+owner      @Firstmate how is the fleet?
+Firstmate  All green: 3 boats, no failures.
+owner      @teammate can you grab the keys?
+watcher wake  : (silence - nothing reached Firstmate)
+
+==================== 5. RULE 3 - the teammate joins the thread, then a plain owner reply ====================
+teammate   jumping in - I am on the dock
+owner      @Firstmate how is the fleet?
+Firstmate  All green: 3 boats, no failures.
+owner      so what is the plan then?
+watcher wake  : (silence - nothing reached Firstmate)
+
+==================== 6. RULE 4 - an explicit @Firstmate in that same shared thread ====================
+teammate   jumping in - I am on the dock
+owner      @Firstmate how is the fleet?
+Firstmate  All green: 3 boats, no failures.
+owner      so what is the plan then?
+owner      @Firstmate plan us a route, please
+watcher wake  : buzz-mention buzz-82843fdc7e00bda6f529b0b5296dcc579ac1c717
+Firstmate gets: @Firstmate plan us a route, please
+
+==================== bounded relay traffic for the whole walkthrough ====================
+thread history reads: 4 (cap 4 per poll, 50 events each)
+every CLI call signed as the bridge key: 13/13
+bridge secret ever present in argv: 0
