@@ -85,6 +85,22 @@ wait_poll_cycle() {  # <state> <pid> [limit-ticks]
   return 1
 }
 
+# Wait until the watcher records an absorbed wake matching <needle> in its triage
+# log. 1 if the watcher exits first (i.e. it surfaced the wake instead), which is
+# exactly the unfixed behavior this case exists to catch. Polls the log rather
+# than a poll cycle so the assertion lands inside the FIRST poll, long before an
+# unchanging fixture pane could reach the stale backbone.
+wait_for_absorbed() {  # <state> <pid> <needle>
+  local state=$1 pid=$2 needle=$3 i=0
+  while [ "$i" -lt 100 ]; do
+    grep -Fq "$needle" "$state/.watch-triage.log" 2>/dev/null && return 0
+    kill -0 "$pid" 2>/dev/null || return 1
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
+
 # Every wait_for_exit budget in this file is 100 ticks (10s), not because any
 # watcher takes that long to decide, but because fm-watch.sh does bounded
 # startup work before its first poll: a tighter budget reaps the process while
