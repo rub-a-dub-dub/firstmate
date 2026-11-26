@@ -3115,7 +3115,9 @@ Edits (kind 40003), DMs, gift wraps, workflow messages, and posts signed by anyo
 
 Each accepted message gets a stable request id derived from the transport, community, bridge key, and event id, and a binding in `state/buzz/requests/<request_id>.json` recording the channel, parent event, thread root, verified signer, and reply budget.
 The binding is written before the inbox record, the cursor in `state/buzz/cursor.json` advances only after a complete range is persisted, and an existing binding deduplicates a re-read.
-The bridge makes one best-effort attempt to react with 👀 to each newly bound message, previews the reaction under `FMX_DRY_RUN`, and reports failures in `bin/fm-buzz.sh status`.
+Once a range is persisted, the bridge acknowledges each newly bound message with one 👀 reaction through `buzz reactions add --event <event-id> --emoji 👀`, sent sequentially and previewed under `FMX_DRY_RUN`.
+That subcommand and its `--event` and `--emoji` flags are a property of the pinned `relay-v0.3.0` CLI, like the newest-first truncation above, and must be re-confirmed before `BUZZ_CLI` is repointed at a newer build.
+The acknowledgement is best effort and deliberately unreported: at most 5 go out per sweep and newest first, so a catch-up sweep acknowledges the mentions the owner is still waiting on; none starts once the sweep is within 5 seconds of `FM_CHECK_TIMEOUT`; and a reaction that fails or does not fit either limit is skipped silently and never retried, so a missing 👀 never holds the cursor, the wake, or a reply.
 A new request wakes firstmate with `buzz-mention <request_id>`; a configuration, authorization, thread-lookup, or catch-up problem wakes once per distinct message with `buzz-bridge-error <reason>`, while a relay or network failure on the intake read stays silent until the next sweep.
 
 The check runs at the watcher's `FM_CHECK_INTERVAL` cadence, 300 seconds by default and 30 seconds in a home with hosted Relay on.

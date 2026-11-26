@@ -37,8 +37,7 @@
 # For each accepted event, in order, before the cursor may advance:
 #   1. claim the request binding state/buzz/requests/<request_id>.json
 #      (state "staged"; any binding already offered, answered, followed up or
-#      dismissed deduplicates the event), then start one best-effort reaction
-#      for a new binding
+#      dismissed deduplicates the event)
 #   2. publish the shared Relay inbox record state/x-inbox/<request_id>.json
 #      with platform "buzz" and the reply budget
 #   3. record the per-request reply context (state/x-context/<request_id>.json)
@@ -54,8 +53,13 @@
 # CLI refused, a thread lookup budget that ran out, a thread too long to check,
 # and a catch-up range too large to drain in one poll. A relay or network failure
 # on the intake read is silent; the next cycle retries it.
-# Reaction failures are status diagnostics only. The CLI attempt is bounded
-# and runs alongside intake so the wake and cursor never depend on its result.
+# Once the range is persisted, newly bound events get one best-effort eyes
+# reaction each, sent sequentially newest first: at most REACTION_MAX per poll,
+# each bounded to REACTION_BOUND, and only while the watcher's check budget
+# still has room. Newest first because a catch-up sweep past the cap should
+# acknowledge the mentions the owner is still waiting on. A reaction that fails,
+# or that does not fit either limit, is skipped silently and never retried, so
+# no wake and no cursor advance ever depends on one.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -72,6 +76,14 @@ PAGE_LIMIT=200
 THREAD_LOOKUPS=4
 THREAD_LIMIT=50
 THREAD_SECONDS=5
+# Reactions are acknowledgements, not deliverables: they are capped per poll and
+# cut off before the watcher's own per-check bound (FM_CHECK_TIMEOUT, default 30)
+# can kill the check, which would discard the wakes already printed above them.
+REACTION_MAX=5
+REACTION_BOUND=3
+CHECK_TIMEOUT=${FM_CHECK_TIMEOUT:-30}
+case "$CHECK_TIMEOUT" in ''|*[!0-9]*|0) CHECK_TIMEOUT=30 ;; esac
+REACTION_DEADLINE=$(( $(date +%s) + CHECK_TIMEOUT - 5 ))
 
 emit_error_once() {
   local msg=$1
@@ -90,15 +102,8 @@ clear_error() {
 }
 
 react_to_request() {
-  local eid=$1 out rc
   fm_buzz_enabled || return 0
-  out=$(fm_buzz_cli --timeout 3 reactions add --event "$eid" --emoji '👀' 2>/dev/null)
-  rc=$?
-  if [ "$rc" -ne 0 ]; then
-    printf 'Buzz eyes reaction failed (exit %s)\n' "$rc" >> "$WORK/reaction.error"
-  elif ! printf '%s' "$out" | jq -e '.accepted == true' >/dev/null 2>&1; then
-    printf 'Buzz eyes reaction was not accepted\n' >> "$WORK/reaction.error"
-  fi
+  fm_buzz_cli --timeout "$REACTION_BOUND" reactions add --event "$1" --emoji '👀' >/dev/null 2>&1 || true
 }
 
 command -v jq >/dev/null 2>&1 || { emit_error_once "missing jq"; exit 0; }
@@ -237,7 +242,6 @@ fi
   || { emit_error_once "event verification failed to run"; exit 0; }
 
 FAILED=0
-REACTIONS=0
 while IFS= read -r ev; do
   [ -n "$ev" ] || continue
   eid=$(printf '%s' "$ev" | jq -r '.event_id')
@@ -257,14 +261,7 @@ while IFS= read -r ev; do
     fm_buzz_binding_claim "$rid" < "$WORK/binding"
     case $? in
       0)
-        if fm_buzz_enabled; then
-          if [ -n "$FMX_DRY" ]; then
-            printf 'fm-buzz-poll: DRY RUN - would add 👀 to Buzz event %s\n' "$eid" >&2
-          else
-            react_to_request "$eid" </dev/null &
-            REACTIONS=1
-          fi
-        fi
+        printf '%s\n' "$eid" >> "$WORK/reactions"
         binding=$(cat "$WORK/binding")
         ;;
       1) continue ;;
@@ -301,14 +298,15 @@ else
   emit_error_once "catch-up range exceeds $PAGE_LIMIT messages; older messages in the window were not read"
 fi
 
-if [ "$REACTIONS" -eq 1 ]; then
-  wait
-  if [ -s "$WORK/reaction.error" ]; then
-    tail -n1 "$WORK/reaction.error" \
-      | fmx_private_artifact_publish_stdin "$STATE/buzz" reaction.error 600 2>/dev/null || true
-  elif fmx_private_artifact_file_valid "$STATE/buzz" reaction.error 600; then
-    rm -f "$STATE/buzz/reaction.error"
-  fi
+if [ -s "$WORK/reactions" ]; then
+  while IFS= read -r eid; do
+    [ "$(date +%s)" -lt "$REACTION_DEADLINE" ] || break
+    if [ -n "$FMX_DRY" ]; then
+      printf 'fm-buzz-poll: DRY RUN - would add 👀 to Buzz event %s\n' "$eid" >&2
+    else
+      react_to_request "$eid"
+    fi
+  done < <(jq -Rrn --argjson max "$REACTION_MAX" '[inputs] | reverse | .[:$max][]' "$WORK/reactions")
 fi
 
 exit 0

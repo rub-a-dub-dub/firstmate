@@ -99,12 +99,14 @@ case "$cmd" in
     ;;
   add)
     if [ -n "${FAKE_REACTION_CURSOR:-}" ]; then
-      # A failed write can be slow. Wait for the poll to commit intake before
-      # returning the simulated failure, so serializing intake behind the CLI
-      # would report a timeout instead of the expected failure.
-      until jq -e --argjson now "$FMX_NOW_OVERRIDE" '.since == $now' "$FAKE_REACTION_CURSOR" >/dev/null 2>&1; do
-        sleep 0.05
-      done
+      # Records whether intake had already committed its cursor when the
+      # reaction reached the CLI. Reactions are sent after the range is
+      # persisted, so a reaction can never delay or hold intake.
+      if jq -e --argjson now "$FMX_NOW_OVERRIDE" '.since == $now' "$FAKE_REACTION_CURSOR" >/dev/null 2>&1; then
+        printf 'reaction-after-cursor\n' >> "$log"
+      else
+        printf 'reaction-before-cursor\n' >> "$log"
+      fi
     fi
     [ "${FAKE_REACTION_RC:-0}" = 0 ] || exit "$FAKE_REACTION_RC"
     printf '{"accepted":true}\n'
@@ -562,13 +564,49 @@ test_poll_reaction_failure_leaves_intake_complete() {
   assert_equals "buzz-mention $rid" "$out" "a reaction failure must not interrupt or add a wake"
   assert_equals offered "$(jq -r .state "$home/state/buzz/requests/$rid.json")" "the request must be offered"
   assert_equals "$NOW" "$(jq -r .since "$home/state/buzz/cursor.json")" "a reaction failure must not hold the cursor"
+  assert_grep reaction-after-cursor "$home/cli.log" "the reaction must be sent only after intake commits its cursor"
   out=$(run_in "$home" "$ROOT/bin/fm-buzz.sh" status)
-  assert_contains "$out" "last poll reaction diagnostic: Buzz eyes reaction failed (exit 2)" \
-    "status must surface the reaction failure"
+  assert_not_contains "$out" reaction "a failed reaction must leave no diagnostic on the status surface"
   out=$(poll "$home")
   assert_equals "" "$out" "the next poll must not re-offer the request"
   assert_equals 1 "$(grep -c 'reactions add' "$home/cli.log")" "a failed reaction must not retry"
-  pass "a failed reaction is diagnosed without interrupting intake or retrying the send"
+  pass "a failed reaction is skipped silently without interrupting intake or retrying the send"
+}
+
+# The cap is what keeps a catch-up sweep from firing one signing CLI per claimed
+# binding. Every mention must still be ingested whether or not it got its eyes,
+# and the mentions that do get one must be the newest - those are the ones the
+# owner is still waiting on.
+test_poll_caps_reactions_per_sweep() {
+  local home out i ev rid events=() eids=()
+  home=$(new_home reaction-cap)
+  enable "$home"
+  age_cursor "$home" $((NOW - 600))
+  for i in 1 2 3 4 5 6 7; do
+    ev=$(sign_event "$OWNER_SK" $((NOW - 100 + i)) 9 "$(mention_tags)" "catch-up mention $i")
+    events+=("$ev")
+    eids+=("$(printf '%s' "$ev" | jq -r .id)")
+  done
+  set_events "$home" "${events[@]}"
+  out=$(FAKE_REACTION_CURSOR="$home/state/buzz/cursor.json" poll "$home")
+  expect_code 0 $? "catch-up poll"
+  assert_equals 7 "$(printf '%s\n' "$out" | grep -c '^buzz-mention ')" "every verified mention must be ingested"
+  for i in 1 2 3 4 5 6 7; do
+    rid=$(fm_buzz_rid_for "$home" "catch-up mention $i")
+    [ -n "$rid" ] || fail "mention $i was not ingested"
+    assert_equals offered "$(jq -r .state "$home/state/buzz/requests/$rid.json")" "mention $i must be offered"
+  done
+  assert_equals 5 "$(grep -c 'reactions add' "$home/cli.log")" "at most five reactions may be sent per sweep"
+  for i in 2 3 4 5 6; do
+    assert_grep "--event ${eids[$((i))]} " "$home/cli.log" "the newest mentions must be acknowledged (mention $((i + 1)))"
+  done
+  assert_no_grep "--event ${eids[0]} " "$home/cli.log" "the oldest mention past the cap must be skipped"
+  assert_equals 0 "$(grep -c reaction-before-cursor "$home/cli.log" || true)" \
+    "no reaction may run before the cursor advances"
+  out=$(poll "$home")
+  assert_equals "" "$out" "the next poll must not re-offer any request"
+  assert_equals 5 "$(grep -c 'reactions add' "$home/cli.log")" "a skipped reaction must not be retried later"
+  pass "a catch-up sweep acknowledges its newest mentions within the cap and ingests every one"
 }
 
 test_poll_reaction_dry_run_previews_without_sending() {
@@ -1026,6 +1064,7 @@ fm_test_run \
   test_poll_ingests_a_mention_that_carries_an_attachment \
   test_poll_deduplicates_across_restarts \
   test_poll_reaction_failure_leaves_intake_complete \
+  test_poll_caps_reactions_per_sweep \
   test_poll_reaction_dry_run_previews_without_sending \
   test_poll_delivers_the_newest_mention_past_the_read_budget \
   test_poll_holds_the_cursor_on_an_exactly_full_window \
