@@ -1135,6 +1135,17 @@ SH
   FM_ROOT_OVERRIDE="$ROOT" FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_POLL=1 \
     run_in "$home" "$ROOT/bin/fm-watch.sh" > "$home/watch.out" 2> "$home/watch.err" &
   watch_pid=$!
+  # The push must arrive at a watcher that is already polling. A row appended
+  # before the watcher consumes its startup recovery state reopens the
+  # announced downtime marker, and that cycle delivers the generic
+  # `check: rearm-resurface` instead of this push's own payload. The liveness
+  # beacon is touched inside the poll loop, after that startup consumption.
+  # shellcheck disable=SC2329 # wait_for_buzz invokes this predicate by name.
+  watcher_polling() { [ -e "$home/state/.last-watcher-beat" ]; }
+  if ! wait_for_buzz 150 watcher_polling; then
+    kill "$watch_pid" 2>/dev/null || true
+    fail "the watcher never reached its poll loop: $(cat "$home/watch.err")"
+  fi
   ev=$(sign_event "$OWNER_SK" "$NOW" 9 "$(mention_tags)" 'live owner mention')
   set_events "$home" "$ev"
   : > "$home/doorbell"
