@@ -1,0 +1,74 @@
+==============================================================
+ Buzz bridge: eyes acknowledgement on a picked-up message
+==============================================================
+
+--- 1. owner turns the bridge on -----------------------------
+buzz bridge: enabled for channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b on relay.demo.invalid; the watcher polls it on its next check sweep
+
+--- 2. owner posts one mention in the channel ----------------
+owner's Buzz channel, as the owner sees it BEFORE firstmate polls:
+  owner  05:09:58   @Firstmate how is the fleet looking this morning?
+
+(no reaction yet - nothing has read it)
+
+--- 3. the watcher runs one bridge check ---------------------
+wake emitted to firstmate:
+  buzz-mention buzz-026a44cfd699eacb3fea9654320c467bb79c7706
+
+owner's Buzz channel AFTER the check (rendered from relay state):
+  owner  05:09:58   @Firstmate how is the fleet looking this morning?
+         👀  1   (from firstmate bridge)
+
+relay state for that event id:
+  {"d157395fde87...":[{"emoji":"👀","by":"22222222"}]}
+
+--- 4. the same message is read again on the next sweep ------
+reaction count still 1 (no duplicate 👀 for an already-bound message):
+  owner  05:09:58   @Firstmate how is the fleet looking this morning?
+         👀  1   (from firstmate bridge)
+
+--- 5. catch-up: 7 mentions arrive while the laptop slept ----
+wakes emitted (every mention is still ingested):
+  buzz-mention buzz-dbe70ac40fd0f0a839d2b43003bba08ee7830daf
+  buzz-mention buzz-ffdcdb09fd166fbc5b3ddafc6d519abfff28de50
+  buzz-mention buzz-8d3123a2ab5d038cd5dc7b4f2dd09907c5222191
+  buzz-mention buzz-eb527943d4ea954bf4acc97eb3bad857d588a2a5
+  buzz-mention buzz-8d1ac9a178b176e8223568464c1c4e1595243346
+  buzz-mention buzz-7e3931dba44c1351b68cb6ca00420c7a818831ab
+  buzz-mention buzz-23ec892c59822c04f766dcf4cd79706c902d8eac
+
+owner's channel after the catch-up sweep:
+  owner  05:04:28   backlog mention 1
+  owner  05:04:38   backlog mention 2
+  owner  05:04:48   backlog mention 3
+         👀  1   (from firstmate bridge)
+  owner  05:04:58   backlog mention 4
+         👀  1   (from firstmate bridge)
+  owner  05:05:08   backlog mention 5
+         👀  1   (from firstmate bridge)
+  owner  05:05:18   backlog mention 6
+         👀  1   (from firstmate bridge)
+  owner  05:05:28   backlog mention 7
+         👀  1   (from firstmate bridge)
+
+--- 6. a sweep already out of check budget skips the ack ------
+wake emitted with FM_CHECK_TIMEOUT=5 (no room left for a bounded send):
+  buzz-mention buzz-6af83a70c59a383e3659341dee201cbd8b07d02a
+relay reactions (deliberately none - intake still completed above):
+  {}
+
+--- 7. dry-run preview ---------------------------------------
+  buzz-mention buzz-c6fc9e427e63f6a736d003973818a150b886d412
+  fm-buzz-poll: DRY RUN - would add 👀 to Buzz event ea0af5994f87904a2590978278b5a94b6ad12a00c492f98910224692b954c4c3
+relay reactions after a dry run (must be empty):
+  {}
+
+--- 8. exact wire calls the bridge made to the relay ---------
+  2:$ buzz --relay https://relay.demo.invalid --format json reactions add --event d157395fde87bf45d12af12cb8d5ec87280822424c229894bf2b754f9f89c9d2 --emoji 👀
+  5:$ buzz --relay https://relay.demo.invalid --format json reactions add --event d1bbf9d25b7b7dd8d37efeaf29a9efe38610d536147f38ed0c10ddb7e6ff32c9 --emoji 👀
+  6:$ buzz --relay https://relay.demo.invalid --format json reactions add --event 35a8b4d4d9b91f71c59ad6fa0e4bf9be2c515bd289f1b481cbd3c43e5ff26ad8 --emoji 👀
+  7:$ buzz --relay https://relay.demo.invalid --format json reactions add --event f0274d3020d579b5983b1f5eef2c9813ff8753ff0ff8d9c28bb7c7898e6b0382 --emoji 👀
+  8:$ buzz --relay https://relay.demo.invalid --format json reactions add --event f092f785b72d07bc7562248f0eb02503d37ce269fc8f0f5a4852661f95cd650a --emoji 👀
+  9:$ buzz --relay https://relay.demo.invalid --format json reactions add --event 80dd4c28121d2449cb84ee80a084629e431cd07495ad60d147ea03b17c51f9c9 --emoji 👀
+
+==============================================================
