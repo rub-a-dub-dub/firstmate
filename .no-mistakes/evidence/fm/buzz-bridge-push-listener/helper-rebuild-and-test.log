@@ -1,0 +1,62 @@
+# fm-buzz-listen helper: independent rebuild + test against the pinned Buzz clone
+# pin:        75d38b6c2d5f357348288ded8c15aba15f765ea5  (tag relay-v0.3.0)
+# listener:   bin/fm-buzz-listen.rs sha256 4a1a22a7f53c1bc5bc764f1dc90012b0bc75aae4065c1e9d16d60031e2bc0987
+# toolchain:  rustc 1.98.1 (48a229cea 2026-09-01)
+# date:       2026-11-26T08:23:14Z
+
+## cargo build --locked --release -p buzz-cli --bin buzz --bin fm-buzz-listen
+   Compiling tokio-util v0.7.18
+   Compiling http-body-util v0.1.5
+   Compiling buzz-sdk v0.1.0 (/private/tmp/fmbuzz-verify.vEvGSl/buzz-src/crates/buzz-sdk)
+   Compiling clap v4.6.6
+   Compiling dirs v6.0.0
+   Compiling infer v0.19.0
+   Compiling buzz-persona v0.1.0 (/private/tmp/fmbuzz-verify.vEvGSl/buzz-src/crates/buzz-persona)
+   Compiling keyring v3.6.3
+   Compiling diffy v0.5.1
+   Compiling httpdate v1.0.3
+   Compiling rustls-webpki v0.103.16
+   Compiling tokio-rustls v0.26.4
+   Compiling tungstenite v0.29.0
+   Compiling rustls-platform-verifier v0.7.0
+   Compiling hyper-rustls v0.27.9
+   Compiling reqwest v0.13.4
+   Compiling tokio-tungstenite v0.29.0
+   Compiling buzz-ws-client v0.1.0 (/private/tmp/fmbuzz-verify.vEvGSl/buzz-src/crates/buzz-ws-client)
+   Compiling buzz-cli v0.1.0 (/private/tmp/fmbuzz-verify.vEvGSl/buzz-src/crates/buzz-cli)
+    Finished `release` profile [optimized] target(s) in 1m 51s
+
+## cargo test --locked -p buzz-cli --bin fm-buzz-listen
+   Compiling url v2.5.8
+   Compiling tower v0.5.3
+   Compiling tokio-util v0.7.18
+   Compiling buzz-persona v0.1.0 (/private/tmp/fmbuzz-verify.vEvGSl/buzz-src/crates/buzz-persona)
+   Compiling tempfile v3.27.0
+   Compiling nostr v0.44.7
+   Compiling tower-http v0.6.11
+   Compiling hyper-util v0.1.20
+   Compiling buzz-core v0.1.0 (/private/tmp/fmbuzz-verify.vEvGSl/buzz-src/crates/buzz-core)
+   Compiling buzz-sdk v0.1.0 (/private/tmp/fmbuzz-verify.vEvGSl/buzz-src/crates/buzz-sdk)
+   Compiling rustls-webpki v0.103.16
+   Compiling tokio-rustls v0.26.4
+   Compiling tungstenite v0.29.0
+   Compiling rustls-platform-verifier v0.7.0
+   Compiling hyper-rustls v0.27.9
+   Compiling reqwest v0.13.4
+   Compiling tokio-tungstenite v0.29.0
+   Compiling buzz-ws-client v0.1.0 (/private/tmp/fmbuzz-verify.vEvGSl/buzz-src/crates/buzz-ws-client)
+   Compiling axum v0.8.9
+   Compiling buzz-cli v0.1.0 (/private/tmp/fmbuzz-verify.vEvGSl/buzz-src/crates/buzz-cli)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 48.81s
+     Running unittests src/bin/fm-buzz-listen.rs (/tmp/fmbuzz-verify.vEvGSl/target/debug/deps/fm_buzz_listen-dbe86d24ee2098f8)
+
+running 3 tests
+test tests::a_silent_relay_does_not_end_a_live_session ... ok
+test tests::auth_and_subscription_emit_only_a_matching_live_doorbell ... ok
+test tests::a_dropped_session_reconnects_and_keeps_delivering ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.02s
+
+
+# git status --porcelain in the build checkout:
+?? crates/buzz-cli/src/bin/

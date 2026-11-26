@@ -1,0 +1,19 @@
+# bin/fm-buzz-listen.rs test module, independent rerun during the test phase
+# clone: https://github.com/block/buzz.git tag relay-v0.3.0, HEAD 75d38b6c2d5f357348288ded8c15aba15f765ea5
+# listener source: 4a1a22a7f53c1bc5bc764f1dc90012b0bc75aae4065c1e9d16d60031e2bc0987 (0db1129e worktree)
+# toolchain: rustc 1.98.1 (48a229cea 2026-09-01) (rust-toolchain.toml pins 1.98.1)
+# Cargo.toml / Cargo.lock unmodified; --locked accepted the clone's lockfile
+# only crates/buzz-cli/src/bin/fm-buzz-listen.rs was added:
+?? crates/buzz-cli/src/bin/
+
+$ CARGO_TARGET_DIR=<build-dir>/target cargo test --locked -p buzz-cli --bin fm-buzz-listen
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s
+     Running unittests src/bin/fm-buzz-listen.rs (/tmp/fmbuzz-test.ce8hmK/target/debug/deps/fm_buzz_listen-dbe86d24ee2098f8)
+
+running 3 tests
+test tests::a_silent_relay_does_not_end_a_live_session ... ok
+test tests::auth_and_subscription_emit_only_a_matching_live_doorbell ... ok
+test tests::a_dropped_session_reconnects_and_keeps_delivering ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.02s
+

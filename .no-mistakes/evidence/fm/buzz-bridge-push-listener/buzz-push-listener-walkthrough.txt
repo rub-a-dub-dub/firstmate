@@ -1,0 +1,85 @@
+=== Buzz push listener: owner mention -> firstmate wake, end to end ===
+home:            /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-buzz-bridge-tests.lYpWgr/demo
+relay/channel:   https://relay.test.invalid  channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b (fixture)
+watcher sweep:   FM_CHECK_INTERVAL=300s (the documented default backstop)
+
+$ bin/fm-buzz.sh status   # before enable
+bridge: disabled
+listener: stopped
+watcher check: not registered
+config: ok (community relay.test.invalid, channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b, owner 4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa, bridge 466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27)
+cursor: none
+pending requests: 0
+
+$ bin/fm-buzz.sh enable
+buzz bridge: enabled for channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b on relay.test.invalid; watcher sweep registered
+
+$ bin/fm-buzz.sh status   # after enable
+bridge: enabled
+listener: connected
+watcher check: registered
+config: ok (community relay.test.invalid, channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b, owner 4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa, bridge 466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27)
+cursor: 1800000000
+pending requests: 0
+
+$ bin/fm-procevent.sh list   # the built-in process-event source holding the live connection
+SOURCE                       ADAPTER      OWNER      PENDING
+buzz-bridge-4d7159f81f99519ffba71670a44a57f37aabdbbb buzz         live       0
+
+--- watcher live, its Buzz check not due for another 300s ---
+08:24:40  owner posts in the private channel, mentioning the bridge identity
+08:24:42  firstmate wakes:
+           check: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-buzz-bridge-tests.lYpWgr/demo/state/buzz-bridge.check.sh: buzz-mention buzz-a9ca65188f66fc6af44cecbf6a1cd44a11985e34
+
+  pickup latency:  2s   (watcher-sweep-only pickup: up to 300s)
+
+$ cat state/x-inbox/buzz-a9ca65188f66fc6af44cecbf6a1cd44a11985e34.json   # the persisted, signature-verified request
+{
+  "request_id": "buzz-a9ca65188f66fc6af44cecbf6a1cd44a11985e34",
+  "platform": "buzz",
+  "reply_platform": "buzz",
+  "reply_max_chars": 1000,
+  "text": "firstmate: how is the deploy looking?",
+  "in_reply_to": null,
+  "buzz": {
+    "community": "relay.test.invalid",
+    "channel": "0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b",
+    "event_id": "a9482c254717e3da79a9394d75b4fe09753ff42e61ba8865a0347e50dc25d0e5",
+    "thread_root": "a9482c254717e3da79a9394d75b4fe09753ff42e61ba8865a0347e50dc25d0e5",
+    "signer": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+    "verified": "owner-signature",
+    "created_at": 1800000000
+  }
+}
+
+$ bin/fm-buzz.sh status   # the request is pending a reply
+bridge: enabled
+listener: connected
+watcher check: registered
+config: ok (community relay.test.invalid, channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b, owner 4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa, bridge 466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27)
+cursor: 1800000000
+pending requests: 1
+
+$ bin/fm-x-reply.sh buzz-a9ca65188f66fc6af44cecbf6a1cd44a11985e34 -   # answer it in the original Buzz thread
+buzz-a9ca65188f66fc6af44cecbf6a1cd44a11985e34
+
+$ cat sent.jsonl   # what the bridge identity signed and sent to the relay (fake CLI capture)
+{"channel":"0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b","reply_to":"a9482c254717e3da79a9394d75b4fe09753ff42e61ba8865a0347e50dc25d0e5","content":"Deploy is green; last check passed."}
+
+$ bin/fm-buzz.sh disable
+buzz bridge: disabled; no polling and no replies until bin/fm-buzz.sh enable
+
+$ bin/fm-buzz.sh status   # after disable
+bridge: disabled
+listener: stopped
+watcher check: not registered
+config: ok (community relay.test.invalid, channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b, owner 4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa, bridge 466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27)
+cursor: 1800000000
+pending requests: 1
+
+$ bin/fm-procevent.sh list
+no sources registered
+
+relay listener helper process 98620: gone (relay session closed)
+
+=== end ===

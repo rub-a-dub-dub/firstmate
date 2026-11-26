@@ -1,0 +1,34 @@
+BUZZ_LISTENER = /tmp/fmbuzz-verify.vEvGSl/target/release/fm-buzz-listen  (0fc575b0d9793142...)
+no-arg invocation (stderr, never stdout):
+  usage: fm-buzz-listen <https-relay> <channel> <owner-pubkey> <bridge-pubkey> <key-file>
+
+$ bin/fm-buzz.sh enable   # relay https://relay.test.invalid does not resolve
+buzz bridge: enabled for channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b on relay.test.invalid; watcher sweep registered
+
+$ bin/fm-buzz.sh status   # a relay it cannot reach reads as disconnected, not as a fault
+bridge: enabled
+listener: disconnected
+watcher check: registered
+config: ok (community relay.test.invalid, channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b, owner 4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa, bridge 466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27)
+cursor: 1800000000
+pending requests: 0
+
+$ bin/fm-procevent.sh list
+SOURCE                       ADAPTER      OWNER      PENDING
+buzz-bridge-3f5e07b35957807a4b398ccd99deb7b7925dc02d buzz         live       0
+
+adapter pid 71452 (fm-procevent-buzz.sh listen)
+real relay-client pid 71577 (fm-buzz-listen, reconnecting with bounded backoff)
+
+--- the marker-only off switch, with no relay traffic at all ---
+08:31:44  removed config/buzz-bridge.enabled (no disable command)
+08:31:45  real relay client exited after 1s
+            adapter exited too
+
+$ bin/fm-buzz.sh status
+bridge: disabled
+listener: disconnected
+watcher check: registered
+config: ok (community relay.test.invalid, channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b, owner 4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa, bridge 466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27)
+cursor: 1800000000
+pending requests: 0

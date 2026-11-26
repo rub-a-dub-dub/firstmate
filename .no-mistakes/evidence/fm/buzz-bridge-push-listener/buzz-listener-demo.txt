@@ -1,0 +1,83 @@
+=== Buzz push listener, end to end =======================================
+firstmate home: (temporary)   relay: fake, locally signed events
+
+$ bin/fm-buzz.sh status   # before enable
+bridge: disabled
+listener: stopped
+watcher check: not registered
+config: ok (community relay.test.invalid, channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b, owner 4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa, bridge 466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27)
+cursor: none
+pending requests: 0
+
+$ bin/fm-buzz.sh enable
+buzz bridge: enabled for channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b on relay.test.invalid; watcher sweep registered
+
+$ bin/fm-buzz.sh status   # the listener now holds the relay session
+bridge: enabled
+listener: connected
+watcher check: registered
+config: ok (community relay.test.invalid, channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b, owner 4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa, bridge 466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27)
+cursor: 1800000000
+pending requests: 0
+
+# listener helper pid 26799 is alive and subscribed:
+26799 S    bash /var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T//buzz-listener-demo.NKngKK/home/bin/listener https://relay.test.invalid 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b 4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa 466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27 /var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T//buzz-listener-demo.NKngKK/home/bridge.key
+
+# The registered Buzz check is the backstop. It runs on the watcher check
+# interval (FM_CHECK_INTERVAL, 300s by default) and state/.last-check is
+# stamped now, so the next backstop sweep is ~300s away. Nothing below can
+# have come from it.
+
+$ fm-watch.sh &   # the watcher firstmate normally has running
+
+--- owner posts in the private channel at T+0 ---------------------------
+{
+  "created_at": 1800000000,
+  "pubkey": "4f355bdcb7cc0af7",
+  "content": "can you take a look at the deploy?"
+}
+
+--- the listener hands the mention off ----------------------------------
+# the push row the listener's poll appended to the durable wake queue:
+  1795679759	1	check	buzz-push	check: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/buzz-listener-demo.NKngKK/home/state/buzz-bridge.check.sh: buzz-mention buzz-977daf3455dbedfd3d2b74ade5f4a34d3dc51f9e
+T+1.0s  mention handed to firstmate's wake queue by the listener
+
+--- what the watcher handed firstmate -----------------------------------
+check: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/buzz-listener-demo.NKngKK/home/state/buzz-bridge.check.sh: buzz-mention buzz-977daf3455dbedfd3d2b74ade5f4a34d3dc51f9e
+T+16.3s  delivered on the watcher's next cycle (FM_POLL, 15s by default)
+         the backstop check sweep would have taken up to 300s
+
+--- the request the mention became, in the shared Relay inbox -----------
+
+$ jq . state/x-inbox/buzz-977daf3455dbedfd3d2b74ade5f4a34d3dc51f9e.json
+{
+  "request_id": "buzz-977daf3455dbedfd3d2b74ade5f4a34d3dc51f9e",
+  "platform": "buzz",
+  "reply_platform": "buzz",
+  "reply_max_chars": 1000,
+  "text": "can you take a look at the deploy?",
+  "in_reply_to": null,
+  "buzz": {
+    "community": "relay.test.invalid",
+    "channel": "0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b",
+    "event_id": "a5fc2f4b365af599173c506504ec3519367ca1929f946e45540e940149715a3b",
+    "thread_root": "a5fc2f4b365af599173c506504ec3519367ca1929f946e45540e940149715a3b",
+    "signer": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+    "verified": "owner-signature",
+    "created_at": 1800000000
+  }
+}
+
+$ bin/fm-buzz.sh disable
+buzz bridge: disabled; no polling and no replies until bin/fm-buzz.sh enable
+
+$ bin/fm-buzz.sh status   # after disable
+bridge: disabled
+listener: stopped
+watcher check: not registered
+config: ok (community relay.test.invalid, channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b, owner 4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa, bridge 466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27)
+cursor: 1800000000
+pending requests: 1
+
+# listener helper pid 26799 after disable: gone
+=== end ==================================================================

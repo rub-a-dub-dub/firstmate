@@ -1,0 +1,11 @@
+FM_BUZZ_LISTEN_RECHECK_SECONDS in env: <unset>
+listener adapter pid 8186, relay helper pid 8508, both live
+08:25:16  operator removes config/buzz-bridge.enabled (no disable, no traffic on the channel)
+08:26:16  adapter and relay helper both gone after 60s (documented bound: at least once a minute)
+connection marker cleared
+bridge: disabled
+listener: disconnected
+watcher check: registered
+config: ok (community relay.test.invalid, channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b, owner 4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa, bridge 466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27)
+cursor: 1800000000
+pending requests: 0

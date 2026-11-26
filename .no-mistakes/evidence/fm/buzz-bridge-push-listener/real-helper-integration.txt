@@ -1,0 +1,35 @@
+=== the real fm-buzz-listen binary under the process-event adapter =======
+# usage: fm-buzz-listen <https-relay> <channel> <owner-pubkey> <bridge-pubkey> <key-file>
+# built by the documented command; file: 4697504 bytes
+
+$ bin/fm-buzz.sh enable
+buzz bridge: enabled for channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b on relay.test.invalid; watcher sweep registered
+
+$ bin/fm-buzz.sh status
+bridge: enabled
+listener: disconnected
+watcher check: registered
+
+# the adapter process the runner started, and the real helper it owns:
+25839 25084 bash /Users/crossbow/.no-mistakes/worktrees/00644a303d6a/01M8ASWRWRVWMF9S1TBHV0KE5C/bin/fm-proceve
+25941 25839 /tmp/fmbuzz-test.ce8hmK/target/release/fm-buzz-listen https://relay.test.invalid 0b7f6a4e-1c2d-4e3
+f-8a9b-0c1d2e3f4a5b 4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa 466d7fcae563e5cb09a0d1870
+bb580344804617879a14949cf22285f1bae3f27 /var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T//real-helper.R80JDO/h
+ome/bridge.key
+# the helper is re-handshaking against an unresolvable relay, so status
+# stays `listener: disconnected` and nothing claims a session it lacks.
+
+--- the off switch alone, with no traffic on the channel ----------------
+
+$ rm config/buzz-bridge.enabled   # the marker is the off switch
+adapter pid 25839: gone
+helper  pid 25941: gone
+
+$ bin/fm-buzz.sh status   # the source stays registered for a later enable
+bridge: disabled
+listener: disconnected
+watcher check: registered
+
+# no secret in the helper argv above, and none in status output:
+  occurrences of the bridge secret: 0
+=== end ==================================================================
