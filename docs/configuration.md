@@ -3094,9 +3094,11 @@ Firstmate treats an unaddressed owner reply in a qualifying thread as addressed 
 3. Once another person or agent posts in the thread, Firstmate requires an explicit mention there.
 4. An explicit @Firstmate mention works in any thread, including a shared thread, and on top-level messages.
 
-The regular check reads thread history as the bridge for up to four candidate threads per sweep, with a limit of 50 events per lookup and five seconds total.
+The regular check reads thread history as the bridge for up to four candidate threads per sweep, with a limit of 50 events per lookup and five seconds total, and is what picks up these unaddressed replies.
 Firstmate requires an explicit mention when the thread history is missing, incomplete, or beyond that budget.
-The regular check picks up these unaddressed replies because the push listener's subscription requires a `p` tag for the bridge.
+Any third party among the events a thread read returns closes that thread to implicit intake, whatever the `e` tags on their post say.
+That history read is `buzz messages thread --channel <channel> --event <root> --limit 50`, and it must return the root event itself: like the newest-first truncation above, that the pinned `relay-v0.3.0` CLI offers this subcommand and scopes it to the one thread is a property of that build, not something this repository can enforce, and it must be re-confirmed before `BUZZ_CLI` is repointed at a newer build.
+A thread read the CLI refuses wakes the diagnostic below, because a surface that is simply gone would otherwise leave implicit intake inert and indistinguishable from an owner who always mentions the bridge.
 A message with an attachment is ingested by its text alone, and the bridge never fetches the media.
 Edits (kind 40003), DMs, gift wraps, workflow messages, and posts signed by anyone other than the owner never become requests.
 
@@ -3135,6 +3137,8 @@ Run this once with the owner after the bridge lands, against the owner's relay:
 7. Run `bin/fm-buzz.sh disable`, have the owner post another mention, and confirm no wake and no reply follow, `bin/fm-buzz.sh status` reports `bridge: disabled`, and it still does after a new session starts.
 8. Run `bin/fm-buzz.sh enable` again and confirm the mention from step 7 is *not* answered, on that sweep or any later one: enabling fences the cursor at the enable moment. Then have the owner post a fresh mention and confirm that one is answered.
 9. Confirm the pinned CLI truncates newest-first, which the single bounded read depends on: with the owner's agreement, run `<build-dir>/target/release/buzz --relay <relay> --format json messages get --channel <channel> --kinds 9 --before <now> --limit 2` against a channel holding more than two messages, and confirm the two returned events are the two most recent, not the two oldest.
+10. Confirm the thread read implicit intake depends on: with the owner's agreement, run `<build-dir>/target/release/buzz --relay <relay> --format json messages thread --channel <channel> --event <root> --limit 50` for the root of a thread Firstmate has answered, and confirm the result contains the root event itself and no event from another thread.
+11. In that same thread, the owner posts one reply with no @Firstmate mention, and confirm firstmate wakes and answers it. Then have the owner post an unaddressed reply in a thread Firstmate has never replied in, and confirm no wake follows.
 
 ## Trusted external process-event adapters (config/extensions.d)
 

@@ -20,7 +20,11 @@
 # filtered and verified by bin/fm-buzz-verify.py. For potential unaddressed
 # replies, a separate budget reads up to THREAD_LOOKUPS distinct threads at up
 # to THREAD_LIMIT events per lookup. Failed, missing, or capped thread reads
-# supply no evidence for implicit intake and do not affect the channel cursor.
+# supply no evidence for implicit intake and do not affect the channel cursor. A
+# thread read the CLI refused is reported, because a surface that is simply gone
+# would otherwise leave implicit intake permanently inert and indistinguishable
+# from an owner who always mentions the bridge; exhausting the lookup budget is
+# the documented degradation and stays quiet.
 #
 # For each accepted event, in order, before the cursor may advance:
 #   1. claim the request binding state/buzz/requests/<request_id>.json
@@ -37,9 +41,9 @@
 # complete, fully persisted range.
 #
 # Diagnostics wake once per distinct message as "buzz-bridge-error <reason>":
-# configuration problems, an auth refusal, a malformed read, and a catch-up range
-# too large to drain in one poll. A relay or network failure is silent; the next
-# cycle retries it.
+# configuration problems, an auth refusal, a malformed read, a thread read the
+# CLI refused, and a catch-up range too large to drain in one poll. A relay or
+# network failure on the intake read is silent; the next cycle retries it.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -134,17 +138,29 @@ read_thread_history() (
   export BUZZ_RELAY_URL BUZZ_BRIDGE_KEY_FILE BUZZ_CLI
   # shellcheck disable=SC2016  # Arguments expand in the bounded child shell.
   fm_run_timed "$budget" "$BASH" -c '
+    rc=0
     for ((i = 0; i < $1; i++)); do
       IFS= read -r root || break
       if fm_buzz_cli messages thread --channel "$2" --event "$root" --limit "$3" < /dev/null > "$4/partial"; then
         mv "$4/partial" "$4/$root"
+      else
+        rc=$?
       fi
     done
+    exit "$rc"
   ' _ "$THREAD_LOOKUPS" "$BUZZ_CHANNEL" "$THREAD_LIMIT" "$WORK" < "$WORK/roots"
+  rc=$?
+  # Exhausting the budget is the documented degradation, not a surface problem.
+  fm_timed_out "$rc" && return 0
+  return "$rc"
 )
 
+THREAD_ERROR=
 if "${VERIFY[@]}" --thread-roots < "$WORK/all" > "$WORK/roots" 2>/dev/null && [ -s "$WORK/roots" ]; then
-  read_thread_history 2>/dev/null || true
+  read_thread_history 2>/dev/null
+  rc=$?
+  [ "$rc" -eq 0 ] \
+    || THREAD_ERROR="buzz CLI thread read failed (exit $rc); unaddressed replies need an explicit mention"
 fi
 "${VERIFY[@]}" --history-dir "$WORK" --thread-limit "$THREAD_LIMIT" < "$WORK/all" > "$WORK/accepted" 2>/dev/null \
   || { emit_error_once "event verification failed to run"; exit 0; }
@@ -193,7 +209,7 @@ if [ "$FAILED" -eq 1 ]; then
 elif [ "$COMPLETE" -eq 1 ]; then
   if jq -cn --argjson since "$NOW" --argjson fence "$FENCE" '{since:$since, fence:$fence}' \
     | fmx_private_artifact_publish_stdin "$STATE/buzz" cursor.json 600; then
-    clear_error
+    if [ -n "$THREAD_ERROR" ]; then emit_error_once "$THREAD_ERROR"; else clear_error; fi
   else
     emit_error_once "cannot advance the poll cursor"
   fi

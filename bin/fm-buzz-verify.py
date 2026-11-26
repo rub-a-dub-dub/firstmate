@@ -45,6 +45,8 @@ recomputable by anyone, so an unsigned copy attributed to the owner would
 otherwise crowd a real reply's thread out of that budget and drop it silently.
 `--history-dir` supplies one completed `messages thread` result per root, using
 the root id as the filename. A result at the requested limit may be truncated.
+Any third party among the events that read returned closes the thread to implicit
+intake, so a read that over-returns makes the feature inert rather than wrong.
 """
 
 import argparse
@@ -166,8 +168,11 @@ def in_channel(ev, channel):
     return len(h) == 1 and len(h[0]) >= 2 and h[0][1] == channel
 
 
-def mentions(ev):
-    return {t[1] for t in ev["tags"] if t[0] == "p" and len(t) >= 2}
+def mentions(ev, owner):
+    """`p` tags naming anyone but the owner. A client replying to one's own
+    earlier message tags the owner as a participant; being addressed to oneself
+    does not make a message meant for somebody else."""
+    return {t[1] for t in ev["tags"] if t[0] == "p" and len(t) >= 2 and t[1] != owner}
 
 
 def candidate(ev, owner, bridge, channel, floor):
@@ -180,7 +185,7 @@ def candidate(ev, owner, bridge, channel, floor):
         return False
     if not in_channel(ev, channel):
         return False
-    addressees = mentions(ev)
+    addressees = mentions(ev, owner)
     if bridge not in addressees and (addressees or thread_refs(ev) == ev["id"]):
         return False
     return event_id(ev) == ev["id"]
@@ -191,7 +196,15 @@ def signed(ev):
 
 
 def private_thread(path, root, args):
-    """Return the signed member IDs and earliest bridge reply in a complete thread."""
+    """Return the signed member IDs and earliest bridge reply in a complete thread.
+
+    The relay scoped this read to one thread, so every in-channel event it
+    returned is a participant: a third party disqualifies the thread whatever its
+    `e` tags say. Resolving the tags decides membership and the first bridge
+    reply, never whether somebody else is present - NIP-10's deprecated
+    positional form and a reply marker naming a descendant both resolve away from
+    `root`, and treating those as absence would let anyone join unnoticed.
+    """
     try:
         with path.open(encoding="utf-8") as stream:
             events = json.load(stream)
@@ -204,12 +217,14 @@ def private_thread(path, root, args):
     for ev in events:
         if not well_formed(ev):
             return set(), None
-        if not in_channel(ev, args.channel) or thread_refs(ev) != root:
+        if not in_channel(ev, args.channel) or ev["id"] in members:
             continue
-        if ev["id"] in members or event_id(ev) != ev["id"] or not signed(ev):
+        if event_id(ev) != ev["id"] or not signed(ev):
             continue
         if ev["pubkey"] not in (args.owner, args.bridge):
             return set(), None
+        if thread_refs(ev) != root:
+            continue
         members.add(ev["id"])
         if ev["pubkey"] == args.bridge and ev["kind"] == 9 and ev["id"] != root:
             if first_reply is None or ev["created_at"] < first_reply:
@@ -247,7 +262,7 @@ def main(argv):
     ordered = sorted(unique.values(), key=lambda ev: (ev["created_at"], ev["id"]))
     if args.thread_roots:
         roots = dict.fromkeys(
-            thread_refs(ev) for ev in reversed(ordered) if not mentions(ev) and signed(ev)
+            thread_refs(ev) for ev in reversed(ordered) if not mentions(ev, args.owner) and signed(ev)
         )
         for root in roots:
             print(root)
@@ -260,7 +275,7 @@ def main(argv):
         if ev["id"] in seen:
             continue
         root = thread_refs(ev)
-        if args.bridge not in mentions(ev):
+        if args.bridge not in mentions(ev, args.owner):
             if args.history_dir is None:
                 continue
             if root not in histories:

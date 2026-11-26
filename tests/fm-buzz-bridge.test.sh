@@ -76,10 +76,17 @@ case "$cmd" in
   thread)
     [ "${FAKE_THREAD_RC:-0}" = 0 ] || exit "$FAKE_THREAD_RC"
     [ -z "${FAKE_THREAD_DELAY:-}" ] || sleep "$FAKE_THREAD_DELAY"
+    # A thread read is scoped to the thread, not to one tag shape: the root plus
+    # every in-channel event reaching it through any `e` tag, directly or through
+    # a descendant, whatever NIP-10 marker (or none) that tag carries.
     jq -c --arg root "$event" --arg c "$channel" --argjson l "$limit" '
-      map(select(any(.tags[]; .[0] == "h" and .[1] == $c))) |
-      (map(select(any(.tags[]; .[0] == "e" and .[1] == $root)))
-       | sort_by(-.created_at) | .[:$l]) + map(select(.id == $root))
+      map(select(any(.tags[]; .[0] == "h" and .[1] == $c))) as $all
+      | reduce range(0; 4) as $_ ({($root): true};
+          . as $ids
+          | reduce ($all[] | select(any(.tags[]; .[0] == "e" and $ids[.[1]])) | .id) as $id
+              ($ids; .[$id] = true))
+      | . as $ids
+      | $all | map(select($ids[.id])) | sort_by(-.created_at) | .[:$l]
     ' "${FAKE_EVENTS:?}"
     ;;
   send)
@@ -287,7 +294,7 @@ test_poll_drops_everything_else() {
 }
 
 test_poll_accepts_only_addressed_owner_thread_replies() {
-  local home root root_id reply bridge_reply bridge_id tags out rid
+  local home root root_id reply bridge_reply bridge_id tags out rid join n
   home=$(new_home addressed-threads)
   enable "$home"
   root=$(sign_event "$OWNER_SK" $((NOW - 90002)) 9 "[[\"h\",\"$CHANNEL\"]]" 'old thread root')
@@ -316,6 +323,30 @@ test_poll_accepts_only_addressed_owner_thread_replies() {
   rid=$(fm_buzz_rid_for "$home" 'explicit shared-thread mention')
   [ -n "$rid" ] || fail "the explicit mention in the shared thread must be ingested"
   assert_equals "buzz-mention $rid" "$out" "the shared thread requires an explicit bridge mention"
+
+  # A third party is a third party whatever their threading tags resolve to: the
+  # deprecated NIP-10 positional form carries no marker at all, and a reply
+  # nested under the bridge's message names a descendant rather than the root.
+  n=0
+  for join in "$(jq -cn --arg c "$CHANNEL" --arg r "$root_id" '[["h",$c],["e",$r]]')" \
+    "$(jq -cn --arg c "$CHANNEL" --arg b "$bridge_id" '[["h",$c],["e",$b,"","reply"]]')"; do
+    n=$((n + 1))
+    set_events "$home" "$root" "$bridge_reply" \
+      "$(sign_event "$OTHER_SK" $((NOW - 90000)) 9 "$join" "someone else joined unmarked $n")" \
+      "$(sign_event "$OWNER_SK" $((NOW - 20)) 9 "$tags" "plain reply beside an unmarked join $n")"
+    assert_equals "" "$(poll "$home")" "an unmarked third-party join closes the thread too ($n)"
+    assert_equals "" "$(fm_buzz_rid_for "$home" "plain reply beside an unmarked join $n")" \
+      "no request may be staged from a thread another member has joined ($n)"
+  done
+
+  # Replying to one's own earlier message tags the owner as a participant; being
+  # addressed to oneself does not make the message meant for somebody else.
+  set_events "$home" "$root" "$bridge_reply" \
+    "$(sign_event "$OWNER_SK" $((NOW - 5)) 9 "$(jq -c --arg p "$OWNER" '. + [["p",$p]]' <<<"$tags")" 'reply tagging only myself')"
+  out=$(poll "$home")
+  rid=$(fm_buzz_rid_for "$home" 'reply tagging only myself')
+  [ -n "$rid" ] || fail "a reply whose only p tag is the owner must still be ingested"
+  assert_equals "buzz-mention $rid" "$out" "a lone owner p tag does not redirect the message"
   pass "owner thread replies are implicit only in threads Firstmate has answered that have no other participants or addressees"
 }
 
@@ -365,7 +396,12 @@ test_poll_requires_complete_thread_history() {
 
   set_events "$home" "$root" "$reply" "$bridge_reply"
   out=$(FAKE_THREAD_RC=2 poll "$home")
-  assert_equals "" "$out" "a failed thread lookup leaves the unaddressed reply silent"
+  assert_contains "$out" "buzz-bridge-error buzz CLI thread read failed (exit 2)" \
+    "a thread read the CLI refuses is reported, not inert"
+  assert_equals "" "$(fm_buzz_rid_for "$home" 'unaddressed reply')" \
+    "a failed thread lookup leaves the unaddressed reply unstaged"
+  assert_equals "" "$(FAKE_THREAD_RC=2 poll "$home")" \
+    "the thread-read diagnostic wakes once per distinct message"
 
   forged=$(python3 -I "$SIGN" forge "$OWNER" $((NOW - 1000)) 9 "$tags" 'older fixtures' 50)
   jq -c --argjson f "$forged" '. + $f' "$home/events.json" > "$home/full-thread.json"
