@@ -3031,7 +3031,7 @@ See [verification/public-followup.md](verification/public-followup.md) for the c
 ## Buzz bridge (config/buzz-bridge.env)
 
 The Buzz bridge is a home-local Relay surface for one private Stream channel on a self-hosted [Buzz](https://github.com/block/buzz) relay.
-The owner mentions the bridge identity in that channel, the bridge verifies the message is signed by the owner, and the request lands in the same `state/x-inbox/` the X and Discord surfaces use, with `platform` `buzz`.
+The bridge verifies owner requests in that channel and delivers them to the same `state/x-inbox/` the X and Discord surfaces use, with `platform` `buzz`.
 Firstmate works it through the normal lifecycle and `fmx-respond`, and the reply goes back into the original Buzz thread as a signed message from the bridge key.
 It is independent of the hosted Relay pairing token: a home can run either, both, or neither, and X and Discord behavior is unchanged.
 
@@ -3058,7 +3058,7 @@ While enabled, the registered check also makes this home require live supervisio
 | `BUZZ_RELAY_URL` | Relay base URL, `https://`; its host is the community, because Buzz derives the community from the host |
 | `BUZZ_CHANNEL` | The private Stream channel UUID |
 | `BUZZ_OWNER_PUBKEY` | The owner's pubkey as 64-character lowercase hex; only its signed messages are accepted |
-| `BUZZ_BRIDGE_PUBKEY` | The bridge identity's pubkey as 64-character lowercase hex; messages must `p`-tag it |
+| `BUZZ_BRIDGE_PUBKEY` | The bridge identity's pubkey as 64-character lowercase hex |
 | `BUZZ_BRIDGE_KEY_FILE` | Absolute path to the bridge key file in `buzz-admin generate-key` format (a `Secret key:` line holding 64-character lowercase hex) |
 | `BUZZ_CLI` | Absolute path to the `buzz` CLI built from tag `relay-v0.3.0` |
 
@@ -3081,13 +3081,24 @@ The bridge pubkey must be a member of the private channel; the owner adds it fro
 **Intake**
 
 Each watcher check sweep runs one bounded `bin/fm-buzz-poll.sh`, whose header owns the read, cursor, and persistence order.
-One poll makes one read of the newest 200 kind-9 messages in the configured channel through `buzz messages get` as the bridge identity, down to the cursor's overlap and never past the age limit; every distinct message it returns is signature-verified, so a single newest-first read is what keeps a sweep inside the watcher's check timeout.
+One poll reads the newest 200 kind-9 messages in the configured channel through `buzz messages get` as the bridge identity, down to the cursor's overlap and never past the age limit.
+Candidate requests carry a valid event ID and BIP-340 signature from the owner and contain non-empty text.
 That newest-first truncation is a property of the pinned `relay-v0.3.0` CLI, not something this repository can enforce: its event query orders by `created_at` descending before applying `--limit`. The bridge relies on it, the smoke test below confirms it, and it must be re-confirmed before `BUZZ_CLI` is repointed at a newer build.
 A full page of 200 or more holds the cursor and wakes the catch-up diagnostic below, and the next sweep reads the same newest 200 again; a window that happens to hold exactly 200 is over-reported that way, because a capped read cannot see past its own page.
 The read is scoped by channel and kind, not by author, so the owner's latest mention is inside those 200 unless more than 200 channel messages from any member are newer than that mention; a private stage-1 channel does not carry that much traffic between sweeps.
-`bin/fm-buzz-verify.py` keeps only messages that are signed by the owner, `p`-tag the bridge key, sit in that one channel, carry non-empty text, fall inside the age limit, and have a valid event id and BIP-340 signature.
-An attachment is ignored rather than refused: the text is the request, so a mention that carries a screenshot is ingested by its caption alone and the bridge never fetches the media.
-Everything else, including edits (kind 40003), DMs and gift wraps, workflow messages, other members and agents, and the bridge's own messages, is dropped silently.
+
+Firstmate treats an unaddressed owner reply in a qualifying thread as addressed to Firstmate.
+
+1. Firstmate must already have posted a bridge-signed reply in the same thread.
+2. The owner's reply must have no `p` tag naming another person or agent.
+3. Once another person or agent posts in the thread, Firstmate requires an explicit mention there.
+4. An explicit @Firstmate mention works in any thread, including a shared thread, and on top-level messages.
+
+The regular check reads thread history as the bridge for up to four candidate threads per sweep, with a limit of 50 events per lookup and five seconds total.
+Firstmate requires an explicit mention when the thread history is missing, incomplete, or beyond that budget.
+The regular check picks up these unaddressed replies because the push listener's subscription requires a `p` tag for the bridge.
+A message with an attachment is ingested by its text alone, and the bridge never fetches the media.
+Edits (kind 40003), DMs, gift wraps, workflow messages, and posts signed by anyone other than the owner never become requests.
 
 Each accepted message gets a stable request id derived from the transport, community, bridge key, and event id, and a binding in `state/buzz/requests/<request_id>.json` recording the channel, parent event, thread root, verified signer, and reply budget.
 The binding is written before the inbox record, the cursor in `state/buzz/cursor.json` advances only after a complete range is persisted, and an existing binding deduplicates a re-read.

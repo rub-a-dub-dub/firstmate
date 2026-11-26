@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# One bounded poll of the configured Buzz channel for verified owner mentions.
+# One bounded poll of the configured Buzz channel for verified owner requests.
 #
 # Run by the watcher through the registered state/buzz-bridge.check.sh shim that
 # bin/fm-buzz.sh enable writes. Contract: output => wake firstmate, silence =>
 # keep sleeping. A HARD no-op (exit 0, no output) while the bridge is disabled
 # (no config/buzz-bridge.enabled), so a stray shim can never poll.
 #
-# Each poll makes ONE read of kind-9 events in the one configured channel
+# Each poll makes one intake read of kind-9 events in the configured channel
 # through the pinned Buzz CLI (`messages get`, signed NIP-98 reads with the
 # bridge key): the newest PAGE_LIMIT events below a fixed upper fence, down to
 # the durable cursor minus a BUZZ_READ_OVERLAP overlap, never past the age limit
@@ -17,9 +17,10 @@
 # BIP-340 verified. The read is scoped by channel and kind, not by author, so the
 # owner's latest mention is inside it unless more than PAGE_LIMIT channel
 # messages from any member are newer than that mention. The read is
-# filtered and verified by bin/fm-buzz-verify.py: only owner-signed kind-9
-# messages that p-tag the bridge key, with a valid event id and signature,
-# survive; everything else is dropped silently.
+# filtered and verified by bin/fm-buzz-verify.py. For potential unaddressed
+# replies, a separate budget reads up to THREAD_LOOKUPS distinct threads at up
+# to THREAD_LIMIT events per lookup. Failed, missing, or capped thread reads
+# supply no evidence for implicit intake and do not affect the channel cursor.
 #
 # For each accepted event, in order, before the cursor may advance:
 #   1. claim the request binding state/buzz/requests/<request_id>.json
@@ -52,6 +53,9 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 fm_buzz_enabled || exit 0
 
 PAGE_LIMIT=200
+THREAD_LOOKUPS=4
+THREAD_LIMIT=50
+THREAD_SECONDS=5
 
 emit_error_once() {
   local msg=$1
@@ -112,8 +116,37 @@ COUNT=$(jq -er 'if type == "array" then length else error("not an array") end' "
 # diagnostic wakes, which over-reports a window that happens to fit exactly
 # rather than risk advancing the cursor past an unread mention.
 if [ "$COUNT" -lt "$PAGE_LIMIT" ]; then COMPLETE=1; else COMPLETE=0; fi
-python3 -I "$SCRIPT_DIR/fm-buzz-verify.py" --owner "$BUZZ_OWNER_PUBKEY" --bridge "$BUZZ_BRIDGE_PUBKEY" \
-  --channel "$BUZZ_CHANNEL" --floor "$FLOOR" < "$WORK/all" > "$WORK/accepted" 2>/dev/null \
+VERIFY=(
+  python3 -I "$SCRIPT_DIR/fm-buzz-verify.py" --owner "$BUZZ_OWNER_PUBKEY" --bridge "$BUZZ_BRIDGE_PUBKEY"
+  --channel "$BUZZ_CHANNEL" --floor "$FLOOR"
+)
+
+read_thread_history() (
+  check_timeout=${FM_CHECK_TIMEOUT:-30}
+  case "$check_timeout" in ''|*[!0-9]*|0) check_timeout=30 ;; esac
+  # Reserve time for signature verification and the existing delivery loop.
+  budget=$((10#$check_timeout - SECONDS - 15))
+  [ "$budget" -gt 0 ] || return 0
+  [ "$budget" -le "$THREAD_SECONDS" ] || budget=$THREAD_SECONDS
+  # shellcheck source=bin/fm-timeout-lib.sh
+  . "$SCRIPT_DIR/fm-timeout-lib.sh"
+  export -f fm_buzz_cli fm_buzz_secret_read
+  export BUZZ_RELAY_URL BUZZ_BRIDGE_KEY_FILE BUZZ_CLI
+  # shellcheck disable=SC2016  # Arguments expand in the bounded child shell.
+  fm_run_timed "$budget" "$BASH" -c '
+    for ((i = 0; i < $1; i++)); do
+      IFS= read -r root || break
+      if fm_buzz_cli messages thread --channel "$2" --event "$root" --limit "$3" < /dev/null > "$4/partial"; then
+        mv "$4/partial" "$4/$root"
+      fi
+    done
+  ' _ "$THREAD_LOOKUPS" "$BUZZ_CHANNEL" "$THREAD_LIMIT" "$WORK" < "$WORK/roots"
+)
+
+if "${VERIFY[@]}" --thread-roots < "$WORK/all" > "$WORK/roots" 2>/dev/null && [ -s "$WORK/roots" ]; then
+  read_thread_history 2>/dev/null || true
+fi
+"${VERIFY[@]}" --history-dir "$WORK" --thread-limit "$THREAD_LIMIT" < "$WORK/all" > "$WORK/accepted" 2>/dev/null \
   || { emit_error_once "event verification failed to run"; exit 0; }
 
 FAILED=0

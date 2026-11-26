@@ -24,6 +24,7 @@ BRIDGE_SK=2222222222222222222222222222222222222222222222222222222222222222
 OTHER_SK=3333333333333333333333333333333333333333333333333333333333333333
 OWNER=$(python3 -I "$SIGN" pubkey "$OWNER_SK")
 BRIDGE=$(python3 -I "$SIGN" pubkey "$BRIDGE_SK")
+OTHER=$(python3 -I "$SIGN" pubkey "$OTHER_SK")
 CHANNEL=0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b
 OTHER_CHANNEL=9e8d7c6b-5a49-4382-a716-152433425160
 NOW=1800000000
@@ -39,6 +40,7 @@ mention_tags() {  # [channel]
 
 # The fake CLI mirrors the pinned buzz CLI surface the bridge uses:
 #   --relay <url> --format json messages get --channel C --kinds 9 --since S --before U --limit L
+#   --relay <url> --format json messages thread --channel C --event E --limit L
 #   --relay <url> --format json messages send --channel C --reply-to E --content -
 # It logs argv and whether the bridge secret reached it through the environment.
 make_fake_cli() {
@@ -49,7 +51,7 @@ make_fake_cli() {
 log=${FAKE_BUZZ_LOG:?}
 if [ "${BUZZ_PRIVATE_KEY:-}" = "$FAKE_EXPECT_SECRET" ]; then key=ok; else key=wrong; fi
 printf 'argv=%s key=%s\n' "$*" "$key" >> "$log"
-since=0 until=99999999999 limit=50 cmd= channel= reply=
+since=0 until=99999999999 limit=50 cmd= channel= reply= event=
 while [ $# -gt 0 ]; do
   case "$1" in
     --relay|--format|--kinds) shift 2 ;;
@@ -57,6 +59,7 @@ while [ $# -gt 0 ]; do
     --since) since=$2; shift 2 ;;
     --before) until=$2; shift 2 ;;
     --limit) limit=$2; shift 2 ;;
+    --event) event=$2; shift 2 ;;
     --reply-to) reply=$2; shift 2 ;;
     --content) shift 2 ;;
     messages) cmd=$2; shift 2 ;;
@@ -69,6 +72,15 @@ case "$cmd" in
     jq -c --argjson s "$since" --argjson u "$until" --argjson l "$limit" \
       '[.[] | select(.created_at >= $s and .created_at <= $u)]
        | sort_by(-.created_at) | .[:$l] | sort_by(.created_at)' "${FAKE_EVENTS:?}"
+    ;;
+  thread)
+    [ "${FAKE_THREAD_RC:-0}" = 0 ] || exit "$FAKE_THREAD_RC"
+    [ -z "${FAKE_THREAD_DELAY:-}" ] || sleep "$FAKE_THREAD_DELAY"
+    jq -c --arg root "$event" --arg c "$channel" --argjson l "$limit" '
+      map(select(any(.tags[]; .[0] == "h" and .[1] == $c))) |
+      (map(select(any(.tags[]; .[0] == "e" and .[1] == $root)))
+       | sort_by(-.created_at) | .[:$l]) + map(select(.id == $root))
+    ' "${FAKE_EVENTS:?}"
     ;;
   send)
     [ "${FAKE_SEND_RC:-0}" = 0 ] || exit "$FAKE_SEND_RC"
@@ -272,6 +284,76 @@ test_poll_drops_everything_else() {
   assert_equals 'the one real request' "$(jq -r .text "$home/state/x-inbox/$(only_rid "$home").json")" "the staged request is the valid one"
   assert_not_contains "$out" "buzz-bridge-error" "dropped events are silent"
   pass "the poll drops non-owner, untagged, other-channel, edit, own, stale, tampered and badly signed events silently"
+}
+
+test_poll_accepts_only_addressed_owner_thread_replies() {
+  local home root root_id reply bridge_reply bridge_id tags out rid
+  home=$(new_home addressed-threads)
+  enable "$home"
+  root=$(sign_event "$OWNER_SK" $((NOW - 90002)) 9 "[[\"h\",\"$CHANNEL\"]]" 'old thread root')
+  root_id=$(jq -r .id <<<"$root")
+  tags=$(jq -cn --arg c "$CHANNEL" --arg r "$root_id" '[["h",$c],["e",$r,"","root"]]')
+  bridge_reply=$(sign_event "$BRIDGE_SK" $((NOW - 90001)) 9 "$tags" 'earlier bridge answer')
+  bridge_id=$(jq -r .id <<<"$bridge_reply")
+  tags=$(jq -c --arg b "$bridge_id" '. + [["e",$b,"","reply"]]' <<<"$tags")
+  reply=$(sign_event "$OWNER_SK" $((NOW - 30)) 9 "$tags" 'plain follow-up')
+  set_events "$home" "$root" "$bridge_reply" "$reply" \
+    "$(sign_event "$OWNER_SK" $((NOW - 27)) 9 "$(jq -c --arg p "$OTHER" '. + [["p",$p]]' <<<"$tags")" 'for someone else')" \
+    "$(sign_event "$OWNER_SK" $((NOW - 25)) 9 "[[\"h\",\"$CHANNEL\"]]" 'unaddressed top-level')"
+  out=$(poll "$home")
+  rid=$(only_rid "$home")
+  assert_equals "buzz-mention $rid" "$out" "only the unaddressed reply to the bridge thread wakes"
+  assert_equals 'plain follow-up' "$(jq -r .text "$home/state/x-inbox/$rid.json")" "the plain reply is the request"
+  assert_equals "$root_id" "$(jq -r .thread_root "$home/state/buzz/requests/$rid.json")" "the reply keeps its original root"
+  assert_equals 1 "$(grep -c 'messages thread .* key=ok' "$home/cli.log")" "one bounded thread lookup signs as the bridge"
+
+  # Another member's post is outside the intake overlap but inside thread history.
+  set_events "$home" "$root" "$bridge_reply" \
+    "$(sign_event "$OTHER_SK" $((NOW - 90000)) 9 "$tags" 'someone else joined')" \
+    "$(sign_event "$OWNER_SK" $((NOW - 20)) 9 "$tags" 'plain shared-thread reply')" \
+    "$(sign_event "$OWNER_SK" $((NOW - 10)) 9 "$(jq -c --arg b "$BRIDGE" --arg p "$OTHER" '. + [["p",$b],["p",$p]]' <<<"$tags")" 'explicit shared-thread mention')"
+  out=$(poll "$home")
+  rid=$(fm_buzz_rid_for "$home" 'explicit shared-thread mention')
+  [ -n "$rid" ] || fail "the explicit mention in the shared thread must be ingested"
+  assert_equals "buzz-mention $rid" "$out" "the shared thread requires an explicit bridge mention"
+  pass "owner thread replies are implicit only in threads Firstmate has answered that have no other participants or addressees"
+}
+
+test_poll_requires_complete_thread_history() {
+  local home root root_id tags reply bridge_reply late_reply forged out explicit rid
+  home=$(new_home incomplete-thread)
+  enable "$home"
+  root=$(sign_event "$OWNER_SK" $((NOW - 800)) 9 "[[\"h\",\"$CHANNEL\"]]" 'thread root')
+  root_id=$(jq -r .id <<<"$root")
+  tags=$(jq -cn --arg c "$CHANNEL" --arg r "$root_id" '[["h",$c],["e",$r,"","reply"]]')
+  reply=$(sign_event "$OWNER_SK" $((NOW - 10)) 9 "$tags" 'unaddressed reply')
+  late_reply=$(sign_event "$BRIDGE_SK" $((NOW - 5)) 9 "$tags" 'later bridge answer')
+  bridge_reply=$(sign_event "$BRIDGE_SK" $((NOW - 20)) 9 "$tags" 'earlier bridge answer')
+  forged=$(jq -c '.sig = ("0" * 128)' <<<"$bridge_reply")
+  set_events "$home" "$root" "$reply" "$late_reply" "$forged"
+  assert_equals "" "$(poll "$home")" "neither a later reply nor an invalid signature supplies prior bridge participation"
+
+  set_events "$home" "$root" "$reply" "$bridge_reply"
+  out=$(FAKE_THREAD_RC=2 poll "$home")
+  assert_equals "" "$out" "a failed thread lookup leaves the unaddressed reply silent"
+
+  forged=$(python3 -I "$SIGN" forge "$OWNER" $((NOW - 1000)) 9 "$tags" 'older fixtures' 50)
+  jq -c --argjson f "$forged" '. + $f' "$home/events.json" > "$home/full-thread.json"
+  mv "$home/full-thread.json" "$home/events.json"
+  assert_equals "" "$(poll "$home")" "a capped thread lookup cannot authorize the unaddressed reply"
+  assert_equals "$NOW" "$(jq -r .since "$home/state/buzz/cursor.json")" "thread fallback leaves channel cursor behavior intact"
+
+  explicit=$(sign_event "$OWNER_SK" $((NOW - 1)) 9 "$(mention_tags)" 'explicit mention during slow lookup')
+  set_events "$home" "$root" "$reply" "$bridge_reply" "$explicit"
+  out=$(FAKE_THREAD_DELAY=10 FM_CHECK_TIMEOUT=18 poll_bounded "$home" 18)
+  expect_code 0 $? "a stalled thread lookup must not time out the entire poll"
+  assert_contains "$(tail -1 "$home/cli.log")" "messages thread" "the slow thread lookup was attempted"
+  rid=$(only_rid "$home")
+  [ -n "$rid" ] || fail "slow history must leave time to deliver the explicit mention"
+  assert_equals "buzz-mention $rid" "$out" "a timed-out lookup cannot authorize the unaddressed reply"
+  assert_equals 'explicit mention during slow lookup' "$(jq -r .text "$home/state/x-inbox/$rid.json")" \
+    "an explicit mention remains usable when thread history times out"
+  pass "unaddressed replies require a complete signed thread with prior bridge participation"
 }
 
 test_poll_ingests_a_mention_that_carries_an_attachment() {
@@ -734,6 +816,8 @@ fm_test_run \
   test_enable_validates_config \
   test_enable_poll_ingests_verified_owner_mention \
   test_poll_drops_everything_else \
+  test_poll_accepts_only_addressed_owner_thread_replies \
+  test_poll_requires_complete_thread_history \
   test_poll_ingests_a_mention_that_carries_an_attachment \
   test_poll_deduplicates_across_restarts \
   test_poll_delivers_the_newest_mention_past_the_read_budget \
