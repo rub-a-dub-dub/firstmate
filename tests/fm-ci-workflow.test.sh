@@ -623,7 +623,7 @@ test_serial_shard_cap_covers_the_runner_modeled_packing() {
   cap_ms=$((serial * 60000))
   coverage=$("$ROOT/bin/fm-test-run.sh" --check-coverage 2>&1 | grep '^FM_TEST_COVERAGE ') \
     || fail "could not read serial packing figures from the runner's coverage guard"
-  budget_ms=${coverage##*serial_budget_ms=}
+  budget_ms=${coverage##*serial_hard_budget_ms=}
   budget_ms=${budget_ms%% *}
   max_ms=${coverage##*serial_max_ms=}
   max_ms=${max_ms%% *}
@@ -631,10 +631,10 @@ test_serial_shard_cap_covers_the_runner_modeled_packing() {
     ''|*[!0-9]*) fail "coverage guard reported no numeric serial packing figures: $coverage" ;;
   esac
   [ "$max_ms" -le "$budget_ms" ] \
-    || fail "largest modeled serial shard (${max_ms}ms) exceeds the runner's own packing target (${budget_ms}ms)"
+    || fail "largest modeled serial shard (${max_ms}ms) exceeds the runner's hard ceiling (${budget_ms}ms)"
   [ $((budget_ms + 600000)) -le "$cap_ms" ] \
-    || fail "the serial packing target (${budget_ms}ms) must leave at least ten minutes of the ${serial}-minute serial shard cap (${cap_ms}ms) for setup and runtime variance"
-  pass "the ${serial} minute serial shard cap covers the runner's ${budget_ms}ms packing target and its ${max_ms}ms worst modeled shard"
+    || fail "the serial packing ceiling (${budget_ms}ms) must leave at least ten minutes of the ${serial}-minute serial shard cap (${cap_ms}ms) for setup and runtime variance"
+  pass "the ${serial} minute serial shard cap covers the runner's ${budget_ms}ms packing ceiling and its ${max_ms}ms worst modeled shard"
 }
 
 # Heavy tier: Herdr alone carries a job-level last-resort backstop above the
@@ -767,7 +767,72 @@ RUBY
   pass "CI matrices cover every executable serial lane and canonical lint root exactly once"
 }
 
+test_ci_keeps_the_timecap_safeguards() {
+  ruby -ryaml - "$CI_WORKFLOW" <<'RUBY' || fail "CI timecap safeguards"
+doc = YAML.load_file(ARGV[0])
+jobs = doc.fetch("jobs")
+lint = jobs.fetch("lint")
+raise "lint timeout-minutes must stay 30" unless lint.fetch("timeout-minutes") == 30
+raise "lint matrix must be four partitions" unless lint.fetch("strategy").fetch("matrix").fetch("partition") == [1, 2, 3, 4]
+steps = lint.fetch("steps")
+raise "lint must cache pinned tools" unless steps.any? { |s| s["uses"].to_s.start_with?("actions/cache@") }
+cache = steps.find { |s| s["uses"].to_s.start_with?("actions/cache@") } or raise "lint cache step missing"
+key = cache.dig("with", "key").to_s
+installer_hash = "hashFiles('bin/fm-install-shellcheck.sh', 'bin/fm-install-actionlint.sh')"
+raise "lint tool cache key must hash the installer scripts" unless key.include?(installer_hash)
+raise "lint tool cache key must include runner.os and runner.arch" unless key.include?("runner.os") && key.include?("runner.arch")
+raise "lint tool cache key must not hardcode checksums" if key.match?(/[0-9a-f]{64}/)
+raise "lint checkout must fetch full history for --changed" unless steps.any? { |s|
+  s["uses"].to_s.include?("actions/checkout@") && s.dig("with", "fetch-depth") == 0
+}
+lint_run = steps.find { |s| s["name"] == "Lint canonical partition" } or raise "lint step missing"
+raise "PR lint must pass --changed" unless lint_run.fetch("run").include?("--changed")
+raise "lint must keep FM_LINT_JOBS=1" unless lint_run.dig("env", "FM_LINT_JOBS") == "1"
+
+serial = jobs.fetch("tests-portable-serial")
+raise "serial timeout-minutes must stay 45" unless serial.fetch("timeout-minutes") == 45
+shards = serial.fetch("strategy").fetch("matrix").fetch("shard")
+raise "serial matrix must be 20 shards" unless shards == (1..20).to_a
+
+%w[tests-portable-parallel-1 tests-portable-parallel-2 tests-portable-serial].each do |name|
+  job = jobs.fetch(name)
+  if name != "tests-portable-serial"
+    raise "#{name} timeout-minutes must stay 30" unless job.fetch("timeout-minutes") == 30
+  end
+  job_steps = job.fetch("steps")
+  tool_cache = job_steps.find { |s|
+    s["uses"].to_s.start_with?("actions/cache@") && s.dig("with", "path").to_s.include?("fm-ci-tools")
+  } or raise "#{name} must cache pinned tools"
+  raise "#{name} tool cache key must hash the installer scripts" unless tool_cache.dig("with", "key").to_s.include?(installer_hash)
+end
+
+%w[tests-portable-parallel-1 tests-portable-parallel-2].each do |name|
+  job = jobs.fetch(name)
+  run = job.fetch("steps").find { |s| s["run"].to_s.include?("fm-test-run.sh --lane") } or raise "#{name} run step missing"
+  raise "#{name} must run with --jobs 2" unless run.fetch("run").include?("--jobs 2")
+end
+
+agg = jobs.fetch("tests-timing-aggregate")
+raise "timing aggregate must depend on lint" unless Array(agg["needs"]).include?("lint")
+agg_run = agg.fetch("steps").find { |s| s["run"].to_s.include?("fm-ci-budget-warn.sh") } or raise "budget warn step missing"
+raise "budget warn must stay a warning, not a failing gate" if agg_run["continue-on-error"]
+lint_up = lint.fetch("steps").find { |s| s["name"] == "Upload lint telemetry" } or raise "lint telemetry upload missing"
+raise "lint telemetry upload must not fail the lint job when a partition has no files" unless lint_up.dig("with", "if-no-files-found") == "warn"
+raise "lint telemetry download must stay a hard dependency of the aggregate" unless agg.fetch("steps").any? { |s| s["name"] == "Download lint telemetry" }
+
+jobs.each do |name, job|
+  next unless job.is_a?(Hash)
+  raise "#{name} must not set continue-on-error" if job["continue-on-error"]
+  Array(job["steps"]).each do |step|
+    raise "#{name} step must not set continue-on-error" if step.is_a?(Hash) && step["continue-on-error"]
+  end
+end
+RUBY
+  pass "CI keeps the 15-minute packing layout, timeout tiers, lint cache, and warning-only budget check"
+}
+
 test_ci_matrices_match_executable_partitions
+test_ci_keeps_the_timecap_safeguards
 test_pr_pushes_supersede_within_one_pr
 test_separate_prs_do_not_cancel_each_other
 test_main_pushes_are_never_cancelled

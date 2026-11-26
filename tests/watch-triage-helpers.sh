@@ -85,6 +85,22 @@ wait_poll_cycle() {  # <state> <pid> [limit-ticks]
   return 1
 }
 
+# Wait until the watcher records an absorbed wake matching <needle> in its triage
+# log. 1 if the watcher exits first (i.e. it surfaced the wake instead), which is
+# exactly the unfixed behavior this case exists to catch. Polls the log rather
+# than a poll cycle so the assertion lands inside the FIRST poll, long before an
+# unchanging fixture pane could reach the stale backbone.
+wait_for_absorbed() {  # <state> <pid> <needle>
+  local state=$1 pid=$2 needle=$3 i=0
+  while [ "$i" -lt 100 ]; do
+    grep -Fq "$needle" "$state/.watch-triage.log" 2>/dev/null && return 0
+    kill -0 "$pid" 2>/dev/null || return 1
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
+
 # Every wait_for_exit budget in this file is 100 ticks (10s), not because any
 # watcher takes that long to decide, but because fm-watch.sh does bounded
 # startup work before its first poll: a tighter budget reaps the process while
@@ -278,4 +294,35 @@ write_away_record() {  # <state>
 archive_away_record() {  # <state>
   FM_HOME="$(dirname "$1")" FM_STATE_OVERRIDE="$1" "$ROOT/bin/fm-afk-contract.sh" archive >/dev/null 2>&1 \
     || fail "could not archive the away-posture record in $1"
+}
+
+# Wait up to <limit> 0.1s ticks while <pid> stays alive; 0 if still alive, 1 if it died.
+wait_live() {
+  local pid=$1 limit=${2:-30} i=0
+  while [ "$i" -lt "$limit" ]; do
+    kill -0 "$pid" 2>/dev/null || return 1
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 0
+}
+
+# Prime <file>'s .seen-* suppressor to its CURRENT signature, so the per-poll
+# no-verb signal scan (which watches every *.turn-ended for a size:mtime change)
+# treats a just-created or just-backdated turn-ended marker as already seen.
+# Busy-turn-age fixtures create/backdate turn-ended directly (there is no real
+# harness touching it), so without this the marker's own first sighting would
+# fire an unrelated "signal:" wake and mask the busy-turn-age assertion under
+# test. Call again after any further touch/set_mtime on the same file.
+prime_turnend_seen() {  # <file>
+  local f=$1 base
+  base=$(basename "$f" | tr '.' '_')
+  printf '%s' "$(seen_sig "$f")" > "$(dirname "$f")/.seen-$base"
+}
+
+record_pi_busy() {  # <state-dir> <id>
+  local state=$1 id=$2 gen
+  gen=$("$ROOT/bin/fm-busy-event.sh" arm "$state" "$id")
+  "$ROOT/bin/fm-busy-event.sh" apply "$state" "$id" busy --gen "$gen" \
+    --source pi-ext --event agent-start
 }
