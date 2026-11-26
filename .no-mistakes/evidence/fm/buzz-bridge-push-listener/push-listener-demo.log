@@ -1,0 +1,70 @@
+firstmate Buzz push listener - end-to-end demonstration
+date: 2026-11-26T05:15:18Z
+commit: 687131c9
+watcher check interval for every run below: FM_CHECK_INTERVAL=999999s (no sweep can fire)
+
+== A. poll-only home (BUZZ_LISTENER unset): the pre-change experience
+buzz bridge: enabled for channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b on relay.test.invalid; watcher sweep registered
+bridge: enabled
+listener: not configured
+watcher check: registered
+config: ok (community relay.test.invalid, channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b, owner 4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa, bridge 466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27)
+cursor: 1800000000
+pending requests: 0
+-- owner posted a mention at 05:15:21; waiting 15s for the watcher to say something
+-- after 15s the watcher has delivered nothing (0 bytes of output); the
+   mention waits for the next check sweep, i.e. up to FM_CHECK_INTERVAL (300s by default)
+-- buzz CLI reads performed in this window: 0
+
+== B. same home with BUZZ_LISTENER set: a push arrives in seconds
+buzz bridge: enabled for channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b on relay.test.invalid; watcher sweep registered
+bridge: enabled
+listener: connected
+watcher check: registered
+config: ok (community relay.test.invalid, channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b, owner 4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa, bridge 466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27)
+cursor: 1800000000
+pending requests: 0
+-- registered process-event sources:
+SOURCE                       ADAPTER      OWNER      PENDING
+buzz-bridge-32389a8c8db59d3d9393221fe233c2fb53464d0f buzz         live       0
+-- owner mention published to the relay fixture at 05:15:52 and the listener notified
+-- watcher wake, 2s after the mention (next scheduled sweep: ~11 days away):
+   | check: /private/var/folders/f_/hcy8g0q91p9fdyghn_9ypx5r0000gn/T/fm-buzz-push-demo.MWN5nr/listener/state/buzz-bridge.check.sh: buzz-mention buzz-9fd2fd39f1a27f5c8492c12333010c0cd68f0af5
+-- persisted inbox entry state/x-inbox/buzz-9fd2fd39f1a27f5c8492c12333010c0cd68f0af5.json:
+   | {
+   |   "request_id": "buzz-9fd2fd39f1a27f5c8492c12333010c0cd68f0af5",
+   |   "platform": "buzz",
+   |   "text": "can you check the deploy?",
+   |   "verified": "owner-signature",
+   |   "channel": "0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b"
+   | }
+
+== C. the enabled marker is the off switch on its own
+-- listener process 76789 owns helper process 76968 (relay session)
+-- removing config/buzz-bridge.enabled by hand; nothing else is told
+-- 60s later: listener exited=yes helper exited=yes (default re-check cadence is 60s)
+bridge: disabled
+listener: disconnected
+watcher check: registered
+config: ok (community relay.test.invalid, channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b, owner 4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa, bridge 466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27)
+cursor: 1800000000
+pending requests: 1
+-- and a full disable also retires the registered source:
+buzz bridge: disabled; no polling and no replies until bin/fm-buzz.sh enable
+bridge: disabled
+listener: stopped
+watcher check: not registered
+config: ok (community relay.test.invalid, channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b, owner 4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa, bridge 466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27)
+cursor: 1800000000
+pending requests: 1
+no sources registered
+
+== D. status tells an unset BUZZ_LISTENER apart from one that cannot run
+   | bridge: disabled
+   | listener: unusable (BUZZ_LISTENER is not an executable file)
+   | watcher check: not registered
+   | config: ok (community relay.test.invalid, channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b, owner 4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa, bridge 466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27)
+   | cursor: none
+   | pending requests: 0
+
+DONE
