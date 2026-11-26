@@ -3103,12 +3103,17 @@ These diagnostics name a condition rather than a message, so one wake can stand 
 Any third party among the events a thread read returns closes that thread to implicit intake, whatever the `e` tags on their post say.
 That history read is `buzz messages thread --channel <channel> --event <root> --limit 50`, and it must return the root event itself: like the newest-first truncation above, that the pinned `relay-v0.3.0` CLI offers this subcommand and scopes it to the one thread is a property of that build, not something this repository can enforce, and it must be re-confirmed before `BUZZ_CLI` is repointed at a newer build.
 A thread read the CLI refuses wakes it too, because a surface that is simply gone would otherwise leave implicit intake inert and indistinguishable from an owner who always mentions the bridge.
+
+Three further limits fall back the same way, to needing an explicit @Firstmate mention in that thread.
+A read that returns a thread's descendants but not its root event - a root aged past the relay's retention, or deleted - cannot establish that Firstmate ever replied there, and because the read itself succeeded nothing tells that apart from a thread Firstmate was never in.
+A read that fails on the network is refused too and does wake the diagnostic below, unlike the intake read above, which retries in silence; the next sweep usually re-reads the same reply inside the overlap and delivers it anyway.
+Rule 1 is in turn only as good as the pinned CLI's reply tagging: Firstmate answers with `buzz messages send --reply-to <event>` and leaves the `e` tags to the CLI, and a bridge reply counts toward rule 1 only where the thread read resolves it to the same root, so a build that marked only the parent event on a nested reply and never the thread root would leave that thread unqualified.
 A message with an attachment is ingested by its text alone, and the bridge never fetches the media.
 Edits (kind 40003), DMs, gift wraps, workflow messages, and posts signed by anyone other than the owner never become requests.
 
 Each accepted message gets a stable request id derived from the transport, community, bridge key, and event id, and a binding in `state/buzz/requests/<request_id>.json` recording the channel, parent event, thread root, verified signer, and reply budget.
 The binding is written before the inbox record, the cursor in `state/buzz/cursor.json` advances only after a complete range is persisted, and an existing binding deduplicates a re-read.
-A new request wakes firstmate with `buzz-mention <request_id>`; a configuration, authorization, thread-lookup, or catch-up problem wakes once per distinct message with `buzz-bridge-error <reason>`, while a relay or network failure stays silent until the next sweep.
+A new request wakes firstmate with `buzz-mention <request_id>`; a configuration, authorization, thread-lookup, or catch-up problem wakes once per distinct message with `buzz-bridge-error <reason>`, while a relay or network failure on the intake read stays silent until the next sweep.
 
 The check runs at the watcher's `FM_CHECK_INTERVAL` cadence, 300 seconds by default and 30 seconds in a home with hosted Relay on.
 For faster pickup in a Buzz-only home, add `export FM_CHECK_INTERVAL=30` to `config/watch.env` and restart the watcher through the emitted supervision protocol.
