@@ -346,6 +346,22 @@ test_poll_accepts_only_addressed_owner_thread_replies() {
       "no request may be staged from a thread another member has joined ($n)"
   done
 
+  # Nor is a third party absent because the bridge cannot check their post. The
+  # signature is the only thing that could attribute it to the owner or the
+  # bridge, and neither of these verifies: one carries a junk signature, the other
+  # was edited after signing so its id no longer recomputes.
+  n=0
+  for join in \
+    "$(sign_event "$OTHER_SK" $((NOW - 90000)) 9 "$tags" 'joined with a junk signature' | jq -c '.sig = ("0" * 128)')" \
+    "$(sign_event "$OTHER_SK" $((NOW - 90000)) 9 "$tags" 'joined, then edited' | jq -c '.content = "edited after signing"')"; do
+    n=$((n + 1))
+    set_events "$home" "$root" "$bridge_reply" "$join" \
+      "$(sign_event "$OWNER_SK" $((NOW - 20)) 9 "$tags" "plain reply beside an unverifiable join $n")"
+    assert_equals "" "$(poll "$home")" "an unverifiable post closes the thread too ($n)"
+    assert_equals "" "$(fm_buzz_rid_for "$home" "plain reply beside an unverifiable join $n")" \
+      "a post the bridge cannot attribute must not read as nobody being there ($n)"
+  done
+
   # Replying to one's own earlier message tags the owner as a participant; being
   # addressed to oneself does not make the message meant for somebody else.
   set_events "$home" "$root" "$bridge_reply" \
@@ -445,6 +461,8 @@ test_poll_requires_complete_thread_history() {
   late_reply=$(sign_event "$BRIDGE_SK" $((NOW - 5)) 9 "$tags" 'later bridge answer')
   bridge_reply=$(sign_event "$BRIDGE_SK" $((NOW - 20)) 9 "$tags" 'earlier bridge answer')
   forged=$(jq -c '.sig = ("0" * 128)' <<<"$bridge_reply")
+  set_events "$home" "$root" "$reply" "$late_reply"
+  assert_equals "" "$(poll "$home")" "a bridge reply newer than the owner's is not prior participation"
   set_events "$home" "$root" "$reply" "$late_reply" "$forged"
   assert_equals "" "$(poll "$home")" "neither a later reply nor an invalid signature supplies prior bridge participation"
 

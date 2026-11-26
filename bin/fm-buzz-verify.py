@@ -54,8 +54,9 @@ itself recomputable by anyone, so an unsigned copy attributed to the owner would
 otherwise crowd a real reply's thread out of that budget and drop it silently.
 `--history-dir` supplies one completed `messages thread` result per root, using
 the root id as the filename. A result at the requested limit may be truncated.
-Any third party among the events that read returned closes the thread to implicit
-intake, so a read that over-returns makes the feature inert rather than wrong.
+Any event among the ones that read returned that is not provably the owner's or
+the bridge's closes the thread to implicit intake, so a read that over-returns
+makes the feature inert rather than wrong.
 """
 
 import argparse
@@ -214,7 +215,11 @@ def private_thread(path, root, args):
     join unnoticed, because every shape this module calls malformed - a duplicated
     or absent `h` tag, NIP-10's deprecated positional `e` form, a reply marker
     naming a descendant - would then read as absence rather than as a stranger.
-    Only the signer is load-bearing here, and only the signature attests it.
+    Only the signer is load-bearing here, and only the signature attests it, so an
+    event whose id or signature does not verify closes the thread as well: nothing
+    says it is the owner's or the bridge's, and a post beside the owner that cannot
+    be attributed is the very thing rule 3 is about. The owner's explicit mention
+    still reaches such a thread, which is the documented way through.
     """
     try:
         with path.open(encoding="utf-8") as stream:
@@ -230,9 +235,7 @@ def private_thread(path, root, args):
             return set(), None
         if ev["id"] in members:
             continue
-        if event_id(ev) != ev["id"] or not signed(ev):
-            continue
-        if ev["pubkey"] not in (args.owner, args.bridge):
+        if event_id(ev) != ev["id"] or not signed(ev) or ev["pubkey"] not in (args.owner, args.bridge):
             return set(), None
         if not in_channel(ev, args.channel) or thread_refs(ev) != root:
             continue
