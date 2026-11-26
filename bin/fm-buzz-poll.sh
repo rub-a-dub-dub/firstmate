@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# One bounded poll of the configured Buzz channel for verified owner mentions.
+# One bounded poll of the configured Buzz channel for verified owner requests.
 #
 # Run by the watcher through the registered state/buzz-bridge.check.sh shim that
 # bin/fm-buzz.sh enable writes. Contract: output => wake firstmate, silence =>
 # keep sleeping. A HARD no-op (exit 0, no output) while the bridge is disabled
 # (no config/buzz-bridge.enabled), so a stray shim can never poll.
 #
-# Each poll makes ONE read of kind-9 events in the one configured channel
+# Each poll makes one intake read of kind-9 events in the configured channel
 # through the pinned Buzz CLI (`messages get`, signed NIP-98 reads with the
 # bridge key): the newest PAGE_LIMIT events below a fixed upper fence, down to
 # the durable cursor minus a BUZZ_READ_OVERLAP overlap, never past the age limit
@@ -17,9 +17,22 @@
 # BIP-340 verified. The read is scoped by channel and kind, not by author, so the
 # owner's latest mention is inside it unless more than PAGE_LIMIT channel
 # messages from any member are newer than that mention. The read is
-# filtered and verified by bin/fm-buzz-verify.py: only owner-signed kind-9
-# messages that p-tag the bridge key, with a valid event id and signature,
-# survive; everything else is dropped silently.
+# filtered and verified by bin/fm-buzz-verify.py. For potential unaddressed
+# replies, a separate budget reads up to THREAD_LOOKUPS distinct threads at up
+# to THREAD_LIMIT events per lookup, skipping any thread whose reply this home
+# has already handled so a re-read cannot starve an older thread out of the
+# budget. Failed, missing, or capped thread reads supply no evidence for implicit
+# intake and do not affect the channel cursor, which always moves on. Three of
+# those are reported, because the cursor moving past a reply would otherwise leave
+# it indistinguishable from a message the bridge never saw: a read the CLI
+# refused, a budget that ran out before every queued thread was read, and a
+# history that came back at THREAD_LIMIT, where a complete thread cannot be told
+# from a truncated one. Each is one generic message naming no thread, so a single
+# wake can stand for several dropped replies. A thread others have joined is
+# refused under rule 3 yet still spends a lookup, so a busy shared thread can
+# delay checking another thread by a sweep or more. An explicit @Firstmate mention
+# needs no thread read at all and always works: that is the way past every limit
+# here, and what each of these diagnostics asks the owner for.
 #
 # For each accepted event, in order, before the cursor may advance:
 #   1. claim the request binding state/buzz/requests/<request_id>.json
@@ -36,9 +49,10 @@
 # complete, fully persisted range.
 #
 # Diagnostics wake once per distinct message as "buzz-bridge-error <reason>":
-# configuration problems, an auth refusal, a malformed read, and a catch-up range
-# too large to drain in one poll. A relay or network failure is silent; the next
-# cycle retries it.
+# configuration problems, an auth refusal, a malformed read, a thread read the
+# CLI refused, a thread lookup budget that ran out, a thread too long to check,
+# and a catch-up range too large to drain in one poll. A relay or network failure
+# on the intake read is silent; the next cycle retries it.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -52,6 +66,9 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 fm_buzz_enabled || exit 0
 
 PAGE_LIMIT=200
+THREAD_LOOKUPS=4
+THREAD_LIMIT=50
+THREAD_SECONDS=5
 
 emit_error_once() {
   local msg=$1
@@ -112,8 +129,95 @@ COUNT=$(jq -er 'if type == "array" then length else error("not an array") end' "
 # diagnostic wakes, which over-reports a window that happens to fit exactly
 # rather than risk advancing the cursor past an unread mention.
 if [ "$COUNT" -lt "$PAGE_LIMIT" ]; then COMPLETE=1; else COMPLETE=0; fi
-python3 -I "$SCRIPT_DIR/fm-buzz-verify.py" --owner "$BUZZ_OWNER_PUBKEY" --bridge "$BUZZ_BRIDGE_PUBKEY" \
-  --channel "$BUZZ_CHANNEL" --floor "$FLOOR" < "$WORK/all" > "$WORK/accepted" 2>/dev/null \
+VERIFY=(
+  python3 -I "$SCRIPT_DIR/fm-buzz-verify.py" --owner "$BUZZ_OWNER_PUBKEY" --bridge "$BUZZ_BRIDGE_PUBKEY"
+  --channel "$BUZZ_CHANNEL" --floor "$FLOOR"
+)
+
+read_thread_history() (
+  check_timeout=${FM_CHECK_TIMEOUT:-30}
+  case "$check_timeout" in ''|*[!0-9]*|0) check_timeout=30 ;; esac
+  # Reserve time for the existing delivery loop, for the queue scan above, and
+  # for signature verification - whose ceiling is TWICE the intake page (the two
+  # verify passes share nothing) plus THREAD_LOOKUPS x THREAD_LIMIT, because every
+  # event a history holds is verified before its signer can be trusted. Raising
+  # any of those three constants spends this reserve.
+  budget=$((10#$check_timeout - SECONDS - 15))
+  [ "$budget" -gt 0 ] || return 0
+  [ "$budget" -le "$THREAD_SECONDS" ] || budget=$THREAD_SECONDS
+  # shellcheck source=bin/fm-timeout-lib.sh
+  . "$SCRIPT_DIR/fm-timeout-lib.sh"
+  export -f fm_buzz_cli fm_buzz_secret_read
+  export BUZZ_RELAY_URL BUZZ_BRIDGE_KEY_FILE BUZZ_CLI
+  # shellcheck disable=SC2016  # Arguments expand in the bounded child shell.
+  fm_run_timed "$budget" "$BASH" -c '
+    rc=0
+    for ((i = 0; i < $1; i++)); do
+      IFS= read -r root || break
+      if fm_buzz_cli messages thread --channel "$2" --event "$root" --limit "$3" < /dev/null > "$4/partial"; then
+        mv "$4/partial" "$4/$root"
+      else
+        rc=$?
+      fi
+    done
+    exit "$rc"
+  ' _ "$THREAD_LOOKUPS" "$BUZZ_CHANNEL" "$THREAD_LIMIT" "$WORK" < "$WORK/wanted"
+  rc=$?
+  # Running out of time is not a surface problem; the unread roots report it.
+  fm_timed_out "$rc" && return 0
+  return "$rc"
+)
+
+# Spend the scarce lookups only on threads whose reply still has somewhere to go.
+# Verify lists every candidate newest-first and cannot know what this home has
+# already handled, so a thread answered on an earlier poll would otherwise be
+# looked up again on every re-read inside the overlap and starve an older one out
+# of the budget for good. A binding the delivery loop below would still act on -
+# absent, or staged and untouched - keeps its thread in the queue.
+THREAD_ERROR=
+WANTED=0
+: > "$WORK/wanted"
+if "${VERIFY[@]}" --thread-roots < "$WORK/all" > "$WORK/candidates" 2>/dev/null; then
+  while read -r root eid; do
+    [ -n "$root" ] && [ -n "$eid" ] || continue
+    grep -qxF -- "$root" "$WORK/wanted" && continue
+    rid=$(fm_buzz_request_id "$eid") || continue
+    if binding=$(fm_buzz_binding_get "$rid"); then
+      printf '%s' "$binding" \
+        | jq -e '.state == "staged" and .answer_posted != true and .followup_posted != true and .dismissed != true' \
+          >/dev/null || continue
+    fi
+    printf '%s\n' "$root" >> "$WORK/wanted"
+    WANTED=$((WANTED + 1))
+    # One past the budget already proves it overflows; counting the rest costs
+    # a request id per candidate and changes nothing.
+    [ "$WANTED" -le "$THREAD_LOOKUPS" ] || break
+  done < "$WORK/candidates"
+fi
+if [ "$WANTED" -gt 0 ]; then
+  read_thread_history 2>/dev/null
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    THREAD_ERROR="buzz CLI thread read failed (exit $rc); unaddressed replies need an explicit mention"
+  else
+    CAPPED=0
+    while IFS= read -r root; do
+      if [ ! -f "$WORK/$root" ]; then
+        THREAD_ERROR="thread lookup budget exhausted; unaddressed replies in the threads it did not reach need an explicit mention"
+        break
+      fi
+      # A history at the limit is the same read a longer thread would return, so
+      # bin/fm-buzz-verify.py cannot trust it and the reply goes unanswered.
+      held=$(jq 'if type == "array" then length else 0 end' "$WORK/$root" 2>/dev/null) || held=0
+      case "$held" in ''|*[!0-9]*) held=0 ;; esac
+      [ "$held" -lt "$THREAD_LIMIT" ] || CAPPED=1
+    done < "$WORK/wanted"
+    if [ -z "$THREAD_ERROR" ] && [ "$CAPPED" -eq 1 ]; then
+      THREAD_ERROR="a thread is past $THREAD_LIMIT messages, too long to check for an unaddressed reply; @-mention Firstmate to reach it there"
+    fi
+  fi
+fi
+"${VERIFY[@]}" --history-dir "$WORK" --thread-limit "$THREAD_LIMIT" < "$WORK/all" > "$WORK/accepted" 2>/dev/null \
   || { emit_error_once "event verification failed to run"; exit 0; }
 
 FAILED=0
@@ -160,7 +264,7 @@ if [ "$FAILED" -eq 1 ]; then
 elif [ "$COMPLETE" -eq 1 ]; then
   if jq -cn --argjson since "$NOW" --argjson fence "$FENCE" '{since:$since, fence:$fence}' \
     | fmx_private_artifact_publish_stdin "$STATE/buzz" cursor.json 600; then
-    clear_error
+    if [ -n "$THREAD_ERROR" ]; then emit_error_once "$THREAD_ERROR"; else clear_error; fi
   else
     emit_error_once "cannot advance the poll cursor"
   fi

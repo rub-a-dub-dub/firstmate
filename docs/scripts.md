@@ -186,9 +186,9 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-x-followup.sh`       | Detect, post, and cap completion follow-ups for a Relay-linked task                  |
 | `fm-buzz.sh`             | Enable, disable, or report the home-local Buzz bridge ([contract](configuration.md#buzz-bridge-configbuzz-bridgeenv)) |
 | `fm-buzz-lib.sh`         | Shared Buzz bridge config, on/off state, request bindings, and the signing CLI call  |
-| `fm-buzz-poll.sh`        | One bounded Buzz channel poll: verify owner mentions and stage them in the Relay inbox |
+| `fm-buzz-poll.sh`        | One bounded Buzz channel poll: verify owner requests and stage them in the Relay inbox |
 | `fm-buzz-reply.sh`       | Send, dry-run, or dismiss a Buzz-bound Relay reply in the original thread            |
-| `fm-buzz-verify.py`      | Filter Buzz events and verify their ids and BIP-340 signatures                       |
+| `fm-buzz-verify.py`      | Filter Buzz events, verify their ids and BIP-340 signatures, and qualify unaddressed thread replies |
 | `fm-public-followup-lib.sh` | Shared Relay gate, mirrored deliverable validation, open-loop state, locking, and private transport paths |
 | `fm-public-followup.sh`  | Brief, reconcile, and deliver typed public commitments, surface refusals, then rechain or retire retained loops |
 | `fm-public-followup-emit.sh` | Validate and report one typed terminal work result into its owning home, or stage it when that home is remote |
