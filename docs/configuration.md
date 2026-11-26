@@ -3086,8 +3086,7 @@ cp bin/fm-buzz-listen.rs <build-dir>/buzz-src/crates/buzz-cli/src/bin/
 
 Both commands run as written against a clean clone of the tag: the helper needs no `Cargo.toml` or `Cargo.lock` edit, because `buzz-cli` already depends on `buzz-ws-client`, `nostr`, `serde_json`, `tokio`, and `rustls`, and already carries the `tempfile`, `futures-util`, `tokio-tungstenite`, and `tokio` `test-util` dev-dependencies the test module uses.
 The clone's `rust-toolchain.toml` selects the toolchain, so run both from inside it and let rustup honour that pin.
-The `cargo test` run covers the helper's NIP-42 handshake, its single-`h`-tag plus `p`-tag match rule, the discarding of pre-EOSE events, and that a silent relay does not end a live session; `data/buzz-bridge-push-listener/helper-test.log` holds a passing run.
-Rebuild and re-run both whenever `bin/fm-buzz-listen.rs` changes, then repoint `BUZZ_LISTENER` and re-run `bin/fm-buzz.sh enable` to restart the listener on the new binary.
+Run both again whenever `bin/fm-buzz-listen.rs` changes, then repoint `BUZZ_LISTENER` and re-run `bin/fm-buzz.sh enable` to restart the listener on the new binary.
 
 The bridge pubkey must be a member of the private channel; the owner adds it from Buzz, outside firstmate.
 
@@ -3139,8 +3138,11 @@ The listener holds one authenticated WebSocket subscription for new owner mentio
 A matching notification triggers the same bounded poll within seconds, and overlapping triggers share one poll at a time with the watcher.
 The poll verifies and deduplicates requests before writing the inbox and waking Firstmate.
 The listener reconnects with bounded backoff, and the watcher remains the backstop at its existing `FM_CHECK_INTERVAL` cadence, 300 seconds by default and 30 seconds in a home with hosted Relay on.
-A quiet channel never ends a healthy session: liveness is the relay's own WebSocket keepalive, which pings every 30 seconds and closes a connection that misses three pongs, and the helper answers those pings without waking the bridge.
-The pinned client exposes no way to send a ping of its own, so the helper also carries a 30-minute read bound as the last resort for a socket that died without a close; the watcher sweep covers that window.
+A quiet channel never ends a healthy session, because liveness is the relay's own WebSocket keepalive rather than message traffic.
+At the pinned tag, `crates/buzz-relay/src/connection.rs` `heartbeat_loop` pings every 30 seconds and closes a connection that misses three pongs, while `crates/buzz-ws-client/src/connection.rs` `recv_one` applies its read bound per frame inside its loop and answers each ping with a pong, so any frame restarts the wait without waking the bridge.
+Re-confirm both before repointing `BUZZ_CLI` or `BUZZ_LISTENER` at a newer build.
+The client exposes no way to send a ping of its own, so the helper also carries a 30-minute read bound as the last resort for a socket that died without a close.
+A reconnect is not a fault: the helper re-handshakes with bounded backoff, `bin/fm-buzz.sh status` reports `listener: disconnected` only for that window, and the watcher sweep covers it.
 
 **Replies**
 
@@ -3163,7 +3165,7 @@ Run this once with the owner after the bridge lands, against the owner's relay:
 
 1. Build the pinned CLI and listener as above, write `config/buzz-bridge.env`, and confirm `bin/fm-buzz.sh status` reports `config: ok`.
 2. Confirm with the owner that the bridge pubkey is a member of the private channel.
-3. Run `bin/fm-buzz.sh enable`, confirm the watcher is live, and wait for `listener: connected`.
+3. Run `bin/fm-buzz.sh enable`, confirm the watcher is live, and wait for `listener: connected`; a brief `listener: disconnected` while it re-handshakes is expected, not a fault.
 4. Just after a watcher sweep, have the owner post a message in the channel mentioning the bridge identity and record the send time.
 5. Confirm firstmate wakes with `buzz-mention` within seconds and ahead of the next scheduled sweep, and that the owner sees a 👀 reaction from the bridge identity on the original message before the reply appears in its thread.
    Confirm that firstmate sent the reply through `fmx-respond` and that Buzz shows the bridge identity as its author.

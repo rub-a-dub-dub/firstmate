@@ -54,15 +54,6 @@ unregister() {
   FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-check-unregister.sh" "$FM_BUZZ_CHECK_ID" >/dev/null
 }
 
-lock_switch() {
-  # shellcheck source=bin/fm-wake-lib.sh
-  . "$SCRIPT_DIR/fm-wake-lib.sh"
-  SWITCH_LOCK="$STATE/.buzz-switch.lock"
-  trap 'fm_lock_release "$FM_BUZZ_POLL_LOCK" || true; fm_lock_release "$SWITCH_LOCK" || true' EXIT
-  trap 'exit 1' HUP INT TERM
-  fm_lock_acquire_wait "$SWITCH_LOCK" --refuse-unreapable
-}
-
 case "${1:-}" in
   enable)
     [ "$#" -eq 1 ] || { usage; exit 2; }
@@ -70,7 +61,10 @@ case "${1:-}" in
     command -v python3 >/dev/null 2>&1 || { echo "fm-buzz: python3 not found" >&2; exit 1; }
     fm_buzz_load_config || { echo "fm-buzz: not enabled: $FM_BUZZ_CONFIG_ERROR" >&2; exit 1; }
     mkdir -p "$STATE" "$CONFIG" || exit 1
-    lock_switch || exit 1
+    # shellcheck source=bin/fm-wake-lib.sh
+    . "$SCRIPT_DIR/fm-wake-lib.sh"
+    trap 'fm_lock_release "$FM_BUZZ_POLL_LOCK" || true' EXIT
+    trap 'exit 1' HUP INT TERM
     # A poll from the previous enabled period must finish before reseeding.
     fm_lock_acquire_wait "$FM_BUZZ_POLL_LOCK" --refuse-unreapable || exit 1
     # The forward-only fence belongs to turning the bridge ON. Read that before
@@ -118,8 +112,6 @@ case "${1:-}" in
     ;;
   disable)
     [ "$#" -eq 1 ] || { usage; exit 2; }
-    # A damaged lifecycle lock cannot prevent the operator from turning off.
-    lock_switch || echo "fm-buzz: disabling without a lifecycle lock" >&2
     if [ -e "$MARKER" ] || [ -L "$MARKER" ]; then
       rm -f -- "$MARKER" || { echo "fm-buzz: cannot remove $MARKER; the bridge may still be on" >&2; exit 1; }
     fi

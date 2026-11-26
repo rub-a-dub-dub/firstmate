@@ -14,8 +14,11 @@ use tokio::time::{sleep, timeout};
 
 const SUBSCRIPTION: &str = "firstmate-buzz";
 const HANDSHAKE: Duration = Duration::from_secs(20);
-// The relay's own WebSocket Ping keeps a healthy session readable, so this
-// bound is only the last resort for a socket that died without a close.
+// The relay's own WebSocket Ping keeps a healthy session readable: at
+// relay-v0.3.0, buzz-ws-client's `recv_one` applies its bound per frame inside
+// its read loop and auto-pongs, so any frame restarts the wait, and the relay's
+// `heartbeat_loop` pings every 30 seconds. This bound is only the last resort
+// for a socket that died without a close.
 const IDLE_READ: Duration = Duration::from_secs(1800);
 
 struct Config {
@@ -182,6 +185,22 @@ fn config() -> Option<Config> {
     })
 }
 
+async fn supervise(config: &Config, mut report: impl FnMut(&str) -> io::Result<()>) {
+    let mut delay = 1;
+    loop {
+        let started = Instant::now();
+        let _ = listen(config, &mut report).await;
+        if report("disconnected").is_err() {
+            return;
+        }
+        if started.elapsed() >= Duration::from_secs(60) {
+            delay = 1;
+        }
+        sleep(Duration::from_secs(delay)).await;
+        delay = (delay * 2).min(30);
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let Some(config) = config() else {
@@ -196,19 +215,7 @@ async fn main() {
     {
         std::process::exit(1);
     }
-    let mut delay = 1;
-    loop {
-        let started = Instant::now();
-        let _ = listen(&config, signal).await;
-        if signal("disconnected").is_err() {
-            return;
-        }
-        if started.elapsed() >= Duration::from_secs(60) {
-            delay = 1;
-        }
-        sleep(Duration::from_secs(delay)).await;
-        delay = (delay * 2).min(30);
-    }
+    supervise(&config, signal).await;
 }
 
 #[cfg(test)]
@@ -392,5 +399,96 @@ mod tests {
         server.await.unwrap();
         assert!(closed.is_err());
         assert_eq!(signals, ["connected", "match"]);
+    }
+
+    /// One fixture session: NIP-42 handshake, subscription, one matching
+    /// mention, then a relay-side close.
+    async fn serve_one_mention(
+        relay: &TcpListener,
+        owner: &Keys,
+        bridge: PublicKey,
+        channel: &str,
+    ) {
+        let (tcp, _) = relay.accept().await.unwrap();
+        let mut ws = accept_async(tcp).await.unwrap();
+        ws.send(Message::Text(json!(["AUTH", "fixture"]).to_string().into()))
+            .await
+            .unwrap();
+        let raw = ws.next().await.unwrap().unwrap().into_text().unwrap();
+        let auth: Value = serde_json::from_str(&raw).unwrap();
+        let event: Event = serde_json::from_value(auth[1].clone()).unwrap();
+        event.verify().unwrap();
+        assert_eq!(event.pubkey, bridge);
+        ws.send(Message::Text(
+            json!(["OK", event.id, true, ""]).to_string().into(),
+        ))
+        .await
+        .unwrap();
+        ws.next().await.unwrap().unwrap();
+        ws.send(Message::Text(
+            json!(["EOSE", SUBSCRIPTION]).to_string().into(),
+        ))
+        .await
+        .unwrap();
+        let mention = EventBuilder::new(Kind::Custom(9), "mention")
+            .tags([Tag::parse(["h", channel]).unwrap(), Tag::public_key(bridge)])
+            .sign(owner)
+            .await
+            .unwrap();
+        for row in [
+            json!(["EVENT", SUBSCRIPTION, mention]),
+            json!(["CLOSED", SUBSCRIPTION, "fixture dropped the session"]),
+        ] {
+            ws.send(Message::Text(row.to_string().into())).await.unwrap();
+        }
+    }
+
+    /// A dropped session is announced and followed by a fresh authenticated
+    /// session that delivers the next mention, which is what keeps pickup in
+    /// seconds across a relay restart.
+    #[tokio::test]
+    async fn a_dropped_session_reconnects_and_keeps_delivering() {
+        let relay = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", relay.local_addr().unwrap());
+        let key_dir = tempfile::tempdir().unwrap();
+        let key_path = key_dir.path().join("bridge.key");
+        let bridge_key = "4".repeat(64);
+        let bridge = Keys::parse(&bridge_key).unwrap().public_key();
+        let owner = Keys::generate();
+        let channel = "8acb1df7-1f23-45a7-88f7-1234567890ab";
+        std::fs::write(&key_path, format!("Secret key: {bridge_key}\n")).unwrap();
+        let config = Config {
+            relay: url,
+            channel: channel.into(),
+            owner: owner.public_key(),
+            bridge,
+            key_file: key_path,
+        };
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                serve_one_mention(&relay, &owner, bridge, channel).await;
+            }
+        });
+        let mut signals = Vec::new();
+        supervise(&config, |line| {
+            signals.push(line.to_owned());
+            if signals.iter().filter(|line| *line == "disconnected").count() == 2 {
+                return Err(io::Error::other("the adapter stopped reading"));
+            }
+            Ok(())
+        })
+        .await;
+        server.await.unwrap();
+        assert_eq!(
+            signals,
+            [
+                "connected",
+                "match",
+                "disconnected",
+                "connected",
+                "match",
+                "disconnected"
+            ]
+        );
     }
 }
