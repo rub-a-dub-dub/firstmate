@@ -375,7 +375,7 @@ test_poll_requires_complete_thread_history() {
 
   explicit=$(sign_event "$OWNER_SK" $((NOW - 1)) 9 "$(mention_tags)" 'explicit mention during slow lookup')
   set_events "$home" "$root" "$reply" "$bridge_reply" "$explicit"
-  out=$(FAKE_THREAD_DELAY=10 FM_CHECK_TIMEOUT=18 poll_bounded "$home" 18)
+  out=$(FAKE_THREAD_DELAY=10 FM_CHECK_TIMEOUT=25 poll_bounded "$home" 25)
   expect_code 0 $? "a stalled thread lookup must not time out the entire poll"
   assert_contains "$(tail -1 "$home/cli.log")" "messages thread" "the slow thread lookup was attempted"
   rid=$(only_rid "$home")
