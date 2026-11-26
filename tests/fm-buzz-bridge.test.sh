@@ -387,6 +387,53 @@ test_poll_spends_the_thread_budget_on_signed_roots() {
   pass "the bounded thread lookups go to roots of signature-verified candidates only"
 }
 
+test_poll_lookup_budget_drains_across_polls() {
+  local home out rid i root root_id tags staged
+  local -a evs=()
+  home=$(new_home budget-drain)
+  enable "$home"
+  # Five threads Firstmate has answered, each with one unaddressed owner reply
+  # inside the read overlap - one more than THREAD_LOOKUPS. "follow-up 1" is the
+  # newest, so "follow-up 5" is the one past the budget.
+  for i in 1 2 3 4 5; do
+    root=$(sign_event "$OWNER_SK" $((NOW - 900 - i)) 9 "[[\"h\",\"$CHANNEL\"]]" "root $i")
+    root_id=$(jq -r .id <<<"$root")
+    tags=$(jq -cn --arg c "$CHANNEL" --arg r "$root_id" '[["h",$c],["e",$r,"","root"]]')
+    evs+=("$root")
+    evs+=("$(sign_event "$BRIDGE_SK" $((NOW - 800 - i)) 9 "$tags" "bridge answer $i")")
+    evs+=("$(sign_event "$OWNER_SK" $((NOW - 10 * i)) 9 "$tags" "follow-up $i")")
+  done
+  set_events "$home" "${evs[@]}"
+
+  out=$(poll "$home")
+  for i in 1 2 3 4; do
+    [ -n "$(fm_buzz_rid_for "$home" "follow-up $i")" ] \
+      || fail "the budget must be spent on the newest threads first (follow-up $i)"
+  done
+  assert_equals "" "$(fm_buzz_rid_for "$home" 'follow-up 5')" \
+    "the fifth thread is one past the lookup budget"
+  assert_contains "$out" "buzz-bridge-error thread lookup budget exhausted" \
+    "a reply the budget could not reach is reported, not dropped in silence"
+  assert_equals 4 "$(grep -c 'messages thread .* key=ok' "$home/cli.log")" \
+    "the budget buys exactly THREAD_LOOKUPS reads"
+
+  # The four answered threads no longer need a lookup, so the starved one gets it.
+  out=$(poll "$home")
+  rid=$(fm_buzz_rid_for "$home" 'follow-up 5')
+  [ -n "$rid" ] || fail "a re-read of handled threads must not starve the fifth again"
+  assert_equals "buzz-mention $rid" "$out" "the second poll delivers only the starved reply"
+
+  # A binding left staged by an interrupted poll is still owed its wake, so its
+  # thread must keep its place in the queue rather than count as handled.
+  staged=$(fm_buzz_rid_for "$home" 'follow-up 1')
+  jq -c '.state = "staged"' "$home/state/buzz/requests/$staged.json" > "$home/restaged.json"
+  mv "$home/restaged.json" "$home/state/buzz/requests/$staged.json"
+  chmod 600 "$home/state/buzz/requests/$staged.json"
+  out=$(poll "$home")
+  assert_contains "$out" "buzz-mention $staged" "a staged unaddressed reply is re-announced"
+  pass "the thread lookup budget skips handled threads, drains across polls, and reports what it could not reach"
+}
+
 test_poll_requires_complete_thread_history() {
   local home root root_id tags reply bridge_reply late_reply forged out explicit rid
   home=$(new_home incomplete-thread)
@@ -423,7 +470,9 @@ test_poll_requires_complete_thread_history() {
   assert_contains "$(tail -1 "$home/cli.log")" "messages thread" "the slow thread lookup was attempted"
   rid=$(only_rid "$home")
   [ -n "$rid" ] || fail "slow history must leave time to deliver the explicit mention"
-  assert_equals "buzz-mention $rid" "$out" "a timed-out lookup cannot authorize the unaddressed reply"
+  assert_contains "$out" "buzz-mention $rid" "a timed-out lookup cannot authorize the unaddressed reply"
+  assert_contains "$out" "buzz-bridge-error thread lookup budget exhausted" \
+    "a lookup that ran out of time reports the thread it never read"
   assert_equals 'explicit mention during slow lookup' "$(jq -r .text "$home/state/x-inbox/$rid.json")" \
     "an explicit mention remains usable when thread history times out"
   pass "unaddressed replies require a complete signed thread with prior bridge participation"
@@ -891,6 +940,7 @@ fm_test_run \
   test_poll_drops_everything_else \
   test_poll_accepts_only_addressed_owner_thread_replies \
   test_poll_spends_the_thread_budget_on_signed_roots \
+  test_poll_lookup_budget_drains_across_polls \
   test_poll_requires_complete_thread_history \
   test_poll_ingests_a_mention_that_carries_an_attachment \
   test_poll_deduplicates_across_restarts \

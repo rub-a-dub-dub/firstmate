@@ -19,12 +19,13 @@
 # messages from any member are newer than that mention. The read is
 # filtered and verified by bin/fm-buzz-verify.py. For potential unaddressed
 # replies, a separate budget reads up to THREAD_LOOKUPS distinct threads at up
-# to THREAD_LIMIT events per lookup. Failed, missing, or capped thread reads
-# supply no evidence for implicit intake and do not affect the channel cursor. A
-# thread read the CLI refused is reported, because a surface that is simply gone
-# would otherwise leave implicit intake permanently inert and indistinguishable
-# from an owner who always mentions the bridge; exhausting the lookup budget is
-# the documented degradation and stays quiet.
+# to THREAD_LIMIT events per lookup, skipping any thread whose reply this home
+# has already handled so a re-read cannot starve an older thread out of the
+# budget. Failed, missing, or capped thread reads supply no evidence for implicit
+# intake and do not affect the channel cursor. Both a thread read the CLI refused
+# and a budget that ran out before every queued thread was read are reported: the
+# cursor moves on past those replies, so staying quiet would leave them
+# indistinguishable from messages the bridge never saw.
 #
 # For each accepted event, in order, before the cursor may advance:
 #   1. claim the request binding state/buzz/requests/<request_id>.json
@@ -42,8 +43,9 @@
 #
 # Diagnostics wake once per distinct message as "buzz-bridge-error <reason>":
 # configuration problems, an auth refusal, a malformed read, a thread read the
-# CLI refused, and a catch-up range too large to drain in one poll. A relay or
-# network failure on the intake read is silent; the next cycle retries it.
+# CLI refused, a thread lookup budget that ran out, and a catch-up range too
+# large to drain in one poll. A relay or network failure on the intake read is
+# silent; the next cycle retries it.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -128,10 +130,11 @@ VERIFY=(
 read_thread_history() (
   check_timeout=${FM_CHECK_TIMEOUT:-30}
   case "$check_timeout" in ''|*[!0-9]*|0) check_timeout=30 ;; esac
-  # Reserve time for the existing delivery loop and for signature verification,
-  # whose ceiling is the intake page plus THREAD_LOOKUPS x THREAD_LIMIT events:
-  # every event a history holds is verified before its signer can be trusted, so
-  # raising either thread constant spends this reserve.
+  # Reserve time for the existing delivery loop, for the queue scan above, and
+  # for signature verification - whose ceiling is TWICE the intake page (the two
+  # verify passes share nothing) plus THREAD_LOOKUPS x THREAD_LIMIT, because every
+  # event a history holds is verified before its signer can be trusted. Raising
+  # any of those three constants spends this reserve.
   budget=$((10#$check_timeout - SECONDS - 15))
   [ "$budget" -gt 0 ] || return 0
   [ "$budget" -le "$THREAD_SECONDS" ] || budget=$THREAD_SECONDS
@@ -151,19 +154,51 @@ read_thread_history() (
       fi
     done
     exit "$rc"
-  ' _ "$THREAD_LOOKUPS" "$BUZZ_CHANNEL" "$THREAD_LIMIT" "$WORK" < "$WORK/roots"
+  ' _ "$THREAD_LOOKUPS" "$BUZZ_CHANNEL" "$THREAD_LIMIT" "$WORK" < "$WORK/wanted"
   rc=$?
-  # Exhausting the budget is the documented degradation, not a surface problem.
+  # Running out of time is not a surface problem; the unread roots report it.
   fm_timed_out "$rc" && return 0
   return "$rc"
 )
 
+# Spend the scarce lookups only on threads whose reply still has somewhere to go.
+# Verify lists every candidate newest-first and cannot know what this home has
+# already handled, so a thread answered on an earlier poll would otherwise be
+# looked up again on every re-read inside the overlap and starve an older one out
+# of the budget for good. A binding the delivery loop below would still act on -
+# absent, or staged and untouched - keeps its thread in the queue.
 THREAD_ERROR=
-if "${VERIFY[@]}" --thread-roots < "$WORK/all" > "$WORK/roots" 2>/dev/null && [ -s "$WORK/roots" ]; then
+WANTED=0
+: > "$WORK/wanted"
+if "${VERIFY[@]}" --thread-roots < "$WORK/all" > "$WORK/candidates" 2>/dev/null; then
+  while read -r root eid; do
+    [ -n "$root" ] && [ -n "$eid" ] || continue
+    grep -qxF -- "$root" "$WORK/wanted" && continue
+    rid=$(fm_buzz_request_id "$eid") || continue
+    if binding=$(fm_buzz_binding_get "$rid"); then
+      printf '%s' "$binding" \
+        | jq -e '.state == "staged" and .answer_posted != true and .followup_posted != true and .dismissed != true' \
+          >/dev/null || continue
+    fi
+    printf '%s\n' "$root" >> "$WORK/wanted"
+    WANTED=$((WANTED + 1))
+    # One past the budget already proves it overflows; counting the rest costs
+    # a request id per candidate and changes nothing.
+    [ "$WANTED" -le "$THREAD_LOOKUPS" ] || break
+  done < "$WORK/candidates"
+fi
+if [ "$WANTED" -gt 0 ]; then
   read_thread_history 2>/dev/null
   rc=$?
-  [ "$rc" -eq 0 ] \
-    || THREAD_ERROR="buzz CLI thread read failed (exit $rc); unaddressed replies need an explicit mention"
+  if [ "$rc" -ne 0 ]; then
+    THREAD_ERROR="buzz CLI thread read failed (exit $rc); unaddressed replies need an explicit mention"
+  else
+    while IFS= read -r root; do
+      [ -f "$WORK/$root" ] && continue
+      THREAD_ERROR="thread lookup budget exhausted; unaddressed replies in the threads it did not reach need an explicit mention"
+      break
+    done < "$WORK/wanted"
+  fi
 fi
 "${VERIFY[@]}" --history-dir "$WORK" --thread-limit "$THREAD_LIMIT" < "$WORK/all" > "$WORK/accepted" 2>/dev/null \
   || { emit_error_once "event verification failed to run"; exit 0; }

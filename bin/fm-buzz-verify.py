@@ -11,16 +11,20 @@ owner requests, oldest first:
 
 Signature verification is the one expensive stage and the relay is not trusted
 to have checked it, so every distinct candidate the caller hands over is
-verified. The input is what bounds the work, in two terms. The intake read:
+verified. The input is what bounds the work, in three terms, because the caller
+runs this module twice over the same page. The intake candidates, TWICE over:
 bin/fm-buzz-poll.sh makes one newest-first read of at most its page limit, so an
-over-budget window arrives capped at its newest events. That read is scoped by
-channel and kind, not by author, so the owner's latest mention is inside it
-unless more than that page limit of channel messages are newer than the mention.
-Then the thread histories, which `private_thread` must verify event by event
-before it can trust any signer in them: at most one history per lookup the caller
-made, each capped at its thread limit. Both ceilings are the caller's to choose,
-and the sweep stays inside the watcher's per-check timeout only while their sum
-does; raising either one is a change to that budget.
+over-budget window arrives capped at its newest events, and each of the two
+processes verifies those candidates independently - nothing is shared between
+them. That read is scoped by channel and kind, not by author, so the owner's
+latest mention is inside it unless more than that page limit of channel messages
+are newer than the mention. Then, in the second process only, the thread
+histories, which `private_thread` must verify event by event before it can trust
+any signer in them: at most one history per lookup the caller made, each capped at
+its thread limit. So the ceiling is twice the page limit plus lookups x thread
+limit, every term of it the caller's to choose. The sweep stays inside the
+watcher's per-check timeout only while that sum does; raising any one of them is a
+change to that budget.
 
 The paging overlap re-delivers the same event, so candidates are deduplicated
 per distinct (id, sig) pair before the signature stage. The id alone would not
@@ -42,10 +46,11 @@ Only the Python standard library is used: the secp256k1 arithmetic below is the
 BIP-340 reference verification algorithm, not a protocol client.
 Run it isolated (`python3 -I`).
 
-`--thread-roots` prints the distinct roots worth looking up, newest candidate
-first. Only signature-verified candidates contribute a root: the caller's lookup
-budget is scarce, and the event id fixes every signed field but is itself
-recomputable by anyone, so an unsigned copy attributed to the owner would
+`--thread-roots` prints one `<thread root> <event id>` line per candidate worth
+looking up, newest first; the caller groups them, since only it can tell which
+events it has already handled. Only signature-verified candidates are listed: the
+caller's lookup budget is scarce, and the event id fixes every signed field but is
+itself recomputable by anyone, so an unsigned copy attributed to the owner would
 otherwise crowd a real reply's thread out of that budget and drop it silently.
 `--history-dir` supplies one completed `messages thread` result per root, using
 the root id as the filename. A result at the requested limit may be truncated.
@@ -267,11 +272,9 @@ def main(argv):
             unique.setdefault((ev["id"], ev["sig"]), ev)
     ordered = sorted(unique.values(), key=lambda ev: (ev["created_at"], ev["id"]))
     if args.thread_roots:
-        roots = dict.fromkeys(
-            thread_refs(ev) for ev in reversed(ordered) if not mentions(ev, args.owner) and signed(ev)
-        )
-        for root in roots:
-            print(root)
+        for ev in reversed(ordered):
+            if not mentions(ev, args.owner) and signed(ev):
+                print(thread_refs(ev), ev["id"])
         return 0
 
     histories = {}
