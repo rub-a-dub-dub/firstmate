@@ -67,8 +67,9 @@
 # reaction, sent sequentially newest first, each bounded to REACTION_BOUND and
 # only while the watcher's check budget still has room. Newest first because a
 # sweep the budget cuts short should have acknowledged the mentions the owner is
-# still waiting on. Reaction failures are best effort, so no wake or cursor
-# advance ever depends on one.
+# still waiting on. A reaction that fails, or that the budget leaves no room
+# for, is skipped silently and never retried, so no wake and no cursor advance
+# ever depends on one.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -187,7 +188,7 @@ clear_error() {
 
 react_to_request() {
   fm_buzz_enabled || return 0
-  fm_buzz_cli --timeout "$REACTION_BOUND" reactions add --event "$1" --emoji '👀' \
+  fm_buzz_cli "$REACTION_BOUND" reactions add --event "$1" --emoji '👀' \
     </dev/null >/dev/null 2>&1 || true
 }
 
@@ -217,7 +218,7 @@ LOWER=$((SINCE - BUZZ_READ_OVERLAP))
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/fm-buzz-poll.XXXXXX") || exit 0
 
-fm_buzz_cli messages get --channel "$BUZZ_CHANNEL" --kinds 9 \
+fm_buzz_cli_retry messages get --channel "$BUZZ_CHANNEL" --kinds 9 \
   --since "$LOWER" --before "$NOW" --limit "$PAGE_LIMIT" > "$WORK/all" 2>/dev/null
 rc=$?
 fm_buzz_enabled || exit 0

@@ -944,7 +944,7 @@ SH
     STATE="$FM_HOME/state"
     CONFIG="$FM_HOME/config"
     . "$1" && fm_buzz_load_config || exit 99
-    fm_buzz_cli messages get
+    fm_buzz_cli_retry messages get
   ' _ "$ROOT/bin/fm-buzz-lib.sh"; rc=$?
   expect_code 12 "$rc" "a retry scratch allocation failure"
 

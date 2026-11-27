@@ -39,22 +39,19 @@
 #   fm_buzz_binding_prune           - drop bindings past the 7-day window
 #   fm_buzz_secret_read             - print the bridge secret from the key file
 #                                     (only ever into a signing call's env)
-#   fm_buzz_cli [--timeout <seconds>] <args...>
-#                                  - call the relay as the bridge identity, for
-#                                    any call whose stdin need not reach the
-#                                    CLI, with one retry for a stale-timestamp
-#                                    refusal; --timeout bounds the whole
-#                                    operation, and stderr is consumed by the
-#                                    retry match, not forwarded
-#   fm_buzz_cli_retry <args...>     - the unbounded retrying form fm_buzz_cli
-#                                     itself calls: 11 when a stale-timestamp
-#                                     refusal survives the retry, 12 with no
-#                                     scratch space for the attempt's output
-#   fm_buzz_cli_once <args...>      - one attempt, for a call whose stdin must
-#                                    reach the CLI; the refusal is reported
-#                                    rather than retried
+#   fm_buzz_cli <seconds> <args...> - one attempt as the bridge identity, with
+#                                     the whole operation bounded to <seconds>
+#                                     by fm_run_timed
+#   fm_buzz_cli_retry <args...>     - the retrying form, for the two reads: one
+#                                     retry for a stale-timestamp refusal, 11
+#                                     when that refusal survives the retry, 12
+#                                     with no scratch space for the attempt's
+#                                     output; stdin does not reach the CLI, and
+#                                     stderr is consumed by the retry match
+#   fm_buzz_cli_once <args...>      - one unbounded attempt; stdin reaches the
+#                                    CLI and the refusal is reported as it came
 #   fm_buzz_export_cli              - export the config and functions a bounded
-#                                     child shell needs to call fm_buzz_cli_retry
+#                                     child shell needs to make either call
 #                                     itself
 
 if ! command -v fmx_private_artifact_publish_stdin >/dev/null 2>&1; then
@@ -224,14 +221,15 @@ fm_buzz_cli_once() {
   )
 }
 
-# Retry one verified NIP-98 timestamp rejection with a fresh signature. The
-# retry fires only after the relay refused the attempt, so nothing it replays
-# ever landed: the best-effort eyes reaction belongs here as safely as the two
-# reads do. A reply send stays on fm_buzz_cli_once because its piped body cannot
-# be replayed, and it keeps reporting the refusal. All other results pass
-# through immediately. Return 11 if the timestamp rejection persists, or 12 when
-# there is no scratch space to hold the last attempt's stdout, which is the only
-# CLI output forwarded.
+# Retry one verified NIP-98 timestamp rejection with a fresh signature. The two
+# reads belong here, because a refused read is the false alarm this retry
+# exists to remove, and replaying one is safe: the retry fires only after the
+# relay refused the attempt, so nothing it replays ever landed. A reply send
+# stays on fm_buzz_cli_once because its piped body cannot be replayed, and it
+# keeps reporting the refusal. All other results pass through immediately.
+# Return 11 if the timestamp rejection persists, or 12 when there is no scratch
+# space to hold the last attempt's stdout, which is the only CLI output
+# forwarded.
 fm_buzz_cli_retry() (
   local work err rc attempt
   # 12 is this repository's own status, reserved like 10 above.
@@ -265,25 +263,18 @@ fm_buzz_export_cli() {
   export BUZZ_RELAY_URL BUZZ_BRIDGE_KEY_FILE BUZZ_CLI CONFIG
 }
 
-# The retrying entry point: same statuses as fm_buzz_cli_retry. Stdin never
-# reaches the CLI, because a retried attempt could not replay it, and the CLI's
-# stderr is consumed by the retry's rejection match rather than forwarded, so a
-# caller that needs the CLI's own error text must call fm_buzz_cli_once and
-# accept that the refusal is not retried. The --timeout form bounds the whole
-# operation under fm_run_timed, so the status can also be
-# one that runner owns rather than a Buzz meaning (see fm-timeout-lib.sh, which
-# owns those); a caller mapping exit codes to Buzz meanings must screen them
-# first.
+# The bounded entry point, for the one call that must fit inside a deadline the
+# caller owns: a single attempt, because nothing waits on the best-effort
+# acknowledgement that uses it, and a retry's delay would spend the very bound
+# it is given. The status can be one fm_run_timed owns rather than a Buzz
+# meaning (see fm-timeout-lib.sh, which owns those); a caller mapping exit codes
+# to Buzz meanings must screen them first. A read that should survive a stale
+# timestamp calls fm_buzz_cli_retry instead.
 fm_buzz_cli() (
-  if [ "${1:-}" = --timeout ]; then
-    local seconds=$2
-    shift 2
-    # Bound the complete operation, including any retry.
-    # shellcheck source=bin/fm-timeout-lib.sh
-    . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-timeout-lib.sh"
-    fm_buzz_export_cli
-    fm_run_timed "$seconds" "$BASH" -c 'fm_buzz_cli_retry "$@"' _ "$@"
-  else
-    fm_buzz_cli_retry "$@"
-  fi
+  local seconds=$1
+  shift
+  # shellcheck source=bin/fm-timeout-lib.sh
+  . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-timeout-lib.sh"
+  fm_buzz_export_cli
+  fm_run_timed "$seconds" "$BASH" -c 'fm_buzz_cli_once "$@"' _ "$@"
 )
