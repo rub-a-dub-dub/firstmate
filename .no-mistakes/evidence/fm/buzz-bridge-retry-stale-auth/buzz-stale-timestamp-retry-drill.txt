@@ -1,0 +1,106 @@
+Buzz bridge: dark-wake stale-timestamp refusal, end-to-end drill
+================================================================
+
+Reported incident: the home-local Buzz bridge woke the owner with
+"relay refused the bridge key (auth error); check channel membership" while the
+Mac lid was closed. The Buzz CLI's captured stderr showed the real cause:
+
+  rc=3 {"error":"auth_error","message":"auth error: relay requires authentication
+  (NIP-98: NIP-98 HTTP Auth verification failed: event timestamp outside +/-60s
+  window (delta: 106s)) ...","retryable":false}
+
+The drill below runs the real bin/fm-buzz.sh and bin/fm-buzz-poll.sh against a
+fake pinned Buzz CLI that returns exactly that payload, and prints what the
+owner would see: the wake lines the poll emits (the watcher turns these into
+notifications), the delivered request, and `fm-buzz.sh status`.
+
+Driver: buzz-skew-drill.sh (in this evidence directory)
+Scenario "once"       = one refused signature, then the relay accepts (the incident)
+Scenario "persistent" = the host clock stays outside the window
+Scenario "membership" = a genuine key/membership refusal
+
+################ BEFORE (base 42d104a4) - the false alarm ################
+
+### before-once: relay refuses the bridge signature (once)
+
+--- owner-visible wake lines from one sweep of bin/fm-buzz-poll.sh ---
+buzz-bridge-error relay refused the bridge key (auth error); check channel membership
+
+--- Buzz CLI calls the bridge made ---
+buzz --format json messages get --channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b --kinds 9 --since 1799999700 --before 1800000000 --limit 200
+
+--- the owner's request, as delivered to the inbox ---
+(no request delivered)
+
+--- fm-buzz.sh status ---
+bridge: enabled
+cursor: 1800000000
+last poll diagnostic: relay refused the bridge key (auth error); check channel membership
+
+--- poll stderr (must stay empty: raw CLI auth payload is private) ---
+(empty)
+
+################ AFTER (8c0c3105) - same refusal, retried ################
+
+### after-once: relay refuses the bridge signature (once)
+
+--- owner-visible wake lines from one sweep of bin/fm-buzz-poll.sh ---
+buzz-mention buzz-ae49c6e2773f8f547762c8ef98bb0e8912c05ece
+
+--- Buzz CLI calls the bridge made ---
+buzz --format json messages get --channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b --kinds 9 --since 1799999700 --before 1800000000 --limit 200
+buzz --format json messages get --channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b --kinds 9 --since 1799999700 --before 1800000000 --limit 200
+buzz --format json reactions add --event 2227d9cb112eabc0cf20b1259859d39a75c2f07b2ac5bc4c2c682d61adb6bdb3 --emoji 👀
+
+--- the owner's request, as delivered to the inbox ---
+buzz-ae49c6e2773f8f547762c8ef98bb0e8912c05ece: @Firstmate what is the branch status?
+
+--- fm-buzz.sh status ---
+bridge: enabled
+cursor: 1800000000
+
+--- poll stderr (must stay empty: raw CLI auth payload is private) ---
+(empty)
+
+########### AFTER - a genuine membership refusal still alerts ###########
+
+### after-membership: relay refuses the bridge signature (membership)
+
+--- owner-visible wake lines from one sweep of bin/fm-buzz-poll.sh ---
+buzz-bridge-error relay refused the bridge key (auth error); check channel membership
+
+--- Buzz CLI calls the bridge made ---
+buzz --format json messages get --channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b --kinds 9 --since 1799999700 --before 1800000000 --limit 200
+
+--- the owner's request, as delivered to the inbox ---
+(no request delivered)
+
+--- fm-buzz.sh status ---
+bridge: enabled
+cursor: 1800000000
+last poll diagnostic: relay refused the bridge key (auth error); check channel membership
+
+--- poll stderr (must stay empty: raw CLI auth payload is private) ---
+(empty)
+
+##### AFTER - skew that outlives the retry: no wake, visible in status #####
+
+### after-persistent: relay refuses the bridge signature (persistent)
+
+--- owner-visible wake lines from one sweep of bin/fm-buzz-poll.sh ---
+(none - no notification)
+
+--- Buzz CLI calls the bridge made ---
+buzz --format json messages get --channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b --kinds 9 --since 1799999700 --before 1800000000 --limit 200
+buzz --format json messages get --channel 0b7f6a4e-1c2d-4e3f-8a9b-0c1d2e3f4a5b --kinds 9 --since 1799999700 --before 1800000000 --limit 200
+
+--- the owner's request, as delivered to the inbox ---
+(no request delivered)
+
+--- fm-buzz.sh status ---
+bridge: enabled
+cursor: 1800000000
+last poll diagnostic: relay refused the bridge signature as stale (clock skew); the intake read is retried on the next sweep
+
+--- poll stderr (must stay empty: raw CLI auth payload is private) ---
+(empty)
