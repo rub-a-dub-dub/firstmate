@@ -924,6 +924,37 @@ test_poll_holds_cursor_on_read_failure() {
   pass "a failed read holds the cursor, reports auth refusals once, and stays quiet on network failure"
 }
 
+test_retry_scratch_failure_reports_the_local_error() {
+  local home out rc
+  local -x FAKE_REAL_MKTEMP
+  FAKE_REAL_MKTEMP=$(command -v mktemp) || fail "mktemp is required"
+  home=$(new_home retry-scratch-failure)
+  enable "$home"
+  cat > "$home/bin/mktemp" <<'SH'
+#!/usr/bin/env bash
+case "${2:-}" in
+  */fm-buzz-cli.*) exit 1 ;;
+esac
+exec "$FAKE_REAL_MKTEMP" "$@"
+SH
+  chmod +x "$home/bin/mktemp"
+
+  # shellcheck disable=SC2016 # The child Bash expands FM_HOME and its argument.
+  BASE_PATH="$home/bin:$BASE_PATH" TMPDIR="$home" run_in "$home" "$BASH" -c '
+    STATE="$FM_HOME/state"
+    CONFIG="$FM_HOME/config"
+    . "$1" && fm_buzz_load_config || exit 99
+    fm_buzz_cli messages get
+  ' _ "$ROOT/bin/fm-buzz-lib.sh"; rc=$?
+  expect_code 12 "$rc" "a retry scratch allocation failure"
+
+  out=$(BASE_PATH="$home/bin:$BASE_PATH" TMPDIR="$home" poll "$home")
+  assert_equals "buzz-bridge-error cannot create scratch space under $home; the bridge could not make the relay call" \
+    "$out" "the poll reports the local scratch-space failure"
+  assert_equals '' "$(cat "$home/cli.log")" "no relay call is made without retry scratch space"
+  pass "a retry scratch allocation failure returns 12 and reports the local error"
+}
+
 test_timestamp_rejection_retries_reads_but_never_a_send() {
   local home ev eid rid out rc body=$'first line\nsecond line'
   home=$(new_home stale-auth-once)
@@ -1603,6 +1634,7 @@ fm_test_run \
   test_poll_wakes_for_every_request_as_it_is_persisted \
   test_poll_reannounces_a_staged_request \
   test_poll_holds_cursor_on_read_failure \
+  test_retry_scratch_failure_reports_the_local_error \
   test_timestamp_rejection_retries_reads_but_never_a_send \
   test_persistent_timestamp_rejection_holds_intake_silently \
   test_a_skew_sweep_does_not_rewake_an_acknowledged_diagnostic \
