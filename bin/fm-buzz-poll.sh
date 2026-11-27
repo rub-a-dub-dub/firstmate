@@ -53,16 +53,16 @@
 # complete, fully persisted range.
 #
 # Diagnostics wake once per distinct message as "buzz-bridge-error <reason>":
-# configuration problems, an auth refusal, a malformed read, a thread read the
-# CLI refused, a thread lookup budget that ran out, a thread too long to check,
-# a catch-up range too large to drain in one poll, and a poll lock whose dead
-# holder nothing can reclaim. A relay or network failure on the intake read is
-# silent; the next cycle retries it. An intake read whose timestamp retry is
-# exhausted records its diagnostic without waking, because the next sweep's
-# fresh signature usually clears it; only a skew that persists keeps the line
-# that fm-buzz.sh status prints, and that record never displaces a diagnostic
-# that already woke, whose text is this repeat suppression's key. See
-# fm-buzz-lib.sh for timestamp retries.
+# configuration problems, an auth refusal, a malformed read, scratch space the
+# retry could not create, a thread read the CLI refused, a thread lookup budget
+# that ran out, a thread too long to check, a catch-up range too large to drain
+# in one poll, and a poll lock whose dead holder nothing can reclaim. A relay or
+# network failure on the intake read is silent; the next cycle retries it. An
+# intake read whose timestamp retry is exhausted records its diagnostic without
+# waking, because the next sweep's fresh signature usually clears it; only a
+# skew that persists keeps the line that fm-buzz.sh status prints, and that
+# record never displaces a diagnostic that already woke, whose text is this
+# repeat suppression's key. See fm-buzz-lib.sh for timestamp retries.
 # Once the range is persisted, every newly bound event gets one best-effort eyes
 # reaction, sent sequentially newest first, each bounded to REACTION_BOUND and
 # only while the watcher's check budget still has room. Newest first because a

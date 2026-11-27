@@ -40,15 +40,22 @@
 #   fm_buzz_secret_read             - print the bridge secret from the key file
 #                                     (only ever into a signing call's env)
 #   fm_buzz_cli [--timeout <seconds>] <args...>
-#                                  - run a read as the bridge identity, with one
-#                                    retry for a stale-timestamp refusal; stdin
-#                                    does not reach the CLI, and its stderr is
-#                                    consumed by the retry match, not forwarded
-#   fm_buzz_cli_once <args...>      - one attempt, for a write no retry may
-#                                    repeat; stdin reaches the CLI
+#                                  - call the relay as the bridge identity, for
+#                                    any call whose stdin need not reach the
+#                                    CLI, with one retry for a stale-timestamp
+#                                    refusal; --timeout bounds the whole
+#                                    operation, and stderr is consumed by the
+#                                    retry match, not forwarded
+#   fm_buzz_cli_retry <args...>     - the unbounded retrying form fm_buzz_cli
+#                                     itself calls: 11 when a stale-timestamp
+#                                     refusal survives the retry, 12 with no
+#                                     scratch space for the attempt's output
+#   fm_buzz_cli_once <args...>      - one attempt, for a call whose stdin must
+#                                    reach the CLI; the refusal is reported
+#                                    rather than retried
 #   fm_buzz_export_cli              - export the config and functions a bounded
 #                                     child shell needs to call fm_buzz_cli_retry
-#                                     (same contract as fm_buzz_cli) itself
+#                                     itself
 
 if ! command -v fmx_private_artifact_publish_stdin >/dev/null 2>&1; then
   # shellcheck source=bin/fm-x-lib.sh
