@@ -198,7 +198,7 @@ fi
 i=0
 while [ "$i" -lt "$N" ]; do
   OUT=$(printf '%s' "$CHUNKS" | jq -j --argjson i "$i" '.[$i]' \
-    | fm_buzz_cli messages send --channel "$BUZZ_CHANNEL" --reply-to "$PARENT" --content - 2>/dev/null)
+    | fm_buzz_cli_once messages send --channel "$BUZZ_CHANNEL" --reply-to "$PARENT" --content - 2>/dev/null)
   rc=$?
   if [ "$rc" -ne 0 ] || ! printf '%s' "$OUT" | jq -e '.accepted == true' >/dev/null 2>&1; then
     [ "$rc" -ne 10 ] || echo "fm-buzz-reply: cannot read the bridge secret from BUZZ_BRIDGE_KEY_FILE" >&2

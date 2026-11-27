@@ -26,17 +26,17 @@
 # to THREAD_LIMIT events per lookup, skipping any thread whose reply this home
 # has already handled so a re-read cannot starve an older thread out of the
 # budget. Failed, missing, or capped thread reads supply no evidence for implicit
-# intake and do not affect the channel cursor, which always moves on. Three of
-# those are reported, because the cursor moving past a reply would otherwise leave
-# it indistinguishable from a message the bridge never saw: a read the CLI
-# refused, a budget that ran out before every queued thread was read, and a
-# history that came back at THREAD_LIMIT, where a complete thread cannot be told
-# from a truncated one. Each is one generic message naming no thread, so a single
-# wake can stand for several dropped replies. A thread others have joined is
-# refused under rule 3 yet still spends a lookup, so a busy shared thread can
-# delay checking another thread by a sweep or more. An explicit @Firstmate mention
-# needs no thread read at all and always works: that is the way past every limit
-# here, and what each of these diagnostics asks the owner for.
+# intake. Three of those are reported, because the cursor moving past a reply
+# would otherwise leave it indistinguishable from a message the bridge never
+# saw: a read the CLI refused, a budget that ran out before every queued thread
+# was read, and a history that came back at THREAD_LIMIT, where a complete
+# thread cannot be told from a truncated one. Each is one generic message naming
+# no thread, so a single wake can stand for several dropped replies. A thread
+# others have joined is refused under rule 3 yet still spends a lookup, so a
+# busy shared thread can delay checking another thread by a sweep or more. An
+# explicit @Firstmate mention needs no thread read at all and always works:
+# that is the way past every limit here, and what each of these diagnostics
+# asks the owner for.
 #
 # For each accepted event, in order, before the cursor may advance:
 #   1. claim the request binding state/buzz/requests/<request_id>.json
@@ -53,11 +53,16 @@
 # complete, fully persisted range.
 #
 # Diagnostics wake once per distinct message as "buzz-bridge-error <reason>":
-# configuration problems, an auth refusal, a malformed read, a thread read the
-# CLI refused, a thread lookup budget that ran out, a thread too long to check,
-# a catch-up range too large to drain in one poll, and a poll lock whose dead
-# holder nothing can reclaim. A relay or network failure
-# on the intake read is silent; the next cycle retries it.
+# configuration problems, an auth refusal, a malformed read, scratch space the
+# retry could not create, a thread read the CLI refused, a thread lookup budget
+# that ran out, a thread too long to check, a catch-up range too large to drain
+# in one poll, and a poll lock whose dead holder nothing can reclaim. A relay or
+# network failure on the intake read is silent; the next cycle retries it. An
+# intake read whose timestamp retry is exhausted records its diagnostic without
+# waking, because the next sweep's fresh signature usually clears it; only a
+# skew that persists keeps the line that fm-buzz.sh status prints, and that
+# record never displaces a diagnostic that already woke, whose text is this
+# repeat suppression's key. See fm-buzz-lib.sh for timestamp retries.
 # Once the range is persisted, every newly bound event gets one best-effort eyes
 # reaction, sent sequentially newest first, each bounded to REACTION_BOUND and
 # only while the watcher's check budget still has room. Newest first because a
@@ -167,8 +172,13 @@ emit_error_once() {
     return 0
   fi
   emit_wake "buzz-bridge-error $msg" || return 0
+  record_error "$msg"
+}
+
+# The same diagnostic fm-buzz.sh status prints, without the wake.
+record_error() {
   fmx_private_artifact_dir_prepare "$STATE/buzz" >/dev/null 2>&1 || true
-  printf '%s\n' "$msg" | fmx_private_artifact_publish_stdin "$STATE/buzz" poll.error 600 2>/dev/null || true
+  printf '%s\n' "$1" | fmx_private_artifact_publish_stdin "$STATE/buzz" poll.error 600 2>/dev/null || true
 }
 
 clear_error() {
@@ -178,7 +188,7 @@ clear_error() {
 
 react_to_request() {
   fm_buzz_enabled || return 0
-  fm_buzz_cli --timeout "$REACTION_BOUND" reactions add --event "$1" --emoji '👀' \
+  fm_buzz_cli "$REACTION_BOUND" reactions add --event "$1" --emoji '👀' \
     </dev/null >/dev/null 2>&1 || true
 }
 
@@ -208,7 +218,7 @@ LOWER=$((SINCE - BUZZ_READ_OVERLAP))
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/fm-buzz-poll.XXXXXX") || exit 0
 
-fm_buzz_cli messages get --channel "$BUZZ_CHANNEL" --kinds 9 \
+fm_buzz_cli_retry messages get --channel "$BUZZ_CHANNEL" --kinds 9 \
   --since "$LOWER" --before "$NOW" --limit "$PAGE_LIMIT" > "$WORK/all" 2>/dev/null
 rc=$?
 fm_buzz_enabled || exit 0
@@ -217,6 +227,10 @@ case "$rc" in
   2) exit 0 ;;
   3) emit_error_once "relay refused the bridge key (auth error); check channel membership"; exit 0 ;;
   10) emit_error_once "cannot read the bridge secret from BUZZ_BRIDGE_KEY_FILE"; exit 0 ;;
+  11) fmx_private_artifact_file_valid "$STATE/buzz" poll.error 600 \
+        || record_error "relay refused the bridge signature as stale (clock skew); the intake read is retried on the next sweep"
+      exit 0 ;;
+  12) emit_error_once "cannot create scratch space under ${TMPDIR:-/tmp}; the bridge could not make the relay call"; exit 0 ;;
   *) emit_error_once "buzz CLI read failed (exit $rc)"; exit 0 ;;
 esac
 COUNT=$(jq -er 'if type == "array" then length else error("not an array") end' "$WORK/all" 2>/dev/null) \
@@ -237,23 +251,30 @@ read_thread_history() (
   # for signature verification - whose ceiling is TWICE the intake page (the two
   # verify passes share nothing) plus THREAD_LOOKUPS x THREAD_LIMIT, because every
   # event a history holds is verified before its signer can be trusted. Raising
-  # any of those three constants spends this reserve.
+  # any of those three constants spends this reserve, and so does every read
+  # whose timestamp retry succeeds: each charges that retry's delay and leaves
+  # the loop running, so up to THREAD_LOOKUPS of them can stack, because the
+  # loop stops only on a refusal that outlived its own retry.
   budget=$((CHECK_TIMEOUT - SECONDS - 15))
   [ "$budget" -gt 0 ] || return 0
   [ "$budget" -le "$THREAD_SECONDS" ] || budget=$THREAD_SECONDS
   # shellcheck source=bin/fm-timeout-lib.sh
   . "$SCRIPT_DIR/fm-timeout-lib.sh"
-  export -f fm_buzz_cli fm_buzz_secret_read
-  export BUZZ_RELAY_URL BUZZ_BRIDGE_KEY_FILE BUZZ_CLI
+  fm_buzz_export_cli
   # shellcheck disable=SC2016  # Arguments expand in the bounded child shell.
   fm_run_timed "$budget" "$BASH" -c '
     rc=0
     for ((i = 0; i < $1; i++)); do
       IFS= read -r root || break
-      if fm_buzz_cli messages thread --channel "$2" --event "$root" --limit "$3" < /dev/null > "$4/partial"; then
+      if fm_buzz_cli_retry messages thread --channel "$2" --event "$root" --limit "$3" < /dev/null > "$4/partial"; then
         mv "$4/partial" "$4/$root"
       else
-        rc=$?
+        s=$?
+        if [ "$s" -ne 11 ] || [ "$rc" -eq 0 ]; then rc=$s; fi
+        # A refusal that outlived its own retry is the host clock, not this one
+        # thread: the queued reads would spend their delay to be refused too,
+        # and the budget they overran would report starvation instead of skew.
+        [ "$s" -eq 11 ] && break
       fi
     done
     exit "$rc"
@@ -293,7 +314,11 @@ fi
 if [ "$WANTED" -gt 0 ]; then
   read_thread_history 2>/dev/null
   rc=$?
-  if [ "$rc" -ne 0 ]; then
+  if [ "$rc" -eq 11 ]; then
+    THREAD_ERROR="buzz thread read refused: request timestamp outside the relay window after retry (clock skew or sleep); unaddressed replies need an explicit mention"
+  elif [ "$rc" -eq 12 ]; then
+    THREAD_ERROR="cannot create scratch space under ${TMPDIR:-/tmp}; unaddressed replies need an explicit mention"
+  elif [ "$rc" -ne 0 ]; then
     THREAD_ERROR="buzz CLI thread read failed (exit $rc); unaddressed replies need an explicit mention"
   else
     CAPPED=0
