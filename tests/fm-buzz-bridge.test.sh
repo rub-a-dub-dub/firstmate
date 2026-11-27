@@ -1035,6 +1035,8 @@ test_disable_during_the_retry_window_records_nothing() {
 
 test_thread_timestamp_diagnostic_requires_every_failure_to_be_timestamp() {
   local home root root_id tags reply next_root next_root_id next_tags next_reply out
+  local i extra_root extra_id extra_tags
+  local -a extra_events=()
   home=$(new_home stale-auth-thread)
   enable "$home"
   age_cursor "$home" $((NOW - 600))
@@ -1057,11 +1059,20 @@ test_thread_timestamp_diagnostic_requires_every_failure_to_be_timestamp() {
 
   age_cursor "$home" $((NOW - 600))
   : > "$home/cli.log"
+  for i in 1 2; do
+    extra_root=$(sign_event "$OWNER_SK" $((NOW - 900 - i)) 9 "[[\"h\",\"$CHANNEL\"]]" "older root $i")
+    extra_id=$(jq -r .id <<<"$extra_root")
+    extra_tags=$(jq -cn --arg c "$CHANNEL" --arg r "$extra_id" '[["h",$c],["e",$r,"","reply"]]')
+    extra_events+=("$extra_root" "$(sign_event "$OWNER_SK" $((NOW - 20 - i)) 9 "$extra_tags" "older unaddressed reply $i")")
+  done
+  set_events "$home" "$root" "$reply" "$next_root" "$next_reply" "${extra_events[@]}"
   out=$(FAKE_AUTH_COMMANDS=thread FAKE_AUTH_MODE=persistent poll "$home")
   assert_equals "buzz-bridge-error buzz thread read refused: request timestamp outside the relay window after retry (clock skew or sleep); unaddressed replies need an explicit mention" "$out" \
-    "a thread read the skew refused names the skew and asks for an explicit mention"
+    "four roots queued under persistent skew report the skew instead of budget exhaustion"
   assert_equals 2 "$(grep -c 'messages thread' "$home/cli.log")" \
-    "the first refused read retries once and the queued read is not attempted"
+    "the first refused read retries once and the other three queued reads are not attempted"
+  assert_equals 2 "$(grep -c "messages thread .*--event $next_root_id " "$home/cli.log")" \
+    "both attempts read the newest reply's root"
   assert_equals '' "$(only_rid "$home")" "an unread thread supplies no evidence for implicit intake"
   assert_equals "$NOW" "$(jq -r .since "$home/state/buzz/cursor.json")" "the cursor advances for a reported thread read"
   pass "a thread failure names skew only when every failed root exhausted the timestamp retry"
