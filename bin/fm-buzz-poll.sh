@@ -60,7 +60,9 @@
 # silent; the next cycle retries it. An intake read whose timestamp retry is
 # exhausted records its diagnostic without waking, because the next sweep's
 # fresh signature usually clears it; only a skew that persists keeps the line
-# that fm-buzz.sh status prints. See fm-buzz-lib.sh for timestamp retries.
+# that fm-buzz.sh status prints, and that record never displaces a diagnostic
+# that already woke, whose text is this repeat suppression's key. See
+# fm-buzz-lib.sh for timestamp retries.
 # Once the range is persisted, every newly bound event gets one best-effort eyes
 # reaction, sent sequentially newest first, each bounded to REACTION_BOUND and
 # only while the watcher's check budget still has room. Newest first because a
@@ -224,7 +226,9 @@ case "$rc" in
   2) exit 0 ;;
   3) emit_error_once "relay refused the bridge key (auth error); check channel membership"; exit 0 ;;
   10) emit_error_once "cannot read the bridge secret from BUZZ_BRIDGE_KEY_FILE"; exit 0 ;;
-  11) record_error "relay refused the bridge signature as stale (clock skew); the intake read is retried on the next sweep"; exit 0 ;;
+  11) fmx_private_artifact_file_valid "$STATE/buzz" poll.error 600 \
+        || record_error "relay refused the bridge signature as stale (clock skew); the intake read is retried on the next sweep"
+      exit 0 ;;
   *) emit_error_once "buzz CLI read failed (exit $rc)"; exit 0 ;;
 esac
 COUNT=$(jq -er 'if type == "array" then length else error("not an array") end' "$WORK/all" 2>/dev/null) \
@@ -260,7 +264,8 @@ read_thread_history() (
       if fm_buzz_cli_retry messages thread --channel "$2" --event "$root" --limit "$3" < /dev/null > "$4/partial"; then
         mv "$4/partial" "$4/$root"
       else
-        rc=$?
+        s=$?
+        if [ "$s" -ne 11 ] || [ "$rc" -eq 0 ]; then rc=$s; fi
       fi
     done
     exit "$rc"

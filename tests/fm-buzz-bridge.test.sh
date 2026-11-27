@@ -982,6 +982,33 @@ test_persistent_timestamp_rejection_holds_intake_silently() {
   pass "an exhausted timestamp retry stays off the wake surface and shows up in status"
 }
 
+test_a_skew_sweep_does_not_rewake_an_acknowledged_diagnostic() {
+  local home out filler
+  home=$(new_home stale-auth-standing)
+  enable "$home"
+  age_cursor "$home" $((NOW - 290))
+  filler=$(jq -cn --arg ch "$CHANNEL" --argjson now "$NOW" '[range(0; 199)
+    | {id: (tostring | ("0" * (64 - length)) + .), pubkey: ("f" * 64),
+       created_at: ($now - 290 + .), kind: 9, tags: [["h", $ch]],
+       content: "chatter", sig: ("0" * 128)}]')
+  sign_event "$OWNER_SK" $((NOW - 30)) 9 "$(mention_tags)" 'the only real request' \
+    | jq -c --argjson f "$filler" '[.] + $f' > "$home/events.json"
+  out=$(poll "$home")
+  assert_contains "$out" "buzz-bridge-error catch-up range exceeds" \
+    "a full page is a standing condition that wakes once"
+  out=$(poll "$home")
+  assert_not_contains "$out" "catch-up range exceeds" \
+    "the unchanged standing condition is suppressed on the next sweep"
+  out=$(FAKE_AUTH_COMMANDS=get FAKE_AUTH_MODE=persistent poll "$home")
+  assert_equals '' "$out" "an exhausted timestamp retry emits no wake"
+  assert_grep "catch-up range exceeds" "$home/state/buzz/poll.error" \
+    "the skew sweep leaves the acknowledged diagnostic in status"
+  out=$(poll "$home")
+  assert_not_contains "$out" "catch-up range exceeds" \
+    "a skew sweep must not resurface a diagnostic the owner already acknowledged"
+  pass "a transient skew sweep does not re-wake a standing diagnostic"
+}
+
 test_disable_during_the_retry_window_records_nothing() {
   local home out root root_id tags reply bridge_reply
   home=$(new_home stale-auth-disabled)
@@ -1550,6 +1577,7 @@ fm_test_run \
   test_poll_holds_cursor_on_read_failure \
   test_timestamp_rejection_retries_reads_but_never_a_send \
   test_persistent_timestamp_rejection_holds_intake_silently \
+  test_a_skew_sweep_does_not_rewake_an_acknowledged_diagnostic \
   test_disable_during_the_retry_window_records_nothing \
   test_persistent_thread_timestamp_rejection_reports_the_unread_thread \
   test_reply_ack_and_one_final_in_thread \
