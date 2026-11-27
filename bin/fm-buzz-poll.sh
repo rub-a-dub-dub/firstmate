@@ -236,7 +236,8 @@ read_thread_history() (
   # for signature verification - whose ceiling is TWICE the intake page (the two
   # verify passes share nothing) plus THREAD_LOOKUPS x THREAD_LIMIT, because every
   # event a history holds is verified before its signer can be trusted. Raising
-  # any of those three constants spends this reserve.
+  # any of those three constants spends this reserve, and so does the one
+  # timestamp-retry delay a refused read can add before the loop above stops.
   budget=$((CHECK_TIMEOUT - SECONDS - 15))
   [ "$budget" -gt 0 ] || return 0
   [ "$budget" -le "$THREAD_SECONDS" ] || budget=$THREAD_SECONDS
@@ -253,6 +254,10 @@ read_thread_history() (
       else
         s=$?
         if [ "$s" -ne 11 ] || [ "$rc" -eq 0 ]; then rc=$s; fi
+        # A refusal that outlived its own retry is the host clock, not this one
+        # thread: the queued reads would spend their delay to be refused too,
+        # and the budget they overran would report starvation instead of skew.
+        [ "$s" -eq 11 ] && break
       fi
     done
     exit "$rc"

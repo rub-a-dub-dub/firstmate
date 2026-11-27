@@ -1056,7 +1056,8 @@ test_thread_timestamp_diagnostic_requires_every_failure_to_be_timestamp() {
   out=$(FAKE_AUTH_COMMANDS=thread FAKE_AUTH_MODE=persistent poll "$home")
   assert_equals "buzz-bridge-error buzz thread read refused: request timestamp outside the relay window after retry (clock skew or sleep); unaddressed replies need an explicit mention" "$out" \
     "a thread read the skew refused names the skew and asks for an explicit mention"
-  assert_equals 4 "$(grep -c 'messages thread' "$home/cli.log")" "both thread reads retry exactly once"
+  assert_equals 2 "$(grep -c 'messages thread' "$home/cli.log")" \
+    "the first refused read retries once and the queued read is not attempted"
   assert_equals '' "$(only_rid "$home")" "an unread thread supplies no evidence for implicit intake"
   assert_equals "$NOW" "$(jq -r .since "$home/state/buzz/cursor.json")" "the cursor advances for a reported thread read"
   pass "a thread failure names skew only when every failed root exhausted the timestamp retry"
