@@ -56,8 +56,13 @@
 # configuration problems, an auth refusal, a malformed read, a thread read the
 # CLI refused, a thread lookup budget that ran out, a thread too long to check,
 # a catch-up range too large to drain in one poll, and a poll lock whose dead
-# holder nothing can reclaim. Relay or network failure and exhausted timestamp
-# retries on the intake read stay silent and leave the window for the next sweep.
+# holder nothing can reclaim. A relay or network failure on the intake read is
+# silent; the next cycle retries it. An intake read whose timestamp retry is
+# exhausted records its diagnostic without waking, because the next sweep's
+# fresh signature usually clears it; only a skew that persists keeps the line
+# that fm-buzz.sh status prints, and that record never displaces a diagnostic
+# that already woke, whose text is this repeat suppression's key. See
+# fm-buzz-lib.sh for timestamp retries.
 # Once the range is persisted, every newly bound event gets one best-effort eyes
 # reaction, sent sequentially newest first, each bounded to REACTION_BOUND and
 # only while the watcher's check budget still has room. Newest first because a
@@ -166,8 +171,13 @@ emit_error_once() {
     return 0
   fi
   emit_wake "buzz-bridge-error $msg" || return 0
+  record_error "$msg"
+}
+
+# The same diagnostic fm-buzz.sh status prints, without the wake.
+record_error() {
   fmx_private_artifact_dir_prepare "$STATE/buzz" >/dev/null 2>&1 || true
-  printf '%s\n' "$msg" | fmx_private_artifact_publish_stdin "$STATE/buzz" poll.error 600 2>/dev/null || true
+  printf '%s\n' "$1" | fmx_private_artifact_publish_stdin "$STATE/buzz" poll.error 600 2>/dev/null || true
 }
 
 clear_error() {
@@ -213,9 +223,12 @@ rc=$?
 fm_buzz_enabled || exit 0
 case "$rc" in
   0) ;;
-  2|11) exit 0 ;;
+  2) exit 0 ;;
   3) emit_error_once "relay refused the bridge key (auth error); check channel membership"; exit 0 ;;
   10) emit_error_once "cannot read the bridge secret from BUZZ_BRIDGE_KEY_FILE"; exit 0 ;;
+  11) fmx_private_artifact_file_valid "$STATE/buzz" poll.error 600 \
+        || record_error "relay refused the bridge signature as stale (clock skew); the intake read is retried on the next sweep"
+      exit 0 ;;
   *) emit_error_once "buzz CLI read failed (exit $rc)"; exit 0 ;;
 esac
 COUNT=$(jq -er 'if type == "array" then length else error("not an array") end' "$WORK/all" 2>/dev/null) \

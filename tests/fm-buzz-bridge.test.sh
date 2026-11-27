@@ -975,10 +975,14 @@ test_persistent_timestamp_rejection_holds_intake_silently() {
   assert_equals '' "$(cat "$home/poll.stderr")" "the raw rejection stays private"
   assert_equals 2 "$(grep -c 'messages get' "$home/cli.log")" "the retry is bounded"
   assert_equals $((NOW - 600)) "$(jq -r .since "$home/state/buzz/cursor.json")" "the next poll may read the same window"
-  assert_absent "$home/state/buzz/poll.error" "a persistent skew leaves no diagnostic"
+  out=$(run_in "$home" "$ROOT/bin/fm-buzz.sh" status)
+  assert_contains "$out" "last poll diagnostic: relay refused the bridge signature as stale" \
+    "a persistent skew is visible in status rather than invisible"
+  assert_no_regex 'delta:|retryable|auth_error' "$home/state/buzz/poll.error" "CLI stderr is not written to the diagnostic"
   assert_equals '' "$(poll "$home")" "the next sweep recovers silently"
   assert_equals "$NOW" "$(jq -r .since "$home/state/buzz/cursor.json")" "recovery advances the cursor"
-  pass "an exhausted intake timestamp retry holds the cursor silently"
+  assert_absent "$home/state/buzz/poll.error" "recovery clears the diagnostic"
+  pass "an exhausted intake timestamp retry is off the wake surface and visible in status"
 }
 
 test_a_skew_sweep_does_not_rewake_an_acknowledged_diagnostic() {
