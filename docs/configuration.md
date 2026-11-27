@@ -3200,7 +3200,7 @@ These diagnostics name a condition rather than a message, so one wake can stand 
 The cursor advances for these reported conditions, and an explicit @Firstmate mention needs no thread read.
 Any third party among the events a thread read returns closes that thread to implicit intake, whatever the `e` tags on their post say.
 That history read is `buzz messages thread --channel <channel> --event <root> --limit 50`, and it must return the root event itself: like the newest-first truncation above, that the pinned `relay-v0.3.0` CLI offers this subcommand and scopes it to the one thread is a property of that build, not something this repository can enforce, and it must be re-confirmed before `BUZZ_CLI` is repointed at a newer build.
-A thread read the CLI refuses also wakes the diagnostic unless the refusal qualifies for the timestamp retry described below.
+A thread read the CLI refuses wakes the diagnostic, once the timestamp retry described below has had its one attempt.
 
 Three further limits fall back the same way, to needing an explicit @Firstmate mention in that thread.
 A read that returns a thread's descendants but not its root event - a root aged past the relay's retention, or deleted - cannot establish that Firstmate ever replied there, and because the read itself succeeded nothing tells that apart from a thread Firstmate was never in.
@@ -3220,8 +3220,10 @@ The acknowledgement is best effort, and the bridge does not inspect its `accepte
 Every mention a sweep binds is acknowledged, newest first, for as long as the check budget allows, and none starts once the sweep is within one bounded send of `FM_CHECK_TIMEOUT`.
 A missing 👀 never holds the cursor, the wake, or a reply.
 A new request wakes firstmate with `buzz-mention <request_id>`; a configuration, authorization, thread-lookup, or catch-up problem wakes once per distinct message with `buzz-bridge-error <reason>`, while a relay or network failure on the intake read stays silent until the next sweep.
-When the Buzz CLI reports a NIP-98 timestamp-window rejection, the bridge retries that call once after a short delay with a fresh signature.
-If the rejection persists, the bridge records it in `state/buzz/bridge.log` and leaves any affected read for the next poll without a wake.
+When the Buzz CLI reports a NIP-98 timestamp-window rejection on a read, the bridge retries that call once after a short delay with a fresh signature.
+A reply send is never retried, because a second attempt at the one non-idempotent call the bridge makes could duplicate an owner-visible message; a send refused this way reports the failure the way every other send failure does.
+If the rejection persists on the intake read, the bridge records the diagnostic that `fm-buzz.sh status` prints as `last poll diagnostic` and leaves the window for the next poll, without a wake; a skew that clears on the next sweep therefore passes unannounced, and one that does not is visible in `status`.
+The retry fires only on exit 3 whose stderr slurps to a single JSON value carrying `"error":"auth_error"` and a `message` containing `timestamp outside`: like the newest-first truncation above, that error shape is a property of the pinned `relay-v0.3.0` build, and it must be re-confirmed before `BUZZ_CLI` is repointed at a newer build, because a build that prefixes another stderr line or renames either field silently stops retrying and restores the false alarm.
 A sweep that finds the poll already running skips in silence, but one that finds a poll lock nothing can reclaim reports that the same way, because the condition would otherwise silence every later sweep; the diagnostic names the lock path, and clearing it by hand is what resumes intake.
 
 The listener holds one authenticated WebSocket subscription for new owner mentions in the configured channel.

@@ -39,12 +39,14 @@
 #   fm_buzz_binding_prune           - drop bindings past the 7-day window
 #   fm_buzz_secret_read             - print the bridge secret from the key file
 #                                     (only ever into a signing call's env)
-#   fm_buzz_cli [--timeout <seconds> | --replay-stdin] <args...>
-#                                  - run the pinned CLI as the bridge identity
+#   fm_buzz_cli [--timeout <seconds>] <args...>
+#                                  - run a read as the bridge identity, with one
+#                                    retry for a stale-timestamp refusal
+#   fm_buzz_cli_once <args...>      - one attempt, for a write no retry may
+#                                    repeat; stdin reaches the CLI
 #   fm_buzz_export_cli              - export the config and functions a bounded
 #                                     child shell needs to call fm_buzz_cli_retry
 #                                     (same contract as fm_buzz_cli) itself
-#   fm_buzz_log_stale_auth          - log an exhausted timestamp retry locally
 
 if ! command -v fmx_private_artifact_publish_stdin >/dev/null 2>&1; then
   # shellcheck source=bin/fm-x-lib.sh
@@ -213,24 +215,20 @@ fm_buzz_cli_once() {
   )
 }
 
-# Retry one verified NIP-98 timestamp rejection with a fresh signature. A write
-# that received this HTTP auth rejection was never accepted. All other results
-# pass through immediately, including ambiguous write failures. Return 11 if
-# the timestamp rejection persists. The only CLI output forwarded is the last
-# attempt's stdout. With --replay-stdin each attempt gets the exact same bytes.
+# Retry one verified NIP-98 timestamp rejection with a fresh signature. Only a
+# read belongs here: a second attempt at a write could duplicate an
+# owner-visible effect, so writes call fm_buzz_cli_once and keep reporting the
+# refusal. All other results pass through immediately. Return 11 if the
+# timestamp rejection persists. The only CLI output forwarded is the last
+# attempt's stdout.
 fm_buzz_cli_retry() (
-  local work input=/dev/null err rc attempt
+  local work err rc attempt
   work=$(mktemp -d "${TMPDIR:-/tmp}/fm-buzz-cli.XXXXXX") || return 1
   trap 'rm -rf -- "$work"' EXIT
   trap 'exit 1' HUP INT TERM
-  if [ "${1:-}" = --replay-stdin ]; then
-    input=$work/input
-    cat > "$input" || return 1
-    shift
-  fi
   for attempt in 1 2; do
     rc=0
-    err=$(fm_buzz_cli_once "$@" < "$input" 2>&1 > "$work/out") || rc=$?
+    err=$(fm_buzz_cli_once "$@" < /dev/null 2>&1 > "$work/out") || rc=$?
     if [ "$rc" -ne 3 ] || ! printf '%s\n' "$err" | jq -se '
       length == 1 and (.[0] | .error == "auth_error" and (.message | strings | contains("timestamp outside")))
       ' >/dev/null 2>&1; then
@@ -263,13 +261,3 @@ fm_buzz_cli() (
     fm_buzz_cli_retry "$@"
   fi
 )
-
-fm_buzz_log_stale_auth() (
-  local dir="$STATE/buzz" log=bridge.log
-  umask 077
-  fmx_private_artifact_dir_prepare "$dir" >/dev/null || return 0
-  if [ -e "$dir/$log" ] || [ -L "$dir/$log" ]; then
-    fmx_private_artifact_file_valid "$dir" "$log" 600 || return 0
-  fi
-  printf '%s %s\n' "$(date -u +%FT%TZ)" 'Buzz CLI: NIP-98 timestamp rejection persisted after retry' >> "$dir/$log"
-) 2>/dev/null
