@@ -1015,8 +1015,8 @@ test_persistent_thread_timestamp_rejection_reports_the_unread_thread() {
   bridge_reply=$(sign_event "$BRIDGE_SK" $((NOW - 20)) 9 "$tags" 'earlier bridge answer')
   set_events "$home" "$root" "$reply" "$bridge_reply"
   out=$(FAKE_AUTH_COMMANDS=thread FAKE_AUTH_MODE=persistent poll "$home")
-  assert_equals 'buzz-bridge-error buzz CLI thread read failed (exit 11); unaddressed replies need an explicit mention' "$out" \
-    "an unreadable thread asks for an explicit mention like any other refused thread read"
+  assert_equals "buzz-bridge-error buzz thread read refused: request timestamp outside the relay window after retry (clock skew or sleep); unaddressed replies need an explicit mention" "$out" \
+    "a thread read the skew refused names the skew and asks for an explicit mention"
   assert_equals 2 "$(grep -c 'messages thread' "$home/cli.log")" "the thread read retries exactly once"
   assert_equals '' "$(only_rid "$home")" "an unread thread supplies no evidence for implicit intake"
   assert_equals "$NOW" "$(jq -r .since "$home/state/buzz/cursor.json")" "the cursor advances for a reported thread read"

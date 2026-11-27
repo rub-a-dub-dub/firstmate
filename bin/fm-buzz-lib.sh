@@ -235,6 +235,7 @@ fm_buzz_cli_retry() (
       cat -- "$work/out"
       return "$rc"
     fi
+    # 11 is this repository's own status, reserved like 10 above.
     [ "$attempt" -eq 1 ] || return 11
     sleep 1
     fm_buzz_enabled || { cat -- "$work/out"; return "$rc"; }

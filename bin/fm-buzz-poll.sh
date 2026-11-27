@@ -300,7 +300,9 @@ fi
 if [ "$WANTED" -gt 0 ]; then
   read_thread_history 2>/dev/null
   rc=$?
-  if [ "$rc" -ne 0 ]; then
+  if [ "$rc" -eq 11 ]; then
+    THREAD_ERROR="buzz thread read refused: request timestamp outside the relay window after retry (clock skew or sleep); unaddressed replies need an explicit mention"
+  elif [ "$rc" -ne 0 ]; then
     THREAD_ERROR="buzz CLI thread read failed (exit $rc); unaddressed replies need an explicit mention"
   else
     CAPPED=0
