@@ -88,7 +88,7 @@ case " ${FAKE_AUTH_COMMANDS:-} " in
       # A send has consumed the body by the time the relay rejects the auth.
       [ "$cmd" != send ] || cat >/dev/null
       if [ "$reason" = timestamp ]; then
-        printf '%s\n' '{"error":"auth_error","message":"NIP-98 HTTP Auth verification failed: event timestamp outside ±60s window (delta: 106s)","retryable":false}' >&2
+        printf '%s\n' '{"error":"auth_error","message":"auth error: relay requires authentication (NIP-98: NIP-98 HTTP Auth verification failed: event timestamp outside ±60s window (delta: 106s))","retryable":false}' >&2
       else
         printf '%s\n' '{"error":"auth_error","message":"not a member of this channel","retryable":false}' >&2
       fi

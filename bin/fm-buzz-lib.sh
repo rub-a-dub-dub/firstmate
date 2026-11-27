@@ -222,10 +222,12 @@ fm_buzz_cli_once() {
 # owner-visible effect, so writes call fm_buzz_cli_once and keep reporting the
 # refusal. All other results pass through immediately. Return 11 if the
 # timestamp rejection persists. The only CLI output forwarded is the last
-# attempt's stdout.
+# attempt's stdout, so without scratch space to hold it the call falls back to a
+# single attempt and reports the CLI's own status rather than inventing one.
 fm_buzz_cli_retry() (
   local work err rc attempt
-  work=$(mktemp -d "${TMPDIR:-/tmp}/fm-buzz-cli.XXXXXX") || return 1
+  work=$(mktemp -d "${TMPDIR:-/tmp}/fm-buzz-cli.XXXXXX") \
+    || { fm_buzz_cli_once "$@" < /dev/null 2>/dev/null; return; }
   trap 'rm -rf -- "$work"' EXIT
   trap 'exit 1' HUP INT TERM
   for attempt in 1 2; do
