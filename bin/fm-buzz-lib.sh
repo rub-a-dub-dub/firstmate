@@ -234,14 +234,18 @@ fm_buzz_cli_retry() (
     if [ "$rc" -ne 3 ] || ! printf '%s\n' "$err" | jq -se '
       length == 1 and (.[0] | .error == "auth_error" and (.message | strings | contains("timestamp outside")))
       ' >/dev/null 2>&1; then
-      cat -- "$work/out"
-      return "$rc"
+      break
     fi
     # 11 is this repository's own status, reserved like 10 above.
-    [ "$attempt" -eq 1 ] || return 11
+    if [ "$attempt" -ne 1 ]; then
+      rc=11
+      break
+    fi
     sleep 1
-    fm_buzz_enabled || { cat -- "$work/out"; return "$rc"; }
+    fm_buzz_enabled || break
   done
+  cat -- "$work/out"
+  return "$rc"
 )
 
 # Export only the functions and config needed by a bounded child shell. The
