@@ -49,7 +49,7 @@
 #                                     output; stdin does not reach the CLI, and
 #                                     stderr is consumed by the retry match
 #   fm_buzz_cli_once <args...>      - one unbounded attempt; stdin reaches the
-#                                    CLI and the refusal is reported as it came
+#                                     CLI and the refusal is reported as it came
 #   fm_buzz_export_cli              - export the config and functions a bounded
 #                                     child shell needs to make either call
 #                                     itself
@@ -250,6 +250,7 @@ fm_buzz_cli_retry() (
       break
     fi
     sleep 1
+    # A disable during that delay must not produce a second signed relay call.
     fm_buzz_enabled || break
   done
   cat -- "$work/out"
