@@ -41,6 +41,9 @@
 #                                     (only ever into a signing call's env)
 #   fm_buzz_cli [--timeout <seconds> | --replay-stdin] <args...>
 #                                  - run the pinned CLI as the bridge identity
+#   fm_buzz_export_cli              - export the config and functions a bounded
+#                                     child shell needs to call fm_buzz_cli_retry
+#                                     (same contract as fm_buzz_cli) itself
 #   fm_buzz_log_stale_auth          - log an exhausted timestamp retry locally
 
 if ! command -v fmx_private_artifact_publish_stdin >/dev/null 2>&1; then
