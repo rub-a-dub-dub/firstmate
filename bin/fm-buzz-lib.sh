@@ -236,7 +236,7 @@ fm_buzz_cli_retry() (
     fi
     [ "$attempt" -eq 1 ] || return 11
     sleep 1
-    fm_buzz_enabled || return 11
+    fm_buzz_enabled || { cat -- "$work/out"; return "$rc"; }
   done
 )
 

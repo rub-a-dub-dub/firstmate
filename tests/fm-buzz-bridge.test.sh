@@ -79,6 +79,9 @@ case " ${FAKE_AUTH_COMMANDS:-} " in
     esac
     if [ -n "$reason" ]; then
       : > "$marker"
+      # FAKE_AUTH_DISABLE turns the bridge off from inside the rejection, which
+      # lands in the retry window the way `fm-buzz.sh disable` would.
+      [ -z "${FAKE_AUTH_DISABLE:-}" ] || rm -f "$FAKE_AUTH_DISABLE"
       # A send has consumed the body by the time the relay rejects the auth.
       [ "$cmd" != send ] || cat >/dev/null
       if [ "$reason" = timestamp ]; then
@@ -974,6 +977,27 @@ test_persistent_timestamp_rejection_holds_intake_silently() {
   pass "an exhausted timestamp retry stays off the wake surface and leaves intake for the next sweep"
 }
 
+test_disable_during_the_retry_window_records_nothing() {
+  local home out root root_id tags reply bridge_reply
+  home=$(new_home stale-auth-disabled)
+  enable "$home"
+  age_cursor "$home" $((NOW - 600))
+  root=$(sign_event "$OWNER_SK" $((NOW - 800)) 9 "[[\"h\",\"$CHANNEL\"]]" 'thread root')
+  root_id=$(jq -r .id <<<"$root")
+  tags=$(jq -cn --arg c "$CHANNEL" --arg r "$root_id" '[["h",$c],["e",$r,"","reply"]]')
+  reply=$(sign_event "$OWNER_SK" $((NOW - 10)) 9 "$tags" 'unaddressed reply')
+  bridge_reply=$(sign_event "$BRIDGE_SK" $((NOW - 20)) 9 "$tags" 'earlier bridge answer')
+  set_events "$home" "$root" "$reply" "$bridge_reply"
+  out=$(FAKE_AUTH_COMMANDS=thread FAKE_AUTH_MODE=persistent \
+    FAKE_AUTH_DISABLE="$home/config/buzz-bridge.enabled" poll "$home" 2>"$home/poll.stderr")
+  assert_equals '' "$out" "a bridge turned off mid-retry emits no wake"
+  assert_equals '' "$(cat "$home/poll.stderr")" "the raw rejection stays private"
+  assert_equals 1 "$(grep -c 'messages thread' "$home/cli.log")" "the disabled bridge does not attempt the retry"
+  assert_absent "$home/state/buzz/bridge.log" "a disabled bridge records nothing"
+  assert_equals $((NOW - 600)) "$(jq -r .since "$home/state/buzz/cursor.json")" "the window is held for the next enable"
+  pass "a disable inside the retry window is not logged as a persisted rejection"
+}
+
 test_persistent_thread_timestamp_rejection_retries_the_window() {
   local home root root_id tags reply bridge_reply out rid
   home=$(new_home stale-auth-thread)
@@ -1523,6 +1547,7 @@ fm_test_run \
   test_poll_holds_cursor_on_read_failure \
   test_timestamp_rejection_retries_reads_and_writes \
   test_persistent_timestamp_rejection_holds_intake_silently \
+  test_disable_during_the_retry_window_records_nothing \
   test_persistent_thread_timestamp_rejection_retries_the_window \
   test_reply_ack_and_one_final_in_thread \
   test_reply_dry_run_records_without_sending \
