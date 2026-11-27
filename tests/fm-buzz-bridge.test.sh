@@ -68,6 +68,9 @@ while [ $# -gt 0 ]; do
     *) shift ;;
   esac
 done
+if [ "$cmd" = thread ] && [ "$event" = "${FAKE_THREAD_NETWORK_ROOT:-}" ]; then
+  exit 2
+fi
 case " ${FAKE_AUTH_COMMANDS:-} " in
   *" $cmd "*)
     marker=$log.$cmd.rejected
@@ -972,14 +975,10 @@ test_persistent_timestamp_rejection_holds_intake_silently() {
   assert_equals '' "$(cat "$home/poll.stderr")" "the raw rejection stays private"
   assert_equals 2 "$(grep -c 'messages get' "$home/cli.log")" "the retry is bounded"
   assert_equals $((NOW - 600)) "$(jq -r .since "$home/state/buzz/cursor.json")" "the next poll may read the same window"
-  out=$(run_in "$home" "$ROOT/bin/fm-buzz.sh" status)
-  assert_contains "$out" "last poll diagnostic: relay refused the bridge signature as stale" \
-    "a persistent skew is visible in status rather than invisible"
-  assert_no_regex 'delta:|retryable|auth_error' "$home/state/buzz/poll.error" "CLI stderr is not written to the diagnostic"
+  assert_absent "$home/state/buzz/poll.error" "a persistent skew leaves no diagnostic"
   assert_equals '' "$(poll "$home")" "the next sweep recovers silently"
   assert_equals "$NOW" "$(jq -r .since "$home/state/buzz/cursor.json")" "recovery advances the cursor"
-  assert_absent "$home/state/buzz/poll.error" "recovery clears the diagnostic"
-  pass "an exhausted timestamp retry stays off the wake surface and shows up in status"
+  pass "an exhausted intake timestamp retry holds the cursor silently"
 }
 
 test_a_skew_sweep_does_not_rewake_an_acknowledged_diagnostic() {
@@ -1030,8 +1029,8 @@ test_disable_during_the_retry_window_records_nothing() {
   pass "a disable inside the retry window is not logged as a persisted rejection"
 }
 
-test_persistent_thread_timestamp_rejection_reports_the_unread_thread() {
-  local home root root_id tags reply bridge_reply out
+test_thread_timestamp_diagnostic_requires_every_failure_to_be_timestamp() {
+  local home root root_id tags reply next_root next_root_id next_tags next_reply out
   home=$(new_home stale-auth-thread)
   enable "$home"
   age_cursor "$home" $((NOW - 600))
@@ -1039,15 +1038,28 @@ test_persistent_thread_timestamp_rejection_reports_the_unread_thread() {
   root_id=$(jq -r .id <<<"$root")
   tags=$(jq -cn --arg c "$CHANNEL" --arg r "$root_id" '[["h",$c],["e",$r,"","reply"]]')
   reply=$(sign_event "$OWNER_SK" $((NOW - 10)) 9 "$tags" 'unaddressed reply')
-  bridge_reply=$(sign_event "$BRIDGE_SK" $((NOW - 20)) 9 "$tags" 'earlier bridge answer')
-  set_events "$home" "$root" "$reply" "$bridge_reply"
+  next_root=$(sign_event "$OWNER_SK" $((NOW - 700)) 9 "[[\"h\",\"$CHANNEL\"]]" 'another thread root')
+  next_root_id=$(jq -r .id <<<"$next_root")
+  next_tags=$(jq -cn --arg c "$CHANNEL" --arg r "$next_root_id" '[["h",$c],["e",$r,"","reply"]]')
+  next_reply=$(sign_event "$OWNER_SK" $((NOW - 5)) 9 "$next_tags" 'newer unaddressed reply')
+  set_events "$home" "$root" "$reply" "$next_root" "$next_reply"
+
+  out=$(FAKE_AUTH_COMMANDS=thread FAKE_AUTH_MODE=persistent FAKE_THREAD_NETWORK_ROOT="$next_root_id" poll "$home")
+  assert_equals "buzz-bridge-error buzz CLI thread read failed (exit 2); unaddressed replies need an explicit mention" "$out" \
+    "the newer network failure stays generic even when the older thread fails for skew"
+  assert_equals 1 "$(grep -c "messages thread .*--event $next_root_id " "$home/cli.log")" "the network failure is not retried"
+  assert_equals 2 "$(grep -c "messages thread .*--event $root_id " "$home/cli.log")" "the stale request retries once"
+  assert_equals "$NOW" "$(jq -r .since "$home/state/buzz/cursor.json")" "the cursor advances for mixed failures"
+
+  age_cursor "$home" $((NOW - 600))
+  : > "$home/cli.log"
   out=$(FAKE_AUTH_COMMANDS=thread FAKE_AUTH_MODE=persistent poll "$home")
   assert_equals "buzz-bridge-error buzz thread read refused: request timestamp outside the relay window after retry (clock skew or sleep); unaddressed replies need an explicit mention" "$out" \
     "a thread read the skew refused names the skew and asks for an explicit mention"
-  assert_equals 2 "$(grep -c 'messages thread' "$home/cli.log")" "the thread read retries exactly once"
+  assert_equals 4 "$(grep -c 'messages thread' "$home/cli.log")" "both thread reads retry exactly once"
   assert_equals '' "$(only_rid "$home")" "an unread thread supplies no evidence for implicit intake"
   assert_equals "$NOW" "$(jq -r .since "$home/state/buzz/cursor.json")" "the cursor advances for a reported thread read"
-  pass "a stale thread read is reported as a refused thread read, with the cursor advancing"
+  pass "a thread failure names skew only when every failed root exhausted the timestamp retry"
 }
 
 test_reply_ack_and_one_final_in_thread() {
@@ -1579,7 +1591,7 @@ fm_test_run \
   test_persistent_timestamp_rejection_holds_intake_silently \
   test_a_skew_sweep_does_not_rewake_an_acknowledged_diagnostic \
   test_disable_during_the_retry_window_records_nothing \
-  test_persistent_thread_timestamp_rejection_reports_the_unread_thread \
+  test_thread_timestamp_diagnostic_requires_every_failure_to_be_timestamp \
   test_reply_ack_and_one_final_in_thread \
   test_reply_dry_run_records_without_sending \
   test_reply_dry_run_writes_a_receipt_without_spending_the_budget \
