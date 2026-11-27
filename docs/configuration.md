@@ -3196,10 +3196,11 @@ Firstmate requires an explicit mention when the thread history is missing, incom
 A lookup is spent only on a thread whose reply is still unanswered, so replies waiting past the budget are read on a later sweep rather than starved by threads already handled, and a budget that runs out before them wakes the diagnostic below.
 A thread past 50 events cannot be read completely, so a complete thread cannot be told from a truncated one: implicit intake stops there and wakes the diagnostic asking for an explicit mention in that thread.
 A thread others have joined is refused under rule 3 but still spends one of the four lookups, so a busy shared thread can delay checking another thread by a sweep or more.
-These diagnostics name a condition rather than a message, so one wake can stand for several dropped replies; the cursor always moves on, and an explicit @Firstmate mention needs no thread read and always works, which is the way past every limit here.
+These diagnostics name a condition rather than a message, so one wake can stand for several dropped replies.
+The cursor advances for these reported conditions, and an explicit @Firstmate mention needs no thread read.
 Any third party among the events a thread read returns closes that thread to implicit intake, whatever the `e` tags on their post say.
 That history read is `buzz messages thread --channel <channel> --event <root> --limit 50`, and it must return the root event itself: like the newest-first truncation above, that the pinned `relay-v0.3.0` CLI offers this subcommand and scopes it to the one thread is a property of that build, not something this repository can enforce, and it must be re-confirmed before `BUZZ_CLI` is repointed at a newer build.
-A thread read the CLI refuses wakes it too, because a surface that is simply gone would otherwise leave implicit intake inert and indistinguishable from an owner who always mentions the bridge.
+A thread read the CLI refuses also wakes the diagnostic unless the refusal qualifies for the timestamp retry described below.
 
 Three further limits fall back the same way, to needing an explicit @Firstmate mention in that thread.
 A read that returns a thread's descendants but not its root event - a root aged past the relay's retention, or deleted - cannot establish that Firstmate ever replied there, and because the read itself succeeded nothing tells that apart from a thread Firstmate was never in.
@@ -3215,9 +3216,12 @@ The binding is written before the inbox record, the cursor in `state/buzz/cursor
 Once a range is persisted, the bridge acknowledges each newly bound message with one 👀 reaction through `buzz reactions add --event <event-id> --emoji 👀`, sent sequentially and previewed under `FMX_DRY_RUN`.
 That subcommand and its `--event` and `--emoji` flags are a property of the pinned `relay-v0.3.0` CLI, like the newest-first truncation above, and must be re-confirmed before `BUZZ_CLI` is repointed at a newer build.
 At that tag the command prints the same normalized write response its other write commands print - `{"event_id", "accepted", "message"}`, where `accepted` is the relay's own boolean and defaults to `false` when the relay omits it, and where a relay body carrying neither `event_id` nor `accepted` is passed through unchanged instead.
-So `accepted` is CLI output the bridge could read but deliberately does not: the acknowledgement is best effort and unreported, every status is discarded, and nothing downstream branches on whether the relay took the reaction.
-Every mention a sweep binds is acknowledged, newest first, for as long as the check budget allows; none starts once the sweep is within one bounded send of `FM_CHECK_TIMEOUT`, which is the only limit on how many go out; and a reaction that fails or that the budget leaves no room for is skipped silently and never retried, so a missing 👀 never holds the cursor, the wake, or a reply.
+The acknowledgement is best effort, and the bridge does not inspect its `accepted` value or wait for confirmation before delivering the request.
+Every mention a sweep binds is acknowledged, newest first, for as long as the check budget allows, and none starts once the sweep is within one bounded send of `FM_CHECK_TIMEOUT`.
+A missing 👀 never holds the cursor, the wake, or a reply.
 A new request wakes firstmate with `buzz-mention <request_id>`; a configuration, authorization, thread-lookup, or catch-up problem wakes once per distinct message with `buzz-bridge-error <reason>`, while a relay or network failure on the intake read stays silent until the next sweep.
+When the Buzz CLI reports a NIP-98 timestamp-window rejection, the bridge retries that call once after a short delay with a fresh signature.
+If the rejection persists, the bridge records it in `state/buzz/bridge.log` and leaves any affected read for the next poll without a wake.
 A sweep that finds the poll already running skips in silence, but one that finds a poll lock nothing can reclaim reports that the same way, because the condition would otherwise silence every later sweep; the diagnostic names the lock path, and clearing it by hand is what resumes intake.
 
 The listener holds one authenticated WebSocket subscription for new owner mentions in the configured channel.

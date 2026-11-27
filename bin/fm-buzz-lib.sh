@@ -39,8 +39,9 @@
 #   fm_buzz_binding_prune           - drop bindings past the 7-day window
 #   fm_buzz_secret_read             - print the bridge secret from the key file
 #                                     (only ever into a signing call's env)
-#   fm_buzz_cli [--timeout <seconds>] <args...>
+#   fm_buzz_cli [--timeout <seconds> | --replay-stdin] <args...>
 #                                  - run the pinned CLI as the bridge identity
+#   fm_buzz_log_stale_auth          - log an exhausted timestamp retry locally
 
 if ! command -v fmx_private_artifact_publish_stdin >/dev/null 2>&1; then
   # shellcheck source=bin/fm-x-lib.sh
@@ -193,37 +194,79 @@ fm_buzz_secret_read() {
   printf '%s' "$secret"
 }
 
-# fm_buzz_cli [--timeout <seconds>] <args...>: run as the bridge identity against the
+# Run one signing attempt as the bridge identity against the
 # configured relay. The secret is read at this moment and reaches the CLI only
 # through its environment; inherited Buzz identity settings are cleared so a
 # desktop pairing or stray auth tag can never stand in for the bridge key.
 # Returns the CLI's exit code (2 relay/network, 3 auth), or 10 when the secret
 # cannot be read.
-#
-# The --timeout form runs the CLI under fm_run_timed, which widens both of
-# those contracts. Its status can also be one fm_run_timed owns rather than the
-# CLI: 124 for the bound being hit (test it with fm_timed_out, never by value),
-# 128+n for a signalled command, and 127 when no timeout mechanism exists - so
-# a caller that maps exit codes to Buzz meanings must screen those first. And
-# the secret is a temporary export on that subshell rather than the single
-# exec'd process, so fm_run_timed's own helpers (mktemp, the timeout or perl
-# watchdog, the wrapper shell) inherit it too. They all run as the uid that can
-# already read the CLI's environ, so this crosses no trust boundary, but the
-# "only through its environment" above is narrower than the --timeout path.
-fm_buzz_cli() {
+fm_buzz_cli_once() {
   local secret relay=$BUZZ_RELAY_URL
   secret=$(fm_buzz_secret_read) || return 10
   (
     unset BUZZ_AUTH_TAG BUZZ_FEDERATED_IDENTITY_TOKEN BUZZ_FEDERATED_IDENTITY_ADAPTER \
       BUZZ_OUTPUT_FORMAT BUZZ_RELAY_URL
-    if [ "${1:-}" = --timeout ]; then
-      local seconds=$2
-      shift 2
-      # shellcheck source=bin/fm-timeout-lib.sh
-      . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-timeout-lib.sh"
-      BUZZ_PRIVATE_KEY=$secret fm_run_timed "$seconds" "$BUZZ_CLI" --relay "$relay" --format json "$@"
-    else
-      BUZZ_PRIVATE_KEY=$secret exec "$BUZZ_CLI" --relay "$relay" --format json "$@"
-    fi
+    BUZZ_PRIVATE_KEY=$secret exec "$BUZZ_CLI" --relay "$relay" --format json "$@"
   )
 }
+
+# Retry one verified NIP-98 timestamp rejection with a fresh signature. A write
+# that received this HTTP auth rejection was never accepted. All other results
+# pass through immediately, including ambiguous write failures. Return 11 if
+# the timestamp rejection persists. The only CLI output forwarded is the last
+# attempt's stdout. With --replay-stdin each attempt gets the exact same bytes.
+fm_buzz_cli_retry() (
+  local work input=/dev/null err rc attempt
+  work=$(mktemp -d "${TMPDIR:-/tmp}/fm-buzz-cli.XXXXXX") || return 1
+  trap 'rm -rf -- "$work"' EXIT
+  trap 'exit 1' HUP INT TERM
+  if [ "${1:-}" = --replay-stdin ]; then
+    input=$work/input
+    cat > "$input" || return 1
+    shift
+  fi
+  for attempt in 1 2; do
+    rc=0
+    err=$(fm_buzz_cli_once "$@" < "$input" 2>&1 > "$work/out") || rc=$?
+    if [ "$rc" -ne 3 ] || ! printf '%s\n' "$err" | jq -se '
+      length == 1 and (.[0] | .error == "auth_error" and (.message | strings | contains("timestamp outside")))
+      ' >/dev/null 2>&1; then
+      cat -- "$work/out"
+      return "$rc"
+    fi
+    [ "$attempt" -eq 1 ] || return 11
+    sleep 1
+    fm_buzz_enabled || return 11
+  done
+)
+
+# Export only the functions and config needed by a bounded child shell. The
+# signing secret stays in the actual CLI's environment, including on retries.
+fm_buzz_export_cli() {
+  export -f fm_buzz_cli_retry fm_buzz_cli_once fm_buzz_secret_read fm_buzz_enabled
+  export BUZZ_RELAY_URL BUZZ_BRIDGE_KEY_FILE BUZZ_CLI CONFIG
+}
+
+fm_buzz_cli() (
+  if [ "${1:-}" = --timeout ]; then
+    local seconds=$2
+    shift 2
+    # Bound the complete operation, including any retry.
+    # shellcheck source=bin/fm-timeout-lib.sh
+    . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-timeout-lib.sh"
+    fm_buzz_export_cli
+    fm_run_timed "$seconds" "$BASH" -c 'fm_buzz_cli_retry "$@"' _ "$@"
+  else
+    fm_buzz_cli_retry "$@"
+  fi
+)
+
+fm_buzz_log_stale_auth() (
+  local dir="$STATE/buzz" log=bridge.log
+  umask 077
+  fmx_private_artifact_dir_prepare "$dir" >/dev/null || return 0
+  if [ -e "$dir/$log" ] || [ -L "$dir/$log" ]; then
+    fmx_private_artifact_file_valid "$dir" "$log" 600 || return 0
+  fi
+  printf '%s %s\n' "$(date -u +%FT%TZ)" 'Buzz CLI: NIP-98 timestamp rejection persisted after retry' >> "$dir/$log"
+) 2>/dev/null

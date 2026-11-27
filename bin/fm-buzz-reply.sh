@@ -198,11 +198,15 @@ fi
 i=0
 while [ "$i" -lt "$N" ]; do
   OUT=$(printf '%s' "$CHUNKS" | jq -j --argjson i "$i" '.[$i]' \
-    | fm_buzz_cli messages send --channel "$BUZZ_CHANNEL" --reply-to "$PARENT" --content - 2>/dev/null)
+    | fm_buzz_cli --replay-stdin messages send --channel "$BUZZ_CHANNEL" --reply-to "$PARENT" --content - 2>/dev/null)
   rc=$?
   if [ "$rc" -ne 0 ] || ! printf '%s' "$OUT" | jq -e '.accepted == true' >/dev/null 2>&1; then
     [ "$rc" -ne 10 ] || echo "fm-buzz-reply: cannot read the bridge secret from BUZZ_BRIDGE_KEY_FILE" >&2
-    echo "fm-buzz-reply: Buzz send failed for $REQ (message $((i + 1)) of $N, exit $rc)" >&2
+    if [ "$rc" -eq 11 ]; then
+      fm_buzz_log_stale_auth
+    else
+      echo "fm-buzz-reply: Buzz send failed for $REQ (message $((i + 1)) of $N, exit $rc)" >&2
+    fi
     if [ "$i" -gt 0 ]; then
       # A partial thread already landed; spend the budget rather than duplicate it.
       record_budget 0

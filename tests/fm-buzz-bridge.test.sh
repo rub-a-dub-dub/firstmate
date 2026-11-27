@@ -68,6 +68,28 @@ while [ $# -gt 0 ]; do
     *) shift ;;
   esac
 done
+case " ${FAKE_AUTH_COMMANDS:-} " in
+  *" $cmd "*)
+    marker=$log.$cmd.rejected
+    reason=
+    case "${FAKE_AUTH_MODE:-}" in
+      once) [ -e "$marker" ] || reason=timestamp ;;
+      persistent) reason=timestamp ;;
+      membership) reason=membership ;;
+    esac
+    if [ -n "$reason" ]; then
+      : > "$marker"
+      # A send has consumed the body by the time the relay rejects the auth.
+      [ "$cmd" != send ] || cat >/dev/null
+      if [ "$reason" = timestamp ]; then
+        printf '%s\n' '{"error":"auth_error","message":"NIP-98 HTTP Auth verification failed: event timestamp outside ±60s window (delta: 106s)","retryable":false}' >&2
+      else
+        printf '%s\n' '{"error":"auth_error","message":"not a member of this channel","retryable":false}' >&2
+      fi
+      exit 3
+    fi
+    ;;
+esac
 case "$cmd" in
   get)
     [ "${FAKE_GET_RC:-0}" = 0 ] || exit "$FAKE_GET_RC"
@@ -122,6 +144,7 @@ case "$cmd" in
       fi
     fi
     [ "${FAKE_REACTION_RC:-0}" = 0 ] || exit "$FAKE_REACTION_RC"
+    printf 'reaction-accepted\n' >> "$log"
     printf '{"accepted":true}\n'
     ;;
   *) exit 1 ;;
@@ -882,15 +905,95 @@ test_poll_holds_cursor_on_read_failure() {
   home=$(new_home hold)
   enable "$home"
   age_cursor "$home" $((NOW - 600))
-  out=$(FAKE_GET_RC=3 poll "$home")
-  assert_contains "$out" "buzz-bridge-error relay refused the bridge key" "an auth refusal is a diagnostic wake"
-  out=$(FAKE_GET_RC=3 poll "$home")
+  out=$(FAKE_AUTH_COMMANDS=get FAKE_AUTH_MODE=membership poll "$home")
+  assert_equals 'buzz-bridge-error relay refused the bridge key (auth error); check channel membership' "$out" \
+    "an auth refusal is a diagnostic wake"
+  out=$(FAKE_AUTH_COMMANDS=get FAKE_AUTH_MODE=membership poll "$home")
   assert_equals "" "$out" "the same diagnostic wakes only once"
+  assert_equals 2 "$(grep -c 'messages get' "$home/cli.log")" "membership refusals are never retried"
   out=$(FAKE_GET_RC=2 poll "$home")
   assert_equals "" "$out" "a relay or network failure is silent"
   assert_equals $((NOW - 600)) "$(jq -r .since "$home/state/buzz/cursor.json")" \
     "a failed read must never advance the cursor"
   pass "a failed read holds the cursor, reports auth refusals once, and stays quiet on network failure"
+}
+
+test_timestamp_rejection_retries_reads_and_writes() {
+  local home ev eid rid out rc body=$'first line\nsecond line'
+  home=$(new_home stale-auth-once)
+  enable "$home"
+  ev=$(sign_event "$OWNER_SK" $((NOW - 60)) 9 "$(mention_tags)" 'please retry safely')
+  eid=$(jq -r .id <<<"$ev")
+  set_events "$home" "$ev"
+  out=$(FAKE_AUTH_COMMANDS='get add' FAKE_AUTH_MODE=once poll "$home" 2>"$home/poll.stderr")
+  rid=$(only_rid "$home")
+  [ -n "$rid" ] || fail "the retried read must deliver the request"
+  assert_equals "buzz-mention $rid" "$out" "a successful retry emits only the request wake"
+  assert_equals '' "$(cat "$home/poll.stderr")" "the raw rejection stays private"
+  assert_equals 2 "$(grep -c 'messages get' "$home/cli.log")" "the read retries exactly once"
+  assert_equals 2 "$(grep -c 'reactions add' "$home/cli.log")" "the reaction retries exactly once"
+  assert_equals 1 "$(grep -c '^reaction-accepted$' "$home/cli.log")" "exactly one reaction lands"
+
+  out=$(FAKE_AUTH_COMMANDS=send FAKE_AUTH_MODE=once run_in "$home" "$ROOT/bin/fm-x-reply.sh" "$rid" "$body" 2>"$home/reply.stderr")
+  assert_equals "$rid" "$out" "the retried reply succeeds"
+  assert_equals '' "$(cat "$home/reply.stderr")" "the reply does not surface the rejection"
+  assert_equals 2 "$(grep -c 'messages send' "$home/cli.log")" "the reply retries exactly once"
+  assert_equals 1 "$(jq -s length "$home/sent.jsonl")" "exactly one reply lands"
+  assert_equals "$eid" "$(jq -r .reply_to "$home/sent.jsonl")" "the retry addresses the original event"
+  assert_equals "$body" "$(jq -r .content "$home/sent.jsonl")" "the retry replays the original body"
+  [ ! -e "$home/state/buzz/bridge.log" ] || fail "successful retries should not log an exhausted rejection"
+
+  out=$(FAKE_SEND_RC=2 run_in "$home" "$ROOT/bin/fm-x-reply.sh" "$rid" --followup "$body" 2>"$home/reply.stderr"); rc=$?
+  expect_code 1 "$rc" "an ambiguous send failure"
+  assert_contains "$(cat "$home/reply.stderr")" 'exit 2' "an ambiguous failure still reports the error"
+  assert_equals 3 "$(grep -c 'messages send' "$home/cli.log")" "an ambiguous failure is never retried"
+  out=$(FAKE_AUTH_COMMANDS=send FAKE_AUTH_MODE=persistent run_in "$home" "$ROOT/bin/fm-x-reply.sh" "$rid" --followup "$body" 2>"$home/reply.stderr"); rc=$?
+  expect_code 1 "$rc" "an exhausted send retry"
+  assert_equals '' "$out" "an exhausted send retry returns no success receipt"
+  assert_equals '' "$(cat "$home/reply.stderr")" "an exhausted send retry keeps the rejection off stderr"
+  assert_equals 5 "$(grep -c 'messages send' "$home/cli.log")" "the rejected send was retried only once"
+  assert_equals 1 "$(jq -s length "$home/sent.jsonl")" "neither failure posted another reply"
+  assert_equals false "$(jq -r .followup_posted "$home/state/buzz/requests/$rid.json")" "neither failure spent the follow-up budget"
+  pass "a stale signature retries reads, reactions, and replies without duplicate effects"
+}
+
+test_persistent_timestamp_rejection_holds_intake_silently() {
+  local home out
+  home=$(new_home stale-auth-persistent)
+  enable "$home"
+  age_cursor "$home" $((NOW - 600))
+  out=$(FAKE_AUTH_COMMANDS=get FAKE_AUTH_MODE=persistent poll "$home" 2>"$home/poll.stderr")
+  assert_equals '' "$out" "an exhausted timestamp retry emits no wake"
+  assert_equals '' "$(cat "$home/poll.stderr")" "the raw rejection stays private"
+  assert_equals 2 "$(grep -c 'messages get' "$home/cli.log")" "the retry is bounded"
+  assert_equals $((NOW - 600)) "$(jq -r .since "$home/state/buzz/cursor.json")" "the next poll may read the same window"
+  assert_equals 1 "$(grep -c 'timestamp rejection persisted after retry' "$home/state/buzz/bridge.log")" "one local log line records the failure"
+  assert_no_regex 'delta:|retryable|auth_error' "$home/state/buzz/bridge.log" "CLI stderr is not written to the log"
+  assert_equals '' "$(poll "$home")" "the next sweep recovers silently"
+  assert_equals "$NOW" "$(jq -r .since "$home/state/buzz/cursor.json")" "recovery advances the cursor"
+  pass "an exhausted timestamp retry stays off the wake surface and leaves intake for the next sweep"
+}
+
+test_persistent_thread_timestamp_rejection_retries_the_window() {
+  local home root root_id tags reply bridge_reply out rid
+  home=$(new_home stale-auth-thread)
+  enable "$home"
+  age_cursor "$home" $((NOW - 600))
+  root=$(sign_event "$OWNER_SK" $((NOW - 800)) 9 "[[\"h\",\"$CHANNEL\"]]" 'thread root')
+  root_id=$(jq -r .id <<<"$root")
+  tags=$(jq -cn --arg c "$CHANNEL" --arg r "$root_id" '[["h",$c],["e",$r,"","reply"]]')
+  reply=$(sign_event "$OWNER_SK" $((NOW - 10)) 9 "$tags" 'unaddressed reply')
+  bridge_reply=$(sign_event "$BRIDGE_SK" $((NOW - 20)) 9 "$tags" 'earlier bridge answer')
+  set_events "$home" "$root" "$reply" "$bridge_reply"
+  out=$(FAKE_AUTH_COMMANDS=thread FAKE_AUTH_MODE=persistent poll "$home")
+  assert_equals '' "$out" "stale thread auth emits neither a lookup nor a membership diagnostic"
+  assert_equals 2 "$(grep -c 'messages thread' "$home/cli.log")" "the thread read retries exactly once"
+  assert_equals $((NOW - 600)) "$(jq -r .since "$home/state/buzz/cursor.json")" "the reply remains inside the next read window"
+  out=$(poll "$home")
+  rid=$(only_rid "$home")
+  [ -n "$rid" ] || fail "the next sweep should recover the unaddressed reply"
+  assert_equals "buzz-mention $rid" "$out" "the recovered reply emits its normal wake"
+  pass "a stale thread read leaves the unaddressed reply eligible for the next sweep"
 }
 
 test_reply_ack_and_one_final_in_thread() {
@@ -1418,6 +1521,9 @@ fm_test_run \
   test_poll_wakes_for_every_request_as_it_is_persisted \
   test_poll_reannounces_a_staged_request \
   test_poll_holds_cursor_on_read_failure \
+  test_timestamp_rejection_retries_reads_and_writes \
+  test_persistent_timestamp_rejection_holds_intake_silently \
+  test_persistent_thread_timestamp_rejection_retries_the_window \
   test_reply_ack_and_one_final_in_thread \
   test_reply_dry_run_records_without_sending \
   test_reply_dry_run_writes_a_receipt_without_spending_the_budget \
