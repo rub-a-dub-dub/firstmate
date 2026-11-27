@@ -41,7 +41,8 @@
 #                                     (only ever into a signing call's env)
 #   fm_buzz_cli [--timeout <seconds>] <args...>
 #                                  - run a read as the bridge identity, with one
-#                                    retry for a stale-timestamp refusal
+#                                    retry for a stale-timestamp refusal;
+#                                    stdin does not reach the CLI
 #   fm_buzz_cli_once <args...>      - one attempt, for a write no retry may
 #                                    repeat; stdin reaches the CLI
 #   fm_buzz_export_cli              - export the config and functions a bounded
@@ -249,6 +250,12 @@ fm_buzz_export_cli() {
   export BUZZ_RELAY_URL BUZZ_BRIDGE_KEY_FILE BUZZ_CLI CONFIG
 }
 
+# The retrying entry point: same statuses as fm_buzz_cli_retry, and stdin never
+# reaches the CLI, because a retried attempt could not replay it. The --timeout
+# form bounds the whole operation under fm_run_timed, so the status can also be
+# one that runner owns rather than a Buzz meaning (see fm-timeout-lib.sh, which
+# owns those); a caller mapping exit codes to Buzz meanings must screen them
+# first.
 fm_buzz_cli() (
   if [ "${1:-}" = --timeout ]; then
     local seconds=$2
