@@ -1,0 +1,11 @@
+test_listener_wakes_through_the_poll_and_retires, run in isolation on this host
+
+--- bin/ at target 684eae13 ---
+run 1: ok - a push wakes a live watcher before its sweep and disable retires the listener
+run 2: ok - a push wakes a live watcher before its sweep and disable retires the listener
+run 3: not ok - the listener did not report connected
+
+--- bin/ at base 42d104a4 (change NOT applied) ---
+run 1: ok - a push wakes a live watcher before its sweep and disable retires the listener
+run 2: not ok - the listener did not report connected
+run 3: not ok - enable failed for /listener

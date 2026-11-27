@@ -1,0 +1,41 @@
+==============================================================
+BEFORE the fix (bin/ at base 42d104a4)
+==============================================================
+### scenario 1: transient NIP-98 stale-timestamp refusal on the intake read
+### (the lid-closed dark-wake case from the bug report)
+owner notification(s): buzz-bridge-error relay refused the bridge key (auth error); check channel membership
+request delivered to the Relay inbox: 
+intake read attempts: 1
+status line: last poll diagnostic: relay refused the bridge key (auth error); check channel membership
+
+### scenario 2: genuine membership/key refusal on the intake read
+owner notification(s): buzz-bridge-error relay refused the bridge key (auth error); check channel membership
+intake read attempts: 1
+
+### scenario 3: persistent clock skew (retry exhausted)
+owner notification(s): buzz-bridge-error relay refused the bridge key (auth error); check channel membership
+intake read attempts: 1
+status line: last poll diagnostic: relay refused the bridge key (auth error); check channel membership
+cursor held at: 1799999400  (window start 1799999400)
+ok - owner-visible wake surface captured
+
+==============================================================
+AFTER the fix (bin/ at target 684eae13)
+==============================================================
+### scenario 1: transient NIP-98 stale-timestamp refusal on the intake read
+### (the lid-closed dark-wake case from the bug report)
+owner notification(s): buzz-mention buzz-00b8ef0575fd85fefce97f89ea7a3581a1b50600
+request delivered to the Relay inbox: buzz-00b8ef0575fd85fefce97f89ea7a3581a1b50600
+intake read attempts: 2
+status line: <no poll diagnostic>
+
+### scenario 2: genuine membership/key refusal on the intake read
+owner notification(s): buzz-bridge-error relay refused the bridge key (auth error); check channel membership
+intake read attempts: 1
+
+### scenario 3: persistent clock skew (retry exhausted)
+owner notification(s): <none>
+intake read attempts: 2
+status line: last poll diagnostic: relay refused the bridge signature as stale (clock skew); the intake read is retried on the next sweep
+cursor held at: 1799999400  (window start 1799999400)
+ok - owner-visible wake surface captured
