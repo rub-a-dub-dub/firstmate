@@ -249,8 +249,10 @@ read_thread_history() (
   # for signature verification - whose ceiling is TWICE the intake page (the two
   # verify passes share nothing) plus THREAD_LOOKUPS x THREAD_LIMIT, because every
   # event a history holds is verified before its signer can be trusted. Raising
-  # any of those three constants spends this reserve, and so does the one
-  # timestamp-retry delay a refused read can add before the loop above stops.
+  # any of those three constants spends this reserve, and so does every read
+  # whose timestamp retry succeeds: each charges that retry's delay and leaves
+  # the loop running, so up to THREAD_LOOKUPS of them can stack, because the
+  # loop stops only on a refusal that outlived its own retry.
   budget=$((CHECK_TIMEOUT - SECONDS - 15))
   [ "$budget" -gt 0 ] || return 0
   [ "$budget" -le "$THREAD_SECONDS" ] || budget=$THREAD_SECONDS
