@@ -217,12 +217,14 @@ fm_buzz_cli_once() {
   )
 }
 
-# Retry one verified NIP-98 timestamp rejection with a fresh signature. Only a
-# read belongs here: a second attempt at a write could duplicate an
-# owner-visible effect, so writes call fm_buzz_cli_once and keep reporting the
-# refusal. All other results pass through immediately. Return 11 if the
-# timestamp rejection persists, or 12 when there is no scratch space to hold the
-# last attempt's stdout, which is the only CLI output forwarded.
+# Retry one verified NIP-98 timestamp rejection with a fresh signature. The
+# retry fires only after the relay refused the attempt, so nothing it replays
+# ever landed: the best-effort eyes reaction belongs here as safely as the two
+# reads do. A reply send stays on fm_buzz_cli_once because its piped body cannot
+# be replayed, and it keeps reporting the refusal. All other results pass
+# through immediately. Return 11 if the timestamp rejection persists, or 12 when
+# there is no scratch space to hold the last attempt's stdout, which is the only
+# CLI output forwarded.
 fm_buzz_cli_retry() (
   local work err rc attempt
   # 12 is this repository's own status, reserved like 10 above.
