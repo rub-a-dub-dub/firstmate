@@ -221,13 +221,12 @@ fm_buzz_cli_once() {
 # read belongs here: a second attempt at a write could duplicate an
 # owner-visible effect, so writes call fm_buzz_cli_once and keep reporting the
 # refusal. All other results pass through immediately. Return 11 if the
-# timestamp rejection persists. The only CLI output forwarded is the last
-# attempt's stdout, so without scratch space to hold it the call falls back to a
-# single attempt and reports the CLI's own status rather than inventing one.
+# timestamp rejection persists, or 12 when there is no scratch space to hold the
+# last attempt's stdout, which is the only CLI output forwarded.
 fm_buzz_cli_retry() (
   local work err rc attempt
-  work=$(mktemp -d "${TMPDIR:-/tmp}/fm-buzz-cli.XXXXXX") \
-    || { fm_buzz_cli_once "$@" < /dev/null 2>/dev/null; return; }
+  # 12 is this repository's own status, reserved like 10 above.
+  work=$(mktemp -d "${TMPDIR:-/tmp}/fm-buzz-cli.XXXXXX") || return 12
   trap 'rm -rf -- "$work"' EXIT
   trap 'exit 1' HUP INT TERM
   for attempt in 1 2; do
