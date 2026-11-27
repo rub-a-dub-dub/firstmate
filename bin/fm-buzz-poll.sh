@@ -229,6 +229,7 @@ case "$rc" in
   11) fmx_private_artifact_file_valid "$STATE/buzz" poll.error 600 \
         || record_error "relay refused the bridge signature as stale (clock skew); the intake read is retried on the next sweep"
       exit 0 ;;
+  12) emit_error_once "cannot create scratch space under ${TMPDIR:-/tmp}; the bridge could not make the relay call"; exit 0 ;;
   *) emit_error_once "buzz CLI read failed (exit $rc)"; exit 0 ;;
 esac
 COUNT=$(jq -er 'if type == "array" then length else error("not an array") end' "$WORK/all" 2>/dev/null) \
@@ -314,6 +315,8 @@ if [ "$WANTED" -gt 0 ]; then
   rc=$?
   if [ "$rc" -eq 11 ]; then
     THREAD_ERROR="buzz thread read refused: request timestamp outside the relay window after retry (clock skew or sleep); unaddressed replies need an explicit mention"
+  elif [ "$rc" -eq 12 ]; then
+    THREAD_ERROR="cannot create scratch space under ${TMPDIR:-/tmp}; unaddressed replies need an explicit mention"
   elif [ "$rc" -ne 0 ]; then
     THREAD_ERROR="buzz CLI thread read failed (exit $rc); unaddressed replies need an explicit mention"
   else
